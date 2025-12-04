@@ -54,6 +54,8 @@ typedef struct {
 	u32		stack_id;
 #endif
 	u32		pid;
+	u32		tgid;
+	u32		uid;
 	int		__event_filed[0];
 } event_t;
 
@@ -77,6 +79,8 @@ typedef struct {
 	u32		stack_id;
 #endif
 	u32		pid;
+	u32		tgid;
+	u32		uid;
 	/* fields above are exactly the same as event_t's, and the below
 	 * fields are what we need to add for detail event.
 	 */

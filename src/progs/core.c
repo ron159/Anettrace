@@ -361,7 +361,11 @@ static int auto_inline handle_entry(context_info_t *info)
 	int err;
 
 	pr_debug_skb("begin to handle, func=%d", info->func);
-	pid = (u32)bpf_get_current_pid_tgid();
+	u64 pid_tgid = bpf_get_current_pid_tgid();
+	pid = (u32)pid_tgid;
+	u32 tgid = (u32)(pid_tgid >> 32);
+	u32 uid = (u32)bpf_get_current_uid_gid();
+
 	mode_ctx = mode_has_context(args);
 	filter = !info->matched;
 	pkt_args = &args->pkt;
@@ -435,6 +439,8 @@ out:
 #endif
 	e->func = info->func;
 	e->pid = pid;
+	e->tgid = tgid;
+	e->uid = uid;
 
 	try_set_latency(args, e, &info->match_val);
 

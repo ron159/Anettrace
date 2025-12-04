@@ -175,11 +175,12 @@ static void analy_entry_output(analy_entry_t *entry, analy_entry_t *prev)
 			ifname = ifname ?: "";
 		}
 
-		sprintf(tinfo, "[%x][%-20s]%s[cpu:%-3u][%-5s][%s-%u][ns:%u] ",
+		sprintf(tinfo, "[%x][%-20s]%s[cpu:%-3u][%-5s][%s-tid:%u/pid:%u][uid:%u][ns:%u] ",
 			detail->key, t->name, func_range, entry->cpu, ifname,
-			detail->task, e->pid, detail->netns);
+			detail->task, e->pid, e->tgid, e->uid, detail->netns);
 	} else if (trace_ctx.mode != TRACE_MODE_DROP) {
-		sprintf(tinfo, "[%-20s]%s ", t->name, func_range);
+		sprintf(tinfo, "[%-20s]%s[tid:%u/pid:%u][uid:%u] ", t->name, func_range,
+			e->pid, e->tgid, e->uid);
 	}
 
 	if (trace_using_sk(t))
