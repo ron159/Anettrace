@@ -97,6 +97,11 @@ static void do_parse_args(int argc, char *argv[])
 			.desc = "filter by current process id(pid)",
 		},
 		{
+			.lname = "uid", .type = OPTION_U32,
+			.dest = &bpf_args->uid,
+			.desc = "filter by current user id(uid)",
+		},
+		{
 			.lname = "min-latency", .dest = &trace_args->min_latency,
 			.type = OPTION_U32,
 			.desc = "filter by the minial time to live of the skb in us",

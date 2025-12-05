@@ -263,7 +263,7 @@ static int trace_check_force()
 	    args->rtt)
 		return 0;
 
-	if (trace_has_pkt_filter() || bpf_args->pid || bpf_args->first_rtt ||
+	if (trace_has_pkt_filter() || bpf_args->pid || bpf_args->uid || bpf_args->first_rtt ||
 	    bpf_args->last_rtt ||
 	    (args->traces && strcmp(args->traces, "all") != 0) ||
 	    args->count)

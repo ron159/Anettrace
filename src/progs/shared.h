@@ -10,6 +10,7 @@ typedef struct {
 	pkt_args_t pkt;
 	u32  trace_mode;
 	u32  pid;
+	u32  uid;
 	u32  netns;
 	u32  max_event;
 	bool drop_reason;

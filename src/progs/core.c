@@ -374,6 +374,9 @@ static int auto_inline handle_entry(context_info_t *info)
 	if (filter && args_check(args, pid, pid))
 		goto err;
 
+	if (filter && args_check(args, uid, uid))
+		goto err;
+
 	/* why we call probe_parse_skb double times? because in the inline
 	 * mode, 4.15 kernel will be confused with pkt_args.
 	 */
