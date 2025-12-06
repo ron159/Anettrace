@@ -362,6 +362,7 @@ static inline int probe_parse_l3(struct sk_buff *skb, pkt_args_t *args,
 		pkt->proto_l4 = _(ipv4->protocol);
 		pkt->l3.ipv4.saddr = saddr;
 		pkt->l3.ipv4.daddr = daddr;
+		pkt->l3.ipv4.id = bpf_ntohs(_C(ipv4, id));
 	}
 
 	if (filter_check(args, l4_proto, pkt->proto_l4))
@@ -757,6 +758,7 @@ fill_port:
 
 	pkt->l3.ipv4.saddr = ip->saddr;
 	pkt->l3.ipv4.daddr = ip->daddr;
+	pkt->l3.ipv4.id = bpf_ntohs(ip->id);
 	pkt->proto_l4 = ip->protocol;
 	pkt->proto_l3 = ETH_P_IP;
 	pkt->ts = bpf_ktime_get_ns();

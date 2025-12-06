@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MulanPSL-2.0
 
 #include <unistd.h>
+#include <time.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -164,4 +165,38 @@ again:
 	}
 
 	return file_stat.st_ino;
+}
+
+long g_timezone_offset = 0;
+
+void init_timezone_offset()
+{
+	char offset_str[64] = {};
+	int hours = 0, mins = 0;
+	int sign = 1;
+	char *p;
+
+	if (execf(offset_str, "date +%%z") != 0)
+		return;
+	
+	if (offset_str[0] == '\0')
+		return;
+
+	/* remove the trailing new line */
+	offset_str[strcspn(offset_str, "\n")] = 0;
+	
+	p = offset_str;
+	if (*p == '+') {
+		sign = 1;
+		p++;
+	} else if (*p == '-') {
+		sign = -1;
+		p++;
+	}
+
+	if (sscanf(p, "%02d%02d", &hours, &mins) != 2)
+		return;
+
+	g_timezone_offset = sign * (hours * 3600 + mins * 60);
+	pr_debug("timezone offset: %ld (from %s)\n", g_timezone_offset, offset_str);
 }

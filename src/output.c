@@ -12,36 +12,59 @@
 #include <sys_utils.h>
 
 #include "output.h"
+#include "trace.h"
 
-static time_t time_offset;
-static struct tm *convert_ts_to_date(u64 ts)
+static u64 boot_time;
+static u64 get_monotonic_ns(void)
 {
-	time_t tmp;
-
-	if (!time_offset) {
-		struct sysinfo s_info;
-		sysinfo(&s_info);
-
-		time(&time_offset);
-		time_offset -= s_info.uptime;
-	}
-
-	tmp = time_offset + (ts / 1000000000);
-	return localtime(&tmp);
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (u64)ts.tv_sec * 1000000000 + ts.tv_nsec;
 }
 
-int ts_print_ts(char *buf, u64 ts, bool date_format)
+static void get_boot_time(void)
+{
+	struct timespec ts;
+
+	if (boot_time)
+		return;
+
+	clock_gettime(CLOCK_REALTIME, &ts);
+	boot_time = (u64)ts.tv_sec * 1000000000 + ts.tv_nsec;
+	boot_time -= get_monotonic_ns();
+}
+
+static struct tm *convert_ts_to_date(u64 ts)
+{
+	static struct tm tm_val;
+	time_t t;
+
+	get_boot_time();
+	ts += boot_time;
+	t = ts / 1000000000;
+	t += g_timezone_offset;
+
+	gmtime_r(&t, &tm_val);
+	return &tm_val;
+}
+
+int ts_print_ts(char *buf, u64 ts, int time_mode)
 {
 	struct tm *p;
 
-	if (date_format) {
-		p = convert_ts_to_date(ts);
-		return sprintf(buf, "[%d-%d-%d %02d:%02d:%02d.%06lld] ", 1900 + p->tm_year,
-			       1 + p->tm_mon, p->tm_mday, p->tm_hour, p->tm_min,
-			       p->tm_sec, ts % 1000000000 / 1000);
-	} else {
+	if (time_mode == TIME_MODE_RAW) {
 		return sprintf(buf, "[%llu.%06llu] ", ts / 1000000000,
 			       ts % 1000000000 / 1000);
+	}
+
+	p = convert_ts_to_date(ts);
+	if (time_mode == TIME_MODE_DATE) {
+		return sprintf(buf, "[%d-%d-%d %02d:%02d:%02d.%06lld] ", 1900 + p->tm_year,
+			       1 + p->tm_mon, p->tm_mday, p->tm_hour, p->tm_min,
+			       p->tm_sec, (ts + boot_time) % 1000000000 / 1000);
+	} else {
+		return sprintf(buf, "[%02d:%02d:%02d.%06lld] ", p->tm_hour, p->tm_min,
+			       p->tm_sec, (ts + boot_time) % 1000000000 / 1000);
 	}
 }
 
@@ -55,14 +78,14 @@ static void ntomac(u8 mac[], char *dst)
 }
 
 void ts_print_packet(char *buf, packet_t *pkt, char *minfo,
-		     bool date_format)
+		     int time_mode)
 {
 	static char saddr[MAX_ADDR_LENGTH], daddr[MAX_ADDR_LENGTH];
 	char *l4_desc;
 	u8 flags, l4;
 	int pos;
 
-	pos = ts_print_ts(buf, pkt->ts, date_format);
+	pos = ts_print_ts(buf, pkt->ts, time_mode);
 	if (minfo)
 		BUF_FMT("%s", minfo);
 
@@ -78,6 +101,9 @@ void ts_print_packet(char *buf, packet_t *pkt, char *minfo,
 			  sizeof(saddr));
 		inet_ntop(AF_INET, (void *)&pkt->l3.ipv4.daddr, daddr,
 			  sizeof(daddr));
+
+		if (trace_ctx.args.show_id)
+			BUF_FMT(" id:0x%x ", pkt->l3.ipv4.id);
 
 		if (pkt->proto_l3 == ETH_P_IP)
 			break;
@@ -215,7 +241,7 @@ typedef struct {
 
 } tcp_ca_data_t;
 
-void ts_print_sock(char *buf, sock_t *ske, char *minfo, bool date_format)
+void ts_print_sock(char *buf, sock_t *ske, char *minfo, int time_mode)
 {
 	static char saddr[MAX_ADDR_LENGTH], daddr[MAX_ADDR_LENGTH];
 	u64 ts = ske->ts;
@@ -223,14 +249,19 @@ void ts_print_sock(char *buf, sock_t *ske, char *minfo, bool date_format)
 	struct tm *p;
 	u8 l4;
 
-	if (date_format) {
-		p = convert_ts_to_date(ts);
-		BUF_FMT("[%d-%d-%d %02d:%02d:%02d.%06lld] ", 1900 + p->tm_year,
-			1 + p->tm_mon, p->tm_mday, p->tm_hour, p->tm_min,
-			p->tm_sec, ts % 1000000000 / 1000);
-	} else {
+	if (time_mode == TIME_MODE_RAW) {
 		BUF_FMT("[%llu.%06llu] ", ts / 1000000000,
 			ts % 1000000000 / 1000);
+	} else {
+		p = convert_ts_to_date(ts);
+		if (time_mode == TIME_MODE_DATE) {
+			BUF_FMT("[%d-%d-%d %02d:%02d:%02d.%06lld] ", 1900 + p->tm_year,
+				1 + p->tm_mon, p->tm_mday, p->tm_hour, p->tm_min,
+				p->tm_sec, (ts + boot_time) % 1000000000 / 1000);
+		} else {
+			BUF_FMT("[%02d:%02d:%02d.%06lld] ", p->tm_hour, p->tm_min,
+				p->tm_sec, (ts + boot_time) % 1000000000 / 1000);
+		}
 	}
 
 	if (minfo)

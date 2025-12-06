@@ -1,15 +1,15 @@
 ROOT		?= $(abspath ../)
 bpf_progs	:= progs/kprobe
-progs		:= nettrace
+progs		:= anettrace
 utils		:= $(ROOT)/utils
-prog-nettrace-origin = \
+prog-anettrace-origin = \
 		$(utils)/parse_sym.c $(utils)/net_utils.c \
 		$(utils)/arg_parse.c $(utils)/sys_utils.c \
 		$(utils)/bpf_utils.c \
 		trace.c trace_probe.c output.c trace_tracing.c \
 		analysis.c trace_group.c \
 		dropreason.c rstreason.c
-prog-nettrace	= $(prog-nettrace-origin) nettrace.c
+prog-anettrace	= $(prog-anettrace-origin) nettrace.c
 
 ifdef COMPAT
 	NO_GLOBAL_DATA	:= 1
@@ -87,16 +87,18 @@ trace_group.c: trace.yaml
 progs/*.c: progs/kprobe_trace.h
 	@:
 
-nettrace.c: $(prog-nettrace-origin)
+nettrace.c: $(prog-anettrace-origin)
+
+anettrace: nettrace.c
 
 all: $(progs)
 
 install: all
 	@mkdir -p ${PREFIX}/usr/bin/
-	@cp nettrace ${PREFIX}/usr/bin/
+	@cp anettrace ${PREFIX}/usr/bin/
 
 pack: all
-	@cp nettrace ${PREFIX}/
+	@cp anettrace ${PREFIX}/
 
 clean:
 	rm -rf $(progs) trace_group.c progs/kprobe_trace.h \

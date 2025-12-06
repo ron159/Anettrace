@@ -16,9 +16,15 @@
 
 #define BUF_FMT(fmt, args...) pos += sprintf(buf + pos, fmt, ##args)
 
+enum {
+	TIME_MODE_RAW = 0,
+	TIME_MODE_TIME,
+	TIME_MODE_DATE,
+};
+
 void ts_print_packet(char *buf, packet_t *pkt, char *minfo,
-		     bool date_format);
-void ts_print_sock(char *buf, sock_t *ske, char *minfo, bool date_format);
-int  ts_print_ts(char *buf, u64 ts, bool date_format);
+		     int time_mode);
+void ts_print_sock(char *buf, sock_t *ske, char *minfo, int time_mode);
+int  ts_print_ts(char *buf, u64 ts, int time_mode);
 
 #endif

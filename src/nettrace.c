@@ -10,7 +10,7 @@
 #include "trace.h"
 
 arg_config_t config = {
-	.name = "nettrace",
+	.name = "anettrace",
 	.summary = "a tool to trace skb in kernel and diagnose network problem",
 	.desc = "",
 };
@@ -18,6 +18,7 @@ arg_config_t config = {
 static void do_parse_args(int argc, char *argv[])
 {
 	bool show_log = false, debug = false, version = false;
+	bool timestamp = false, date = false;
 	trace_args_t *trace_args = &trace_ctx.args;
 	bpf_args_t *bpf_args = &trace_ctx.bpf_args;
 	pkt_args_t *pkt_args = &bpf_args->pkt;
@@ -222,9 +223,19 @@ static void do_parse_args(int argc, char *argv[])
 			.desc = "show extern packet info, such as pid, ifname, etc",
 		},
 		{
-			.lname = "date", .dest = &trace_args->date,
+			.lname = "date", .dest = &date,
 			.type = OPTION_BOOL,
-			.desc = "print timestamp in date-time format",
+			.desc = "print date and time",
+		},
+		{
+			.lname = "timestamp", .dest = &timestamp,
+			.type = OPTION_BOOL,
+			.desc = "print timestamp instead of date-time format",
+		},
+		{
+			.lname = "id", .dest = &trace_args->show_id,
+			.type = OPTION_BOOL,
+			.desc = "show ip id",
 		},
 		{
 			.lname = "count", .sname = 'c', .dest = &trace_args->count,
@@ -365,6 +376,16 @@ static void do_parse_args(int argc, char *argv[])
 	pkt_args->daddr_v6_enable = !!daddr_pf;
 	pkt_args->addr_v6_enable = !!addr_pf;
 
+	if (timestamp)
+		trace_args->time_mode = TIME_MODE_RAW;
+	else if (date)
+		trace_args->time_mode = TIME_MODE_DATE;
+	else
+		trace_args->time_mode = TIME_MODE_TIME;
+
+	if (bpf_args->detail)
+		trace_args->show_id = true;
+
 	return;
 err:
 	exit(-EINVAL);
@@ -395,6 +416,7 @@ static void do_exit(int code)
 
 int main(int argc, char *argv[])
 {
+	init_timezone_offset();
 	init_trace_group();
 	do_parse_args(argc, argv);
 

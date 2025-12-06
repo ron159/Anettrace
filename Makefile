@@ -1,5 +1,5 @@
 
-export VERSION	= 1.2.11
+export VERSION	= 0.3
 RELEASE		?= .tl3
 export RELEASE
 
@@ -15,8 +15,8 @@ export PREFIX
 SCRIPT		= $(ROOT)/script
 export SCRIPT
 ARCH		?= $(shell uname -m)
-SOURCE_DIR	:= ~/rpmbuild/SOURCES/nettrace-${VERSION}
-PACK_TARGET 	:= nettrace-$(VERSION)-1$(RELEASE).$(ARCH)
+SOURCE_DIR	:= ~/rpmbuild/SOURCES/anettrace-${VERSION}
+PACK_TARGET 	:= anettrace-$(VERSION)-1$(RELEASE).$(ARCH)
 PACK_PATH	:= $(abspath $(PREFIX)/$(PACK_TARGET))
 PACK_NAME	:= $(PACK_TARGET).tar.bz2
 
@@ -45,7 +45,7 @@ install:
 		done
 
 	@mkdir -p $(BCOMP); cd $(BCOMP); cp $(SCRIPT)/bash-completion.sh \
-		./nettrace
+		./anettrace
 
 pack:
 	@make clean
@@ -59,7 +59,7 @@ rpm:
 	@rm -rf ${SOURCE_DIR} && mkdir -p ${SOURCE_DIR}
 	@cp -r * ${SOURCE_DIR}/
 	@sed -i 's/%{VERSION}/$(VERSION)/' ${SOURCE_DIR}/script/nettrace.spec
-	@cd ~/rpmbuild/SOURCES/ && tar -czf nettrace-${VERSION}.tar.gz	\
-		nettrace-${VERSION}
+	@cd ~/rpmbuild/SOURCES/ && tar -czf anettrace-${VERSION}.tar.gz	\
+		anettrace-${VERSION}
 	@rpmbuild -D 'dist $(RELEASE)' --target ${ARCH}			\
 		-ba ${SOURCE_DIR}/script/nettrace.spec

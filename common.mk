@@ -120,7 +120,7 @@ $(bpf_progs): %: %.skel.h
 
 bpf: $(bpf_progs) $(bpf_progs_ext)
 
-$(progs): %: %.c bpf
+$(progs): %: bpf
 	@if [ -n "$(prog-$@)" ]; then				\
 		echo $(CC) $(prog-$@) -o $@ $(HOST_CFLAGS);	\
 		$(CC) $(prog-$@) -o $@ $(HOST_CFLAGS);		\
