@@ -194,6 +194,7 @@ found:
 	free(long_opts);
 	return 0;
 err:
+	free(long_opts);
 	return -EINVAL;
 help:
 	printf("%s: %s\n", config->name, config->summary);

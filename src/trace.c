@@ -756,7 +756,7 @@ int trace_prepare()
 		goto err;
 	}
 	if (!kernel_has_config("DEBUG_INFO_BTF_MODULES")) {
-		pr_warn("DEBUG_INFO_BTF_MODULES not enabled, some infomation, "
+		pr_warn("DEBUG_INFO_BTF_MODULES not enabled, some information, "
 			"such as nf_tables, maybe incorrect\n");
 	}
 #else
