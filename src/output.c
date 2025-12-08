@@ -105,6 +105,9 @@ void ts_print_packet(char *buf, packet_t *pkt, char *minfo,
 		if (trace_ctx.args.show_id)
 			BUF_FMT(" id:0x%x ", pkt->l3.ipv4.id);
 
+		if (trace_ctx.args.show_mark)
+			BUF_FMT(" mark:0x%x ", pkt->mark);
+
 		if (pkt->proto_l3 == ETH_P_IP)
 			break;
 
