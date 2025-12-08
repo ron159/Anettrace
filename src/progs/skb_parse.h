@@ -619,6 +619,7 @@ static __always_inline int probe_parse_skb(struct sk_buff *skb, struct sock *sk,
 	ctx->network_header = _C(skb, network_header);
 	ctx->mac_header = _C(skb, mac_header);
 	ctx->data = _C(skb, head);
+	pkt->mark = _C(skb, mark);
 
 	pr_debug_skb("begin to parse, nh=%d mh=%d", ctx->network_header,
 		     ctx->mac_header);

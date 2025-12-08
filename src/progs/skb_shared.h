@@ -63,6 +63,7 @@ typedef struct {
 
 typedef struct {
 	u64	ts;
+	u32	mark;
 	union {
 		struct {
 			u32	saddr;

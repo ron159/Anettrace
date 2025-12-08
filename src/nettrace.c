@@ -238,6 +238,11 @@ static void do_parse_args(int argc, char *argv[])
 			.desc = "show ip id",
 		},
 		{
+			.lname = "mark", .dest = &trace_args->show_mark,
+			.type = OPTION_BOOL,
+			.desc = "show skb mark",
+		},
+		{
 			.lname = "count", .sname = 'c', .dest = &trace_args->count,
 			.type = OPTION_U32,
 			.desc = "exit after receiving count packets",
@@ -383,8 +388,10 @@ static void do_parse_args(int argc, char *argv[])
 	else
 		trace_args->time_mode = TIME_MODE_TIME;
 
-	if (bpf_args->detail)
+	if (bpf_args->detail) {
 		trace_args->show_id = true;
+		trace_args->show_mark = true;
+	}
 
 	return;
 err:
