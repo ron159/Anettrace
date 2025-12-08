@@ -63,7 +63,6 @@ typedef struct {
 
 typedef struct {
 	u64	ts;
-	u32	mark;
 	union {
 		struct {
 			u32	saddr;
@@ -111,6 +110,7 @@ typedef struct {
 	u16 proto_l3;
 	u8 proto_l4;
 	u8 pad;
+	u32 mark;
 } packet_t;
 
 typedef struct {
