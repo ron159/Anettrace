@@ -67,6 +67,7 @@ typedef struct {
 		struct {
 			u32	saddr;
 			u32	daddr;
+			u16	id;
 		} ipv4;
 		struct {
 			u8	saddr[16];

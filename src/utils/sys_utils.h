@@ -51,6 +51,7 @@ int	kernel_get_config(const char *name, char *output);
 int	kernel_hz();
 u32	file_inode(char *path);
 const char *get_tracing_path();
+int	timezone_parse_offset(const char *value, long *seconds);
 
 static inline int sym_get_type(const char *name)
 {

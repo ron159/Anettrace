@@ -26,6 +26,7 @@ static int print_all_levels(enum libbpf_print_level level, const char *format, v
 static int do_parse_args(int argc, char *argv[])
 {
 	bool show_log = false, debug = false, version = false, libbpf_debug = false;
+	bool date = false, timestamp = false;
 	trace_args_t *trace_args = &trace_ctx.args;
 	bpf_args_t *bpf_args = &trace_ctx.bpf_args;
 	pkt_args_t *pkt_args = &bpf_args->pkt;
@@ -229,9 +230,19 @@ static int do_parse_args(int argc, char *argv[])
 			.desc = "show extern packet info, such as pid, ifname, etc",
 		},
 		{
-			.lname = "date", .dest = &trace_args->date,
+			.lname = "date", .dest = &date,
 			.type = OPTION_BOOL,
-			.desc = "print timestamp in date-time format",
+			.desc = "print local date and time",
+		},
+		{
+			.lname = "timestamp", .dest = &timestamp,
+			.type = OPTION_BOOL,
+			.desc = "print the raw monotonic timestamp",
+		},
+		{
+			.lname = "id", .dest = &trace_args->show_id,
+			.type = OPTION_BOOL,
+			.desc = "show IPv4 id in hexadecimal",
 		},
 		{
 			.lname = "mark", .dest = &trace_args->show_mark,
@@ -330,6 +341,16 @@ static int do_parse_args(int argc, char *argv[])
 
 	if (parse_args(argc, argv, &config, opts, ARRAY_SIZE(opts)))
 		goto err;
+	if (date && timestamp) {
+		pr_err("--date and --timestamp cannot be used together\n");
+		goto err;
+	}
+	if (date)
+		trace_args->time_mode = TIME_MODE_DATE;
+	else if (timestamp)
+		trace_args->time_mode = TIME_MODE_MONOTONIC;
+	else
+		trace_args->time_mode = TIME_MODE_LOCAL;
 
 	if (show_log)
 		set_log_level(1);
@@ -379,8 +400,10 @@ static int do_parse_args(int argc, char *argv[])
 	pkt_args->saddr_v6_enable = !!saddr_pf;
 	pkt_args->daddr_v6_enable = !!daddr_pf;
 	pkt_args->addr_v6_enable = !!addr_pf;
-	if (bpf_args->detail)
+	if (bpf_args->detail) {
+		trace_args->show_id = true;
 		trace_args->show_mark = true;
+	}
 
 	return 0;
 err:
@@ -424,6 +447,8 @@ int main(int argc, char *argv[])
 	err = do_parse_args(argc, argv);
 	if (err)
 		return err < 0 ? err : 0;
+	if (trace_ctx.args.time_mode != TIME_MODE_MONOTONIC)
+		output_time_init();
 
 	err = trace_main();
 	if (err)

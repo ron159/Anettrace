@@ -292,6 +292,7 @@ static inline int probe_parse_l3(struct sk_buff *skb, bool filter,
 		pkt->proto_l4 = ipv4->protocol;
 		pkt->l3.ipv4.saddr = saddr;
 		pkt->l3.ipv4.daddr = daddr;
+		pkt->l3.ipv4.id = bpf_ntohs(ipv4->id);
 	}
 
 	if (filter_check(filter, l4_proto, pkt->proto_l4))
@@ -493,6 +494,7 @@ static inline int probe_parse_skb(struct sk_buff *skb, struct sock *sk,
 	ctx->mac_header = skb->mac_header;
 	ctx->data = skb->head;
 	pkt->mark = skb->mark;
+	pkt->l3.ipv4.id = 0;
 
 	if (skb_l2_check(ctx->mac_header)) {
 		int family;

@@ -294,7 +294,7 @@ static inline void analy_entry_free(analy_entry_t *entry)
 static void analy_entry_output(analy_entry_t *entry, analy_entry_t *prev)
 {
 	static char buf[1024], tinfo[512], func_range[512], __func_range[500];
-	bool date = trace_ctx.args.date;
+	enum time_mode time_mode = trace_ctx.args.time_mode;
 	event_t *e = entry->event;
 	rule_t *rule;
 	trace_t *t;
@@ -307,7 +307,7 @@ static void analy_entry_output(analy_entry_t *entry, analy_entry_t *prev)
 		      PTR2X(entry->fake_ctx), PTR2X(entry));
 
 	if (e->meta == FUNC_TYPE_TINY) {
-		ts_print_ts(buf, ((tiny_event_t *)(void *)e)->ts, date);
+		ts_print_ts(buf, ((tiny_event_t *)(void *)e)->ts, time_mode);
 		sprintf_end(buf, "[%-20s]", t->name);
 		goto do_latency;
 	}
@@ -343,9 +343,9 @@ static void analy_entry_output(analy_entry_t *entry, analy_entry_t *prev)
 	}
 
 	if (trace_using_sk(t))
-		ts_print_sock(buf, &e->ske, tinfo, trace_ctx.args.date);
+		ts_print_sock(buf, &e->ske, tinfo, time_mode);
 	else
-		ts_print_packet(buf, &e->pkt, tinfo, trace_ctx.args.date);
+		ts_print_packet(buf, &e->pkt, tinfo, time_mode);
 
 	if (trace_is_ret_any(t) && !(entry->status & ANALY_ENTRY_TO_RETURN) &&
 	    trace_ctx.args.ret)
