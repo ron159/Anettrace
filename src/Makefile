@@ -9,7 +9,7 @@ ROOT		?= $(abspath ../)
 UTILS_DIR	:= $(ROOT)/src/utils
 UTILS_SRC	:= $(UTILS_DIR)/net_utils.c $(UTILS_DIR)/bpf_utils.c \
 		   $(UTILS_DIR)/arg_parse.c $(UTILS_DIR)/sys_utils.c
-NETTRACE_SRCS	:= $(UTILS_SRC) \
+ANETTRACE_SRCS	:= $(UTILS_SRC) \
 		   trace.c output.c trace_tracing.c \
 		   analysis.c $(trace_group) \
 		   dropreason.c rstreason.c \
@@ -33,7 +33,9 @@ endif
 
 HOST_CFLAGS	:= -lbpf -lelf -lz $(LIBELF_ZSTD_FLAGS) -pthread -O2 -Wall \
 		   -Wno-deprecated-declarations -DVERSION=$(VERSION)	\
-		   -DRELEASE=$(RELEASE)
+		   -DRELEASE=$(RELEASE) \
+		   -DUPSTREAM_BTF_COMMIT=$(UPSTREAM_BTF_COMMIT) \
+		   -DBUILD_TYPE=$(BUILD_TYPE) -DTARGET_PLATFORM=$(TARGET_PLATFORM)
 
 ifneq ($(filter android-%,$(TARGET_PLATFORM)),)
 HOST_CFLAGS	+= -DANETTRACE_ANDROID_TARGET=1
@@ -76,17 +78,17 @@ $(bpf_skels): %.skel.h: %.o
 
 bpf: $(bpf_skels) $(bpf_progs_ext)
 
-nettrace: $(NETTRACE_SRCS) $(trace_funcs) $(bpf_skels) $(bpf_progs_ext)
-	$(CC) $(NETTRACE_SRCS) -o $@ $(HOST_CFLAGS)
+anettrace: $(ANETTRACE_SRCS) $(trace_funcs) $(bpf_skels) $(bpf_progs_ext)
+	$(CC) $(ANETTRACE_SRCS) -o $@ $(HOST_CFLAGS)
 
-all: nettrace
+all: anettrace
 
 install: all
 	@mkdir -p ${PREFIX}/usr/bin/
-	@cp nettrace ${PREFIX}/usr/bin/
+	@cp anettrace ${PREFIX}/usr/bin/
 
 pack: all
-	@cp nettrace ${PREFIX}/
+	@cp anettrace ${PREFIX}/
 
 clean:
-	$(RM) nettrace $(trace_group) $(trace_funcs) $(bpf_objs) $(bpf_skels)
+	$(RM) anettrace $(trace_group) $(trace_funcs) $(bpf_objs) $(bpf_skels)

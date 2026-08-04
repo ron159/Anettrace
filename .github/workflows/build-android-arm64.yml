@@ -48,22 +48,22 @@ jobs:
 
               cd /work
               make clean
-              make STATIC=1 all
-              make STATIC=1 pack
+              make STATIC=1 TARGET_PLATFORM=android-arm64 all
+              make STATIC=1 TARGET_PLATFORM=android-arm64 pack
 
-              file src/nettrace | tee output/nettrace.file.txt
-              readelf -h src/nettrace > output/nettrace.elf-header.txt
-              readelf -l src/nettrace > output/nettrace.program-headers.txt
-              readelf -d src/nettrace > output/nettrace.dynamic.txt
+              file src/anettrace | tee output/anettrace.file.txt
+              readelf -h src/anettrace > output/anettrace.elf-header.txt
+              readelf -l src/anettrace > output/anettrace.program-headers.txt
+              readelf -d src/anettrace > output/anettrace.dynamic.txt
 
-              grep -q "Machine:.*AArch64" output/nettrace.elf-header.txt
-              ! grep -q INTERP output/nettrace.program-headers.txt
-              ! grep -q NEEDED output/nettrace.dynamic.txt
+              grep -q "Machine:.*AArch64" output/anettrace.elf-header.txt
+              ! grep -q INTERP output/anettrace.program-headers.txt
+              ! grep -q NEEDED output/anettrace.dynamic.txt
 
-              src/nettrace --version
-              src/nettrace -h >/dev/null
+              src/anettrace --version
+              src/anettrace -h >/dev/null
 
-              sha256sum src/nettrace output/nettrace-*.tar.bz2 \
+              sha256sum src/anettrace output/anettrace-*.tar.bz2 \
                 > output/SHA256SUMS
               {
                 echo "source_commit=${GITHUB_SHA}"
@@ -78,11 +78,11 @@ jobs:
       - name: Upload Android arm64 baseline
         uses: actions/upload-artifact@v4
         with:
-          name: nettrace-android-arm64-tracing
+          name: anettrace-android-arm64-tracing
           if-no-files-found: error
           path: |
-            src/nettrace
-            output/nettrace-*.tar.bz2
+            src/anettrace
+            output/anettrace-*.tar.bz2
             output/SHA256SUMS
             output/build-metadata.txt
-            output/nettrace.*.txt
+            output/anettrace.*.txt

@@ -1,6 +1,6 @@
 Summary: A skb (network package) trace tool for kernel
 
-Name: nettrace
+Name: anettrace
 
 Version: %{VERSION}
 
@@ -20,16 +20,15 @@ Source0:%{name}-%{version}.tar.gz
 %define __objdump ${CROSS_COMPILE}objdump
 
 %description
-nettrace is is a powerful tool to trace network packet and diagnose
-network problem inside kernel on TencentOS.
+Anettrace is a powerful tool to trace network packets and diagnose
+network problems inside Linux and rooted Android kernels.
 
-It make use of eBPF.
+It uses eBPF.
 
 'skb' is the struct that used in kernel to store network package.
-By tracing kernel function and tracepoint (with the help of kprobe
-based on eBPF) that handle skb, nettrace is able to show the path
-of skb bypass inside kernel network stack. Therefor, some network
-issue (such as package drop) can be solved simply.
+By tracing kernel functions with eBPF fentry, fexit, and tp_btf,
+Anettrace can show the path of an skb through the kernel network
+stack and help diagnose issues such as packet drops.
 
 %prep
 %setup -q
@@ -41,11 +40,12 @@ PREFIX=$RPM_BUILD_ROOT
 
 %files
 %defattr (-,root,root,0755)
-/usr/bin/nettrace
-/usr/share/man/zh_CN/man8/nettrace.8.gz
-/usr/share/man/man8/nettrace.8.gz
+/usr/bin/anettrace
+/usr/share/man/zh_CN/man8/anettrace.8.gz
+/usr/share/man/man8/anettrace.8.gz
 /usr/share/man/man8/dropreason.8.gz
-/usr/share/bash-completion/completions/nettrace
+/usr/share/bash-completion/completions/anettrace
+/usr/share/fish/vendor_completions.d/anettrace.fish
 
 %doc
 

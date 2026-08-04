@@ -6,11 +6,9 @@
 #include "output.h"
 
 #define pr_version()							\
-	pr_info("version: " macro_to_str(VERSION) macro_to_str(RELEASE)	\
-		nt_ternary_take(NO_BTF, ", no-btf, kernel-"		\
-				macro_to_str(__KERN_VER), " btf")	\
-		nt_ternary_take(BPF_NO_GLOBAL_DATA, ", no-global-data",	\
-				", global-data")			\
-		"\n")
+	pr_info("Anettrace " macro_to_str(VERSION)			\
+		" (upstream nettrace btf " macro_to_str(UPSTREAM_BTF_COMMIT)\
+		", " macro_to_str(BUILD_TYPE) ", "			\
+		macro_to_str(TARGET_PLATFORM) ")\n")
 
 #endif

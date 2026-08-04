@@ -13,7 +13,7 @@
 #include "analysis.h"
 
 arg_config_t config = {
-	.name = "nettrace",
+	.name = "anettrace",
 	.summary = "a tool to trace skb in kernel and diagnose network problem",
 	.desc = "",
 };
@@ -210,7 +210,7 @@ static int do_parse_args(int argc, char *argv[])
 		{
 			.lname = "force", .dest = &trace_args->force,
 			.type = OPTION_BOOL,
-			.desc = "skip some check and force load nettrace",
+			.desc = "skip some check and force load anettrace",
 		},
 		{
 			.lname = "ret", .dest = &trace_args->ret,
@@ -299,6 +299,11 @@ static int do_parse_args(int argc, char *argv[])
 			.desc = "show libbpf debug information",
 		},
 		{
+			.lname = "bpf-debug", .dest = &libbpf_debug,
+			.type = OPTION_BOOL,
+			.desc = "compatibility alias for --libbpf-debug",
+		},
+		{
 			.lname = "help",
 			.sname = 'h',
 			.type = OPTION_HELP,
@@ -308,7 +313,7 @@ static int do_parse_args(int argc, char *argv[])
 			.lname = "version", .dest = &version,
 			.sname = 'V',
 			.type = OPTION_BOOL,
-			.desc = "show nettrace version",
+			.desc = "show anettrace version",
 		},
 	};
 

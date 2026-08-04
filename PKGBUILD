@@ -1,9 +1,9 @@
-pkgname=nettrace
-pkgver=1.2.11
+pkgname=anettrace
+pkgver=0.4.0
 pkgrel=1
 pkgdesc="A skb (network packet) trace tool for kernel"
 arch=('x86_64')
-url="https://github.com/OpenCloudOS/nettrace"
+url="https://github.com/ron159/Anettrace"
 license=('MulanPSL-2.0')
 
 depends=('libbpf' 'libelf' 'zlib' 'zstd')
@@ -19,8 +19,7 @@ makedepends=(
 )
 optdepends=(
   'bash-completion: bash completion support'
-  'linux-headers: required for NO_BTF/compat builds'
-  'bpftool: required for skel builds'
+  'bpftool: optional system tool for skeleton generation'
 )
 
 source=()
