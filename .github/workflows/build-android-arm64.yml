@@ -1,0 +1,88 @@
+name: Build Android arm64 tracing
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android-arm64:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up arm64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/arm64
+
+      - name: Build static arm64 artifact
+        run: |
+          docker run --rm --platform=linux/arm64 \
+            -e GITHUB_SHA \
+            -v "$PWD:/work" \
+            -w /work \
+            ubuntu:22.04 \
+            /bin/bash -euxo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                binutils bzip2 ca-certificates clang file gcc git \
+                libelf-dev libzstd-dev llvm make pkg-config python3 \
+                python3-yaml wget zlib1g-dev
+
+              cd /tmp
+              wget -q \
+                https://github.com/libbpf/libbpf/archive/refs/tags/v1.6.2.tar.gz \
+                -O libbpf.tar.gz
+              mkdir libbpf
+              tar -xzf libbpf.tar.gz -C libbpf --strip-components=1
+              make -C libbpf/src BUILD_SHARED=1 BUILD_STATIC=1
+              make -C libbpf/src install \
+                PREFIX=/usr LIBDIR=/usr/lib
+
+              cd /work
+              make clean
+              make STATIC=1 all
+              make STATIC=1 pack
+
+              file src/nettrace | tee output/nettrace.file.txt
+              readelf -h src/nettrace > output/nettrace.elf-header.txt
+              readelf -l src/nettrace > output/nettrace.program-headers.txt
+              readelf -d src/nettrace > output/nettrace.dynamic.txt
+
+              grep -q "Machine:.*AArch64" output/nettrace.elf-header.txt
+              ! grep -q INTERP output/nettrace.program-headers.txt
+              ! grep -q NEEDED output/nettrace.dynamic.txt
+
+              src/nettrace --version
+              src/nettrace -h >/dev/null
+
+              sha256sum src/nettrace output/nettrace-*.tar.bz2 \
+                > output/SHA256SUMS
+              {
+                echo "source_commit=${GITHUB_SHA}"
+                echo "upstream_btf_commit=d455f001315322db4d606a8bdf8c659ba36b269c"
+                echo "libbpf_version=1.6.2"
+                echo "target=android-arm64-tracing"
+                gcc --version | head -1
+                clang --version | head -1
+              } > output/build-metadata.txt
+            '
+
+      - name: Upload Android arm64 baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: nettrace-android-arm64-tracing
+          if-no-files-found: error
+          path: |
+            src/nettrace
+            output/nettrace-*.tar.bz2
+            output/SHA256SUMS
+            output/build-metadata.txt
+            output/nettrace.*.txt
