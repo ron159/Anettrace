@@ -299,6 +299,8 @@ static void analy_entry_output(analy_entry_t *entry, analy_entry_t *prev)
 	rule_t *rule;
 	trace_t *t;
 
+	tinfo[0] = '\0';
+
 	t = get_trace_from_analy_entry(entry);
 	pr_debug_ctx("fctx=%llx, entry=%llx entry output\n", entry->event->key,
 		      entry->fake_ctx ? entry->fake_ctx->ctx : NULL,
@@ -331,11 +333,13 @@ static void analy_entry_output(analy_entry_t *entry, analy_entry_t *prev)
 			ifname = __ifname;
 		}
 
-		sprintf(tinfo, "[%x][%-20s]%s[cpu:%-3u][%-5s][%s-%u][ns:%u] ",
+		sprintf(tinfo, "[%x][%-20s]%s[cpu:%-3u][%-5s]"
+			"[%s-tid:%u/pid:%u][uid:%u][ns:%u] ",
 			e->key, t->name, func_range, e->cpu, ifname,
-			e->task, e->pid, e->netns);
+			e->task, e->tid, e->tgid, e->uid, e->netns);
 	} else if (trace_ctx.mode != TRACE_MODE_DROP) {
-		sprintf(tinfo, "[%-20s]%s ", t->name, func_range);
+		sprintf(tinfo, "[%-20s]%s[tid:%u/pid:%u][uid:%u] ",
+			t->name, func_range, e->tid, e->tgid, e->uid);
 	}
 
 	if (trace_using_sk(t))

@@ -71,7 +71,9 @@ typedef struct {
 		};
 	};
 	u32		stack_id;
-	u32		pid;
+	u32		tid;
+	u32		tgid;
+	u32		uid;
 	/* detail fields */
 	char		task[16];
 	char		ifname[16];
@@ -148,6 +150,15 @@ typedef struct {
 } rtt_event_t;
 
 #define MAX_EVENT_SIZE sizeof(nf_hooks_event_t)
+
+_Static_assert(__builtin_offsetof(event_t, tgid) ==
+	       __builtin_offsetof(event_t, tid) + sizeof(u32),
+	       "event tid/tgid layout changed");
+_Static_assert(__builtin_offsetof(event_t, uid) ==
+	       __builtin_offsetof(event_t, tgid) + sizeof(u32),
+	       "event tgid/uid layout changed");
+_Static_assert(sizeof(event_t) <= MAX_EVENT_SIZE,
+	       "event exceeds the maximum ring-buffer event size");
 
 typedef struct {
 	u16 meta;

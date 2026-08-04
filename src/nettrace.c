@@ -102,7 +102,7 @@ static int do_parse_args(int argc, char *argv[])
 		{
 			.lname = "pid", .type = OPTION_U32,
 			.dest = &bpf_args->pid,
-			.desc = "filter by current process id(pid)",
+			.desc = "filter by current thread id (legacy --pid semantics)",
 		},
 		{
 			.lname = "min-latency", .dest = &trace_args->min_latency,

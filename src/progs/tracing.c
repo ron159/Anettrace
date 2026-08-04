@@ -411,6 +411,7 @@ static int handle_entry(context_info_t *info, event_t *e)
 	struct net_device *dev;
 	struct sk_buff *skb;
 	packet_t *pkt;
+	u64 pid_tgid, uid_gid;
 	bool filter;
 	int err;
 
@@ -431,8 +432,12 @@ static int handle_entry(context_info_t *info, event_t *e)
 	if (filter && err)
 		goto err;
 
-	e->pid = (u32)bpf_get_current_pid_tgid();
-	if (filter && args_check(m_config, pid, e->pid))
+	pid_tgid = bpf_get_current_pid_tgid();
+	uid_gid = bpf_get_current_uid_gid();
+	e->tid = (u32)pid_tgid;
+	e->tgid = (u32)(pid_tgid >> 32);
+	e->uid = (u32)uid_gid;
+	if (filter && args_check(m_config, pid, e->tid))
 		goto err;
 
 	/* latency total mode with filter condition case */
