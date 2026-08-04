@@ -1,5 +1,5 @@
 complete -W '-s --saddr -d --daddr --addr -S --sport -D --dport -P --port -p --proto
-             --netns --netns-current --pid --min-latency --pkt-len --tcp-flags
+             --netns --netns-current --pid --uid --min-latency --pkt-len --tcp-flags
 
              --basic --diag --diag-quiet --diag-keep --drop --drop-stack
              --sock --monitor --rtt --rtt-detail --filter-srtt

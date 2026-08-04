@@ -256,7 +256,8 @@ static int trace_check_force()
 	    args->rtt)
 		return 0;
 
-	if (trace_has_pkt_filter() || bpf_args->pid || bpf_args->first_rtt ||
+	if (trace_has_pkt_filter() || bpf_args->pid || bpf_args->uid_enabled ||
+	    bpf_args->first_rtt ||
 	    bpf_args->last_rtt ||
 	    (args->traces && strcmp(args->traces, "all") != 0) ||
 	    args->count)
@@ -406,7 +407,8 @@ static int trace_prepare_args()
 	}
 
 	trace_ctx.bpf_data.__rate_limit = bpf_args->rate_limit;
-	bpf_args->has_filter = trace_has_pkt_filter();
+	bpf_args->has_filter = trace_has_pkt_filter() || bpf_args->pid ||
+		bpf_args->uid_enabled;
 
 	if (args->latency_show && !mode_has_context()) {
 		pr_err("--latency-show not supported in this mode\n");

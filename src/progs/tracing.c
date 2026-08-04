@@ -439,6 +439,8 @@ static int handle_entry(context_info_t *info, event_t *e)
 	e->uid = (u32)uid_gid;
 	if (filter && args_check(m_config, pid, e->tid))
 		goto err;
+	if (filter && m_config.uid_enabled && m_config.uid != e->uid)
+		goto err;
 
 	/* latency total mode with filter condition case */
 	if (info->no_output)

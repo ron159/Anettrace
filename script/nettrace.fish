@@ -11,6 +11,7 @@ complete -c anettrace -s p -l proto -d "filter L3/L4 protocol, such as 'tcp', 'a
 complete -c anettrace -l netns -d "filter by net namespace inode"
 complete -c anettrace -l netns-current -d "filter by current net namespace"
 complete -c anettrace -l pid -d "filter by current thread id (legacy --pid semantics)"
+complete -c anettrace -l uid -d "filter by current user id(uid), including uid 0"
 complete -c anettrace -l min-latency -d "filter by the minial time to live of the skb in us"
 complete -c anettrace -l pkt-len -d "filter by the IP packet length (include header) in byte"
 complete -c anettrace -l tcp-flags -d "filter by TCP flags, such as: SAPR"

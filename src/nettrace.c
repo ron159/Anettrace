@@ -105,6 +105,12 @@ static int do_parse_args(int argc, char *argv[])
 			.desc = "filter by current thread id (legacy --pid semantics)",
 		},
 		{
+			.lname = "uid", .type = OPTION_U32,
+			.dest = &bpf_args->uid,
+			.set = &bpf_args->uid_enabled,
+			.desc = "filter by current user id(uid), including uid 0",
+		},
+		{
 			.lname = "min-latency", .dest = &trace_args->min_latency,
 			.type = OPTION_U32,
 			.desc = "filter by the minial time to live of the skb in us",
