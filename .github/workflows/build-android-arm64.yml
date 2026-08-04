@@ -2,9 +2,9 @@ name: build-android-arm64-anettrace
 
 on:
   push:
-    branches: [ main, master, dev]
+    branches: [ master ]
   pull_request:
-    branches: [ main, master, dev]
+    branches: [ master ]
   # 手动触发
   workflow_dispatch:
 
