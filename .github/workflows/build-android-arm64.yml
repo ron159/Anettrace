@@ -63,7 +63,10 @@ jobs:
               src/anettrace --version
               src/anettrace -h >/dev/null
 
-              sha256sum src/anettrace output/anettrace-*.tar.bz2 \
+              archive=output/anettrace-0.4.0-android-arm64-tracing.tar.bz2
+              test -f "${archive}"
+              sha256sum "${archive}" > "${archive}.sha256"
+              sha256sum src/anettrace "${archive}" \
                 > output/SHA256SUMS
               {
                 echo "source_commit=${GITHUB_SHA}"
@@ -75,14 +78,33 @@ jobs:
               } > output/build-metadata.txt
             '
 
-      - name: Upload Android arm64 baseline
+      - name: Upload Android arm64 tracing artifact
         uses: actions/upload-artifact@v4
         with:
-          name: anettrace-android-arm64-tracing
+          name: anettrace-0.4.0-android-arm64-tracing
           if-no-files-found: error
           path: |
             src/anettrace
             output/anettrace-*.tar.bz2
+            output/anettrace-*.tar.bz2.sha256
             output/SHA256SUMS
             output/build-metadata.txt
             output/anettrace.*.txt
+
+      - name: Download uploaded artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: anettrace-0.4.0-android-arm64-tracing
+          path: downloaded
+
+      - name: Verify downloaded artifact
+        run: |
+          cd downloaded
+          archive=output/anettrace-0.4.0-android-arm64-tracing.tar.bz2
+          sha256sum --check output/SHA256SUMS
+          sha256sum --check "${archive}.sha256"
+          file src/anettrace | grep -q 'ARM aarch64'
+          readelf -h src/anettrace | grep -q 'Machine:.*AArch64'
+          ! readelf -l src/anettrace | grep -q INTERP
+          ! readelf -d src/anettrace | grep -q NEEDED
+          tar -tjf "${archive}" | grep -q '^anettrace-0.4.0-android-arm64-tracing/anettrace$'
