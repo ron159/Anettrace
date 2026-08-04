@@ -4,6 +4,7 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <stdio.h>
@@ -57,39 +58,54 @@ static unsigned int sym_bulk_hash_slice(const char *name, size_t len)
 static int sym_init_data()
 {
 	size_t size = 1024 * 1024 * 4; // begin with 4M
-	char *cur, *tmp;
+	char *data, *cur, *tmp;
 	size_t count;
 	FILE *f;
+	int err = 0;
 
 	if (proc_syms)
 		return 0;
 
 	f = fopen("/proc/kallsyms", "r");
-	if (!f) {
-		pr_err("/proc/kallsyms is not founded!\n");
-		exit(-1);
-	}
+	if (!f)
+		return -errno;
 
-	proc_syms = malloc(size + 1);
-	cur = proc_syms;
+	data = malloc(size + 1);
+	if (!data) {
+		fclose(f);
+		return -ENOMEM;
+	}
+	cur = data;
 	while (true) {
 		size_t offset;
 
-		count = fread(cur, sizeof(char), size + proc_syms - cur, f);
+		count = fread(cur, sizeof(char), size + data - cur, f);
 		cur += count;
 		if (feof(f))
 			break;
+		if (ferror(f)) {
+			err = errno ? -errno : -EIO;
+			goto out;
+		}
 
-		offset = cur - proc_syms;
+		offset = cur - data;
 		size <<= 1;
-		tmp = realloc(proc_syms, size + 1);
+		tmp = realloc(data, size + 1);
+		if (!tmp) {
+			err = -ENOMEM;
+			goto out;
+		}
 		cur = tmp + offset;
-		proc_syms = tmp;
+		data = tmp;
 	}
 	*cur = '\0';
+	proc_syms = data;
+out:
 	fclose(f);
+	if (err)
+		free(data);
 
-	return 0;
+	return err;
 }
 
 static void sym_add_cache(struct sym_result *result)
@@ -215,18 +231,20 @@ struct sym_result *sym_parse_exact(__u64 pc)
 int sym_search_pattern(const char *name, char *result, bool partial)
 {
 	char func[128], module_name[128], search[128], *target;
-	int count;
+	int count, err;
 
-	sym_init_data();
+	err = sym_init_data();
+	if (err)
+		return err;
 
-	sprintf(search, " %s", name);
+	snprintf(search, sizeof(search), " %s", name);
 	target = proc_syms;
 	while (true) {
 		target = strstr(target, search);
 		if (!target)
 			break;
 
-		count = sscanf(target, " %s [%[^]]]", func, module_name);
+		count = sscanf(target, " %127s [%127[^]]]", func, module_name);
 		target++;
 
 		if (count <= 0)
@@ -251,18 +269,23 @@ int sym_get_types_bulk(const char **names, int nr, int *types)
 	struct sym_bulk_req *table[SYM_BULK_HASH_SIZE] = {};
 	const char *p, *line_end;
 	int unresolved = 0;
-	int i;
+	int err, i;
 
 	if (!names || !types || nr <= 0)
 		return -EINVAL;
 
-	sym_init_data();
+	for (i = 0; i < nr; i++)
+		types[i] = SYM_NOT_EXIST;
+
+	err = sym_init_data();
+	if (err)
+		return err;
+
 	/* generate a hash table for the symbol names. */
 	for (i = 0; i < nr; i++) {
 		struct sym_bulk_req *req;
 		unsigned int idx;
 
-		types[i] = SYM_NOT_EXIST;
 		if (!names[i] || !names[i][0])
 			continue;
 
@@ -350,6 +373,9 @@ int exec(char *cmd, char *output)
 	char buf[128];
 	int status;
 
+	if (!f)
+		return errno ? errno : EIO;
+
 	if (output)
 		output[0] = '\0';
 
@@ -360,6 +386,10 @@ int exec(char *cmd, char *output)
 	}
 
 	status = pclose(f);
+	if (status < 0)
+		return errno ? errno : EIO;
+	if (!WIFEXITED(status))
+		return EIO;
 	pr_debug("command: %s, status:%d\n", cmd, WEXITSTATUS(status));
 	return WEXITSTATUS(status);
 }
@@ -386,7 +416,7 @@ bool fsearch(FILE *f, char *target)
 {
 	char tmp[128];
 
-	while (fscanf(f, "%s", tmp) == 1) {
+	while (fscanf(f, "%127s", tmp) == 1) {
 		if (strstr(tmp, target))
 			return true;
 	}
@@ -395,41 +425,58 @@ bool fsearch(FILE *f, char *target)
 
 int kernel_version()
 {
-	int major, minor, patch;
+	int major = 0, minor = 0, patch = 0;
 	struct utsname buf;
 
-	uname(&buf);
-	sscanf(buf.release, "%d.%d.%d", &major, &minor, &patch);
+	if (uname(&buf))
+		return -errno;
+	if (sscanf(buf.release, "%d.%d.%d", &major, &minor, &patch) < 2)
+		return -EINVAL;
 
 	return kv_to_num(major, minor, patch);
 }
 
 char *kernel_version_str()
 {
-	static char version[16];
-	int major, minor, patch;
+	static char version[64];
+	int major = 0, minor = 0, patch = 0;
 	struct utsname buf;
 
-	uname(&buf);
-	sscanf(buf.release, "%d.%d.%d", &major, &minor, &patch);
-	sprintf(version, "%d.%d.%d", major, minor, patch);
+	if (uname(&buf) ||
+	    sscanf(buf.release, "%d.%d.%d", &major, &minor, &patch) < 2) {
+		snprintf(version, sizeof(version), "unknown");
+		return version;
+	}
+	snprintf(version, sizeof(version), "%d.%d.%d", major, minor, patch);
 
 	return version;
 }
 
-bool debugfs_mounted()
+const char *get_tracing_path()
 {
-	return simple_exec("mount | grep debugfs") == 0;
+	static const char *paths[] = {
+		"/sys/kernel/tracing",
+		"/sys/kernel/debug/tracing",
+	};
+	char events[128];
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(paths); i++) {
+		snprintf(events, sizeof(events), "%s/events", paths[i]);
+		if (access(paths[i], R_OK | X_OK) == 0 &&
+		    access(events, R_OK | X_OK) == 0)
+			return paths[i];
+	}
+
+	return NULL;
 }
 
-char *get_tracing_path()
+bool tracing_fs_available()
 {
-	if (file_exist("/sys/kernel/debug/tracing/trace"))
-		return "/sys/kernel/debug/tracing/";
-	return "/sys/kernel/tracing/";
+	return get_tracing_path() != NULL;
 }
 
-int kernel_get_config(char *name, char *output)
+int kernel_get_config(const char *name, char *output)
 {
 	char tmp[128] = {};
 	int err;

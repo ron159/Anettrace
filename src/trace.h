@@ -94,6 +94,7 @@ typedef struct trace {
 	int	ret_link_fd;
 	int	attach_btf_id;
 	int	attach_btf_fd;
+	const char *invalid_reason;
 	trace_group_t *parent;
 	struct analyzer *analyzer;
 } trace_t;
@@ -216,6 +217,8 @@ static inline void trace_set_invalid_reason(trace_t *t, const char *reason)
 	else
 		pr_debug("trace name=%s, prog=%s is made invalid\n",
 			 t->name, t->prog);
+	if (reason && !t->invalid_reason)
+		t->invalid_reason = reason;
 	t->status |= TRACE_INVALID;
 }
 

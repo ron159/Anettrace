@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -17,8 +18,22 @@ static bool drop_reason_inited = false;
 /* check if drop reason on kfree_skb is supported */
 bool drop_reason_support()
 {
-	return execf(NULL, "cat %s/events/skb/kfree_skb/format 2>/dev/null | grep NOT_SPECIFIED",
-		     get_tracing_path()) == 0;
+	const char *tracing_path = get_tracing_path();
+	char path[128];
+	FILE *f;
+	bool supported;
+
+	if (!tracing_path)
+		return false;
+
+	snprintf(path, sizeof(path), "%s/events/skb/kfree_skb/format",
+		 tracing_path);
+	f = fopen(path, "r");
+	if (!f)
+		return false;
+	supported = fsearch(f, "NOT_SPECIFIED");
+	fclose(f);
+	return supported;
 }
 
 static int parse_reason_enum()
@@ -27,8 +42,13 @@ static int parse_reason_enum()
 	int index = 0;
 	FILE *f;
 	char path[128];
+	const char *tracing_path = get_tracing_path();
 
-	sprintf(path, "%s/events/skb/kfree_skb/format", get_tracing_path());
+	if (!tracing_path)
+		return -ENOENT;
+
+	snprintf(path, sizeof(path), "%s/events/skb/kfree_skb/format",
+		 tracing_path);
 	f = fopen(path, "r");
 
 	if (!f || !fsearch(f, "__print_symbolic")) {

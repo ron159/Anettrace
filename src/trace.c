@@ -21,15 +21,10 @@ extern trace_ops_t tracing_ops;
 
 static bool trace_group_valid(trace_group_t *group)
 {
-	trace_list_t *trace_list;
 	trace_group_t *pos;
 
-	if (!list_empty(&group->traces)) {
-		list_for_each_entry(trace_list, &group->traces, list)
-			if (!trace_is_invalid(trace_list->trace))
-				return true;
-		return false;
-	}
+	if (!list_empty(&group->traces))
+		return true;
 
 	if (!list_empty(&group->children)) {
 		list_for_each_entry(pos, &group->children, list)
@@ -41,7 +36,7 @@ static bool trace_group_valid(trace_group_t *group)
 
 static void __print_trace_group(trace_group_t *group, int level)
 {
-	char prefix[32] = {}, buf[32], *name;
+	char prefix[32] = {}, buf[128], *name;
 	trace_list_t *trace_list;
 	trace_group_t *pos;
 	trace_t *trace;
@@ -71,14 +66,14 @@ print_trace:
 		trace = trace_list->trace;
 		status = trace->status;
 
-		if (trace_is_invalid(trace))
-			continue;
-
 		buf[0] = '\0';
 		if (status & TRACE_LOADED)
 			sprintf_end(buf, ",%s", PFMT_EMPH_STR("loaded"));
-		if (status & TRACE_INVALID)
+		if (status & TRACE_INVALID) {
 			sprintf_end(buf, ",%s", PFMT_WARN_STR("invalid"));
+			if (trace->invalid_reason)
+				sprintf_end(buf, ": %s", trace->invalid_reason);
+		}
 
 		if (trace->monitor)
 			sprintf_end(buf, ",%s", PFMT_WARN_STR("monitor"));
@@ -702,22 +697,63 @@ static void trace_prepare_ops()
 
 static int trace_sys_check(void)
 {
-	if (!debugfs_mounted()) {
-		pr_err("debugfs is not mounted! Please mount it with the "
-		       "command: mount -t debugfs debugfs "
-		       "/sys/kernel/debug\n");
+	const char *btf_path = trace_ctx.args.btf_path ?:
+		"/sys/kernel/btf/vmlinux";
+	char module_btf[32] = {};
+	int err;
+
+#ifdef ANETTRACE_ANDROID_TARGET
+	int kernel = kernel_version();
+
+	if (kernel < 0) {
+		pr_err("failed to determine the Android kernel version: %s\n",
+		       strerror(-kernel));
+		return kernel;
+	}
+	if (kernel < kv_to_num(6, 6, 0)) {
+		pr_err("Android tracing requires Linux 6.6 or newer; found %s. "
+		       "Use the legacy artifact on this device\n",
+		       kernel_version_str());
 		return -EOPNOTSUPP;
 	}
+#endif
 
-	if (!file_exist("/sys/kernel/btf/vmlinux") && !trace_ctx.args.btf_path) {
-		pr_err("BTF is not support by your kernel, please use the legancy version\n");
-		return -EOPNOTSUPP;
+	if (geteuid() != 0) {
+		pr_err("root privileges are required to load and attach BPF "
+		       "TRACING programs\n");
+		return -EPERM;
 	}
 
-	if (!kernel_has_config("DEBUG_INFO_BTF_MODULES")) {
-		pr_warn("DEBUG_INFO_BTF_MODULES not enabled, some infomation, "
-			"such as nf_tables, maybe incorrect\n");
+	if (access(btf_path, R_OK)) {
+		err = errno;
+		if (err == EACCES || err == EPERM)
+			pr_err("BTF exists but is not readable at %s: %s; check "
+			       "permissions and SELinux AVC logs\n",
+			       btf_path, strerror(err));
+		else
+			pr_err("readable vmlinux BTF was not found at %s: %s; "
+			       "use the legacy artifact on unsupported devices\n",
+			       btf_path, strerror(err));
+		return -err;
 	}
+
+	if (!tracing_fs_available())
+		pr_warn("tracefs/debugfs tracing events are unavailable; checked "
+			"/sys/kernel/tracing and /sys/kernel/debug/tracing. Core "
+			"fentry/fexit probing will continue, but drop/reset reason "
+			"decoding is disabled. Check mounts, permissions, and SELinux "
+			"AVC logs\n");
+	else
+		pr_debug("tracing filesystem is available at %s\n",
+			 get_tracing_path());
+
+	err = kernel_get_config("DEBUG_INFO_BTF_MODULES", module_btf);
+	if (err)
+		pr_verb("kernel config is unavailable; module BTF support will "
+			"be determined from runtime BTF discovery\n");
+	else if (module_btf[0] != 'y')
+		pr_warn("CONFIG_DEBUG_INFO_BTF_MODULES is not enabled; vmlinux "
+			"traces can still work, but module traces may be skipped\n");
 
 	return 0;
 }
@@ -731,8 +767,7 @@ static int trace_prepare()
 		goto err;
 
 	if (!tracing_ops.trace_supported()) {
-		pr_err("tracing (fentry/fexit) is not supported!\n");
-		err = -EINVAL;
+		err = -EOPNOTSUPP;
 		goto err;
 	}
 	set_trace_ops(&tracing_ops);
@@ -926,12 +961,14 @@ int trace_main()
 	err = trace_pre_load();
 	if (err) {
 		pr_err("failed to prepare load\n");
+		trace_ctx.ops->trace_close();
 		return err;
 	}
 
 	err = trace_ctx.ops->trace_load();
 	if (err) {
 		pr_err("failed to load bpf\n");
+		trace_ctx.ops->trace_close();
 		return err;
 	}
 

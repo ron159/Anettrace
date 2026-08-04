@@ -35,6 +35,10 @@ HOST_CFLAGS	:= -lbpf -lelf -lz $(LIBELF_ZSTD_FLAGS) -pthread -O2 -Wall \
 		   -Wno-deprecated-declarations -DVERSION=$(VERSION)	\
 		   -DRELEASE=$(RELEASE)
 
+ifneq ($(filter android-%,$(TARGET_PLATFORM)),)
+HOST_CFLAGS	+= -DANETTRACE_ANDROID_TARGET=1
+endif
+
 ifdef STATIC
 HOST_CFLAGS	+= -static
 endif

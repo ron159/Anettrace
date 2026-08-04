@@ -16,6 +16,45 @@ static int attach_trace_prog(trace_t *trace, int prog_fd,
 			     enum bpf_attach_type attach_type,
 			     int *link_fd);
 
+static int tracing_errno(int err)
+{
+	if (err < 0)
+		return -err;
+	if (err > 0)
+		return err;
+	return errno;
+}
+
+static void tracing_report_capability_error(const char *stage, int err)
+{
+	int code = tracing_errno(err);
+
+	switch (code) {
+	case EPERM:
+	case EACCES:
+		pr_err("%s failed: permission denied (%s); check root privileges, "
+		       "Linux capabilities, and SELinux AVC logs\n",
+		       stage, strerror(code));
+		break;
+	case EINVAL:
+	case EOPNOTSUPP:
+	case ENOSYS:
+		pr_err("%s failed: the kernel does not provide the required "
+		       "BPF TRACING capability (%s)\n", stage, strerror(code));
+		break;
+	case ENOENT:
+		pr_err("%s failed: required BTF data or target function was not "
+		       "found (%s)\n", stage, strerror(code));
+		break;
+	case 0:
+		pr_err("%s failed: BPF TRACING is not supported\n", stage);
+		break;
+	default:
+		pr_err("%s failed: %s (errno=%d)\n", stage, strerror(code), code);
+		break;
+	}
+}
+
 static int tracing_lookup_sym_type(const char **names, const int *types,
 				   int nr, const char *name)
 {
@@ -30,45 +69,59 @@ static int tracing_lookup_sym_type(const char **names, const int *types,
 	return SYM_NOT_EXIST;
 }
 
-static void tracing_prepare_symbols(const char **func_names, int func_nr,
-				    int *func_types)
+static int tracing_prepare_symbols(const char **func_names, int func_nr,
+				   int *func_types)
 {
 	int i;
 
 	if (!func_names || !func_types || func_nr <= 0)
-		return;
+		return 0;
 
 	for (i = 0; i < func_nr; i++)
 		func_types[i] = SYM_NOT_EXIST;
 
 	/* Extract symbol types for all targets in one pass from /proc/kallsyms. */
-	sym_get_types_bulk(func_names, func_nr, func_types);
+	return sym_get_types_bulk(func_names, func_nr, func_types);
 }
 
-
-/* check whether trampoline is supported by current arch */
-static bool tracing_arch_supported()
+static void tracing_check_arch_symbol()
 {
-	return simple_exec("cat /proc/kallsyms | "
-			   "grep arch_prepare_bpf_trampoline | "
-			   "grep T") == 0;
+	int type = sym_get_type("arch_prepare_bpf_trampoline");
+
+	if (type == SYM_KERNEL) {
+		pr_debug("arch_prepare_bpf_trampoline is visible in /proc/kallsyms\n");
+		return;
+	}
+
+	if (type < 0) {
+		pr_warn("cannot read /proc/kallsyms while checking the BPF "
+			"trampoline: %s; continuing with runtime BPF probes\n",
+			strerror(-type));
+		return;
+	}
+
+	pr_warn("arch_prepare_bpf_trampoline is not visible in /proc/kallsyms; "
+		"the symbol may be hidden, continuing with runtime BPF probes\n");
 }
 
 static bool tracing_trace_supported()
 {
-	/* TRACING is not supported, skip this handle */
-	if (!libbpf_probe_bpf_prog_type(BPF_PROG_TYPE_TRACING, NULL))
-		goto failed;
+	int err, supported;
 
-	if (!tracing_arch_supported()) {
-		pr_warn("trampoline is not supported, skip TRACING\n");
-		goto failed;
+	errno = 0;
+	supported = libbpf_probe_bpf_prog_type(BPF_PROG_TYPE_TRACING, NULL);
+	if (supported <= 0) {
+		err = supported < 0 ? supported : -errno;
+		if (!err)
+			err = -EOPNOTSUPP;
+		tracing_report_capability_error("BPF TRACING program type probe",
+						err);
+		return false;
 	}
 
+	tracing_check_arch_symbol();
+
 	return true;
-failed:
-	pr_verb("TRACING is not supported, trying others\n");
-	return false;
 }
 
 static bool tracing_support_feat_args_ext()
@@ -98,7 +151,8 @@ static int tracing_trace_attach()
 
 	err = tracing__attach(skel);
 	if (err) {
-		pr_err("failed to attach tracing programs: %d\n", err);
+		tracing_report_capability_error("attaching built-in tracing programs",
+						err);
 		return err;
 	}
 
@@ -346,10 +400,13 @@ static int attach_trace_prog(trace_t *trace, int prog_fd,
 	*link_fd = bpf_link_create(prog_fd, trace->attach_btf_fd,
 				   attach_type, &opts);
 	if (*link_fd < 0) {
+		int err = errno;
+
 		pr_err("failed to attach prog for trace %s: btf_id=%d btf_fd=%d attach_type=%d fd=%d %s\n",
 		       trace->name, trace->attach_btf_id, trace->attach_btf_fd,
-		       attach_type, prog_fd, strerror(errno));
-		return -errno;
+		       attach_type, prog_fd, strerror(err));
+		tracing_report_capability_error("attaching tracing program", err);
+		return -err;
 	}
 
 	return 0;
@@ -399,9 +456,9 @@ static int tracing_trace_load()
 	trace_t *trace;
 	int err = 0;
 
-	if (tracing__load(skel)) {
-		pr_err("failed to load tracing-based eBPF\n");
-		err = -1;
+	err = tracing__load(skel);
+	if (err) {
+		tracing_report_capability_error("loading tracing BPF object", err);
 		goto err;
 	}
 	pr_debug("eBPF is loaded successfully\n");
@@ -433,6 +490,7 @@ static int tracing_trace_load()
 			if (fd < 0) {
 				pr_err("failed to load tp prog %s: %d\n",
 				       trace->prog, fd);
+				tracing_report_capability_error("loading tp_btf program", fd);
 				err = fd;
 				goto err;
 			}
@@ -453,6 +511,7 @@ static int tracing_trace_load()
 			if (fd < 0) {
 				pr_err("failed to load prog %s: %d\n",
 				       trace->prog, fd);
+				tracing_report_capability_error("loading fentry program", fd);
 				err = fd;
 				goto err;
 			}
@@ -469,6 +528,7 @@ static int tracing_trace_load()
 			if (fd < 0) {
 				pr_err("failed to load ret prog %s: %d\n",
 				       trace->ret_prog, fd);
+				tracing_report_capability_error("loading fexit program", fd);
 				err = fd;
 				goto err;
 			}
@@ -599,6 +659,7 @@ static void tracing_prepare_traces()
 	const char *func_names[TRACE_MAX] = {};
 	int func_types[TRACE_MAX] = {};
 	int func_nr = 0;
+	int symbols_err;
 	trace_t *trace;
 
 	pr_debug("begin to resolve kernel symbol...\n");
@@ -613,7 +674,17 @@ static void tracing_prepare_traces()
 			break;
 		func_names[func_nr++] = trace->name;
 	}
-	tracing_prepare_symbols(func_names, func_nr, func_types);
+	symbols_err = tracing_prepare_symbols(func_names, func_nr, func_types);
+	if (symbols_err) {
+		if (symbols_err == -EPERM || symbols_err == -EACCES)
+			pr_warn("/proc/kallsyms is not readable (%s); module traces "
+				"will be resolved from BTF when possible\n",
+				strerror(-symbols_err));
+		else
+			pr_warn("failed to read /proc/kallsyms (%s); continuing "
+				"with BTF-only trace resolution\n",
+				strerror(-symbols_err));
+	}
 
 	/* make the programs that target kernel function can't be found
 	 * load manually.
@@ -646,22 +717,25 @@ static void tracing_prepare_traces()
 
 		if (btf_get_trace_args_local(name, &trace->arg_count,
 					     &skb_idx, &sk_idx,
-					     &btf_id, &btf_fd)) {
-			if (tracing_lookup_sym_type(func_names,
-						    func_types,
-						    func_nr,
-						    name) == SYM_MODULE &&
-			    !btf_get_trace_args(name, &trace->arg_count,
-						&skb_idx, &sk_idx,
-						&btf_id, &btf_fd)) {
-				/* fallback to module BTF for module symbols */
-			} else {
-				pr_verb("kernel function %s not founded, skipped\n",
-					name);
-				trace_set_invalid_reason(trace, "not found");
-				missing++;
-				continue;
-			}
+					     &btf_id, &btf_fd) &&
+		    btf_get_trace_args(name, &trace->arg_count,
+				       &skb_idx, &sk_idx, &btf_id, &btf_fd)) {
+			int sym_type = tracing_lookup_sym_type(func_names,
+						       func_types, func_nr, name);
+
+			if (symbols_err)
+				trace_set_invalid_reason(trace,
+					"not found in vmlinux/module BTF; kallsyms unavailable");
+			else if (sym_type == SYM_MODULE)
+				trace_set_invalid_reason(trace,
+					"module symbol has no readable module BTF");
+			else
+				trace_set_invalid_reason(trace,
+					"not found in vmlinux/module BTF");
+			pr_verb("kernel trace %s was not found in readable BTF, skipped\n",
+				name);
+			missing++;
+			continue;
 		}
 		trace->skb = skb_idx;
 		trace->sk = sk_idx;
@@ -690,7 +764,8 @@ static void tracing_prepare_traces()
 		trace_for_each(trace) {
 			if (trace->arg_count > 6) {
 				pr_warn("\t%s\n", trace->name);
-				trace_set_invalid(trace);
+				trace_set_invalid_reason(trace,
+					"kernel lacks extended tracing arguments");
 			}
 		}
 	}

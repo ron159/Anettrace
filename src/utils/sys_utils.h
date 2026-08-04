@@ -45,11 +45,12 @@ int	liberate_l();
 bool	fsearch(FILE *f, char *target);
 int	kernel_version();
 char	*kernel_version_str();
-bool	debugfs_mounted();
+bool	tracing_fs_available();
 bool	kernel_has_config(char *name);
+int	kernel_get_config(const char *name, char *output);
 int	kernel_hz();
 u32	file_inode(char *path);
-char	*get_tracing_path();
+const char *get_tracing_path();
 
 static inline int sym_get_type(const char *name)
 {
