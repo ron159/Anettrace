@@ -13,6 +13,10 @@ anettrace - Linux系统下的网络报文跟踪、网络问题诊断工具
 `anettrace`是基于eBPF的集网络报文跟踪（故障定位）、网络故障诊断、网络异常监控于一体的网
 络工具集，旨在能够提供一种更加高效、易用的方法来解决复杂场景下的网络问题。
 
+Android tracing 版本面向 rooted/userdebug Android arm64 6.6+，要求 root、可读的
+`/sys/kernel/btf/vmlinux` 以及可用的 BPF TRACING/fentry/fexit/trampoline。能力门禁失败时
+应使用文件名明确包含 `legacy` 的独立制品，不会在进程内自动切换 KPROBE 引擎。
+
 ## OPTIONS
 
 ### 过滤类参数
@@ -49,7 +53,10 @@ anettrace - Linux系统下的网络报文跟踪、网络问题诊断工具
   仅显示当前网络命名空间的报文，等价于`--netns <当前网络命名空间的inode>`
 
 `--pid` *pid*
-  根据进程号进行过滤
+  根据当前线程 ID（TID）过滤；为保持兼容沿用历史 `--pid` 名称，不按 TGID 过滤
+
+`--uid` *uid*
+  根据当前 UID 过滤，包括 UID 0
 
 `--min-latency` *latency in ms*
   根据报文的寿命进行过滤，仅打印处理时长超过该值的报文，单位为us。该参数在`basic`和
@@ -130,10 +137,20 @@ anettrace - Linux系统下的网络报文跟踪、网络问题诊断工具
   显示被跟踪的内核函数的返回值
 
 `--detail`
-  显示跟踪详细信息，包括当前的进程、网口和CPU等信息
+  显示 TID、TGID、UID、网口和 CPU 等详细信息，并自动显示 IPv4 ID 与 skb mark
 
 `--date`
-  以时间格式打印（以2022-10-24 xx:xx:xx.xxxxxx格式打印），而不是时间戳
+  以本地完整日期时间 `[YYYY-MM-DD HH:MM:SS.ffffff]` 输出。默认模式为本地时间
+  `[HH:MM:SS.ffffff]`
+
+`--timestamp`
+  以原始单调时间戳 `[seconds.ffffff]` 输出，不能与 `--date` 同时使用
+
+`--id`
+  以十六进制显示 IPv4 ID；IPv6 不显示该字段
+
+`--mark`
+  以十六进制显示 IPv4/IPv6 skb mark
 
 `-c,--count`
   指定要跟踪的报文个数c，达到该个数后自动退出
@@ -416,4 +433,3 @@ Menglong Dong
 ## SEE ALSO
 
 dropreason(8)
-

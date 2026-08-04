@@ -1,4 +1,9 @@
-# nettrace - 网络诊断工具
+# Anettrace - Android/Linux 网络诊断工具
+
+Anettrace 基于 [OpenCloudOS/nettrace](https://github.com/OpenCloudOS/nettrace) 的
+`btf` 分支演进，保留上游 eBPF 网络跟踪与诊断能力，并补充 Android arm64 静态制品、
+UID/TID/TGID、UID 过滤、skb mark、本地时间和 IPv4 ID 支持。当前产品版本为 `0.4.0`，
+`anettrace --version` 会同时输出冻结的上游 BTF commit、构建类型与目标平台。
 
 ## 一、工具简介
 
@@ -12,46 +17,74 @@
 - `BCC`：功能单一，临时编写`BCC`程序跟踪效率低，需要对内核有一定了解，入手难
 - `dropwatch`：功能单一，只能查看网络丢包问题，且无法得到丢包原因和解决方案
 
-在此背景下，笔者结合多年的Kernel网络协议栈故障定位经验，基于eBPF开发了Linux环境下网络故障定位工具集——`nettrace`。
+本项目沿用上游基于 eBPF 的网络故障定位能力，并将 Android tracing 适配作为独立产品线维护。
 
 ### 1.2 功能介绍
 
-`nettrace`是一款基于eBPF的集网络报文跟踪（故障定位）、网络故障诊断、网络异常监控于一体的网络工具集，旨在能够提供一种更加高效、易用的方法来解决复杂场景下的网络问题。目前，其实现的功能包括：
+`anettrace`是一款基于eBPF的集网络报文跟踪（故障定位）、网络故障诊断、网络异常监控于一体的网络工具集，旨在能够提供一种更加高效、易用的方法来解决复杂场景下的网络问题。目前，其实现的功能包括：
 
 - 网络报文跟踪：跟踪网络报文从进入到内核协议栈到释放/丢弃的过程中在内核中所走过的路径，实现报文整个生命周期的监控，并采集生命周期各个阶段的事件、信息。通过观察报文在内核中的路径，对于有一定内核协议栈经验的人来说可以快速、有效地发现网络问题。
 - 网络故障诊断：将以往的经验集成到工具的知识库，通过知识匹配的方式来主动诊断当前网络故障，给出诊断结果以及修复建议。该功能入手简单、易用性强，无需过多的网络经验即可进行网络问题定位。
 - 网络异常监控：常态化地部署到生产环境中，主动地发现、上报环境上的网络异常。
-- `droptrace`：用于跟踪、监控系统中的丢包事件的工具，点击[这里](docs/droptrace.md)查看详情介绍。该功能已被遗弃，可以使用`nettrace --drop`实现相同的功能。
+- `droptrace`：用于跟踪、监控系统中的丢包事件的工具，点击[这里](docs/droptrace.md)查看详情介绍。该功能已被遗弃，可以使用`anettrace --drop`实现相同的功能。
 - 性能分析：通过跟踪协议栈处理延迟、TCP RTT等信息进行网络性能分析。
 
-## 二、编译安装
+## 二、运行要求与构建
 
-nettrace是采用C语言编写的基于eBPF（libbpf）的命令行工具，支持通过RPM/DEB包、二进制包或源码编译方式安装。当前版本仅支持BTF内核环境（即`/sys/kernel/btf/vmlinux`可用）。
+Anettrace 是采用 C 语言编写的 eBPF（libbpf）命令行工具。当前 tracing 版本面向
+rooted/userdebug Android arm64 6.6+ 和支持 BTF 的 Linux，不包含 KPROBE 引擎。
 
-### 2.1 RPM/DEB安装
+### 2.1 Android tracing 制品
 
-对于支持BTF特性（内核版本 >= 5.3，并且配置了`CONFIG_DEBUG_INFO_BTF=y`）的内核，可以直接下载[releases](https://github.com/OpenCloudOS/nettrace/releases)中编译好的`nettrace-xxx-1.btf.x86_64.rpm`、`nettrace-xxx-1.btf.x86_64.deb`安装包进行安装使用。对于OpenCloudOS/TencentOS系统，可以直接使用yum命令来进行在线安装：
+Android CI 生成以下互不覆盖的 tracing 文件：
 
-```shell
-sudo yum install nettrace
+```text
+anettrace-0.4.0-android-arm64-tracing.tar.bz2
+anettrace-0.4.0-android-arm64-tracing.tar.bz2.sha256
 ```
 
-也可以直接从[releases](https://github.com/OpenCloudOS/nettrace/releases)中下载对应的RPM/DEB安装包，手动进行安装。
+CI 会在上传后重新下载制品，并再次校验 SHA-256、AArch64 架构、无 `INTERP` 和无
+`NEEDED`。正式发布前还必须在真实目标设备完成下述设备测试；CI 成功不等于设备验证完成。
 
-### 2.2 二进制下载
+运行要求：
 
-直接从[releases](https://github.com/OpenCloudOS/nettrace/releases)下载编译好的二进制包也是可以的，[releases](https://github.com/OpenCloudOS/nettrace/releases)中的`tar.bz2`格式的压缩包即为二进制程序。由于里面的工具采用的都是静态编译的方式，因此在内核版本支持的情况下，都是可以直接下载解压后运行的。**注意**：运行环境需要支持BTF。
+- root 权限；SELinux 必须允许 BPF program load/link 和所需内核文件访问。
+- 可读的 `/sys/kernel/btf/vmlinux`。
+- 内核支持 BPF TRACING、fentry/fexit 和 trampoline；首发承诺范围为 Android 6.6+。
+- tracefs/debugfs 不可用时核心 fentry/fexit 仍可继续，但 drop/reset reason 会降级。
+- vendor 模块缺少模块 BTF 时跳过相应 trace，并在日志和 `anettrace -t '?'` 中说明原因。
 
-### 2.3 手动编译
+能力门禁失败时应改用独立的
+`anettrace-<version>-android-arm64-legacy.tar.bz2`，不得用 tracing 制品覆盖 legacy
+制品，也不会在同一进程内自动切换旧 KPROBE 引擎。正式 Release 必须明确提供已验证 legacy
+制品的下载位置与 checksum。
 
-下面介绍如何在CentOS、Ubuntu等环境上进行nettrace源码编译和安装。
+设备侧最小验证：
+
+```shell
+su -c '/data/local/tmp/anettrace -t "?" --debug'
+su -c '/data/local/tmp/android-smoke.sh /data/local/tmp/anettrace'
+```
+
+第二条命令使用仓库中的 `tests/android-smoke.sh`，会把证据保存到
+`/data/local/tmp/anettrace-smoke`。
+
+### 2.2 Linux 上游支持
+
+Linux BTF 构建和完整的 `tests/selftests.sh` 由 CI 验证。上游项目的 RPM/DEB 与历史发布可在
+[OpenCloudOS/nettrace releases](https://github.com/OpenCloudOS/nettrace/releases) 获取；
+这些上游包不是 Anettrace Android tracing/legacy 制品。
+
+### 2.3 手动构建
+
+下面介绍如何在 CentOS、Ubuntu 等 Linux 环境构建 Anettrace。
 
 #### 2.3.1 依赖安装
 
 本工具在编译时依赖`libelf`、`libbpf`、`bpftool`、`clang`、`gcc`和`make`。
 
 **注意事项**：
-1. `libbpf`版本要求：`>= v1.4.0`。nettrace使用了`bpf_core_cast()`，该宏在`libbpf v1.4.0`引入（参考：https://github.com/libbpf/libbpf/releases/tag/v1.4.0）。
+1. `libbpf`版本要求：`>= v1.4.0`。anettrace使用了`bpf_core_cast()`，该宏在`libbpf v1.4.0`引入（参考：https://github.com/libbpf/libbpf/releases/tag/v1.4.0）。
 
     ```shell
     pkg-config --modversion libbpf
@@ -82,11 +115,11 @@ sudo yum install python3-yaml elfutils-devel elfutils-devel-static libbpf-devel 
 
 #### 2.3.2 编译
 
-直接下载nettrace的源码即可进行编译安装：
+直接下载 Anettrace 源码即可构建：
 
 ```shell
-git clone https://github.com/OpenCloudOS/nettrace.git
-cd nettrace
+git clone https://github.com/ron159/Anettrace.git
+cd Anettrace
 make all
 ```
 
@@ -96,11 +129,11 @@ make all
 
 ## 三、使用方法
 
-nettrace是用来跟踪内核报文和诊断网络故障的，在进行报文跟踪时可以使用一定的过滤条件来跟踪特定的报文。其基本命令行参数为：
+anettrace是用来跟踪内核报文和诊断网络故障的，在进行报文跟踪时可以使用一定的过滤条件来跟踪特定的报文。其基本命令行参数为：
 
 ```
-$ nettrace -h
-nettrace: a tool to trace skb in kernel and diagnose network problem
+$ anettrace -h
+anettrace: a tool to trace skb in kernel and diagnose network problem
 
 Usage:
     -s, --saddr      filter source ip/ipv6 address
@@ -112,7 +145,8 @@ Usage:
     -p, --proto      filter L3/L4 protocol, such as 'tcp', 'arp'
     --netns          filter by net namespace inode
     --netns-current  filter by current net namespace
-    --pid            filter by current process id(pid)
+    --pid            filter by current thread id (legacy --pid semantics)
+    --uid            filter by current user id(uid), including uid 0
     --min-latency    filter by the minial time to live of the skb in us
     --pkt-len        filter by the IP packet length (include header) in byte
     --tcp-flags      filter by TCP flags, such as: SAPR
@@ -136,10 +170,13 @@ Usage:
                      show latency by statistics
 
     -t, --trace      enable trace group or trace. Some traces are disabled by default, use "all" to enable all
-    --force          skip some check and force load nettrace
+    --force          skip some check and force load anettrace
     --ret            show function return value
     --detail         show extern packet info, such as pid, ifname, etc
-    --date           print timestamp in date-time format
+    --date           print local date and time
+    --timestamp      print the raw monotonic timestamp
+    --id             show IPv4 id in hexadecimal
+    --mark           show skb mark in hexadecimal
     -c, --count      exit after receiving count packets
     --hooks          print netfilter hooks if dropping by netfilter
     --tiny-show      set this option to show less infomation
@@ -154,17 +191,21 @@ Usage:
 
     -v               show log information
     --debug          show debug information
+    --libbpf-debug   show libbpf debug information
+    --bpf-debug      compatibility alias for --libbpf-debug
     -h, --help       show help information
-    -V, --version    show nettrace version
+    -V, --version    show anettrace version
 ```
 
 **过滤类参数**
 
-参数`s/d/addr/S/D/port/p/pid`用于进行报文的过滤，可以通过IP地址（包括IPv6地址）、端口、协议等属性进行过滤。其他参数的用途包括：
+参数`s/d/addr/S/D/port/p/pid/uid`用于进行报文过滤，可以通过 IP 地址（包括 IPv6
+地址）、端口、协议、线程 ID 或 UID 等属性进行过滤。其他参数的用途包括：
 
 - `netns`：根据网络命名空间进行过滤，该参数后面跟的是网络命名空间的inode，可以通过`ls -l /proc/<pid>/ns/net`来查看对应进程的网络命名空间的inode号
 - `netns-current`：仅显示当前网络命名空间的报文，等价于`--netns 当前网络命名空间的inode`
-- `pid`：根据当前处理报文的进程的ID进行过滤
+- `pid`：保留历史语义，实际根据当前线程 ID（TID）过滤，不是 TGID
+- `uid`：根据当前 UID 过滤；是否启用过滤由独立标志记录，因此 `--uid 0` 有效
 - `min-latency`：根据报文的寿命进行过滤，仅打印处理时长超过该值的报文，单位为us。该参数仅在`默认`/`diag`/`latency`模式下可用。
 - `pkt-len`：根据IP报文总长度（包括报文头部）来进行过滤
 - `tcp-flags`：根据TCP报文的flags进行过滤，支持的flag包括：SAPRF
@@ -191,8 +232,12 @@ Usage:
 
 - `t/trace`：要启用的跟踪模块，默认启用所有
 - `ret`：跟踪和显示内核函数的返回值
-- `detail`：显示跟踪详细信息，包括当前的进程、网口和CPU等信息
-- `date`：以时间格式打印（以2022-10-24 xx:xx:xx.xxxxxx格式打印），而不是时间戳
+- `detail`：显示 TID、TGID、UID、网口和 CPU 等详细信息，并自动显示 IPv4 ID 与 skb mark
+- 默认时间：以本地时间 `[HH:MM:SS.ffffff]` 输出
+- `date`：以本地完整日期时间 `[YYYY-MM-DD HH:MM:SS.ffffff]` 输出
+- `timestamp`：以原始单调时间戳 `[seconds.ffffff]` 输出；不能与 `--date` 同时使用
+- `id`：以十六进制显示 IPv4 ID；IPv6 不显示该字段
+- `mark`：以十六进制显示 IPv4/IPv6 skb mark
 - `c/count`：指定要跟踪的报文个数c，达到该个数后自动退出
 - `hooks`：结合netfilter做的适配，详见下文
 - `tiny-show`：精简显示，只显示第一个报文的内容，用于提升性能
@@ -204,14 +249,18 @@ Usage:
 - `rate-limit`：进行限速，限制每秒事件输出的数量
 - `btf-path`：手动指定BTF文件的路径
 
+普通和详细输出都会显示 `tid/pid`（其中 `pid` 为 TGID）与 UID。`--tiny-show` 为保持紧凑，
+不输出这组身份字段。下列上游示例保留了原始单调时间戳作为输出结构参考；当前版本如需相同
+前缀，应在命令中增加 `--timestamp`。
+
 ### 3.1 生命周期
 
-默认情况下，`nettrace`会跟踪报文从进入到内核协议栈到离开（销毁）的过程。对于有一定内核网络经验的人来说，可以通过报文的内核路径来快速推断出当前的网络问题，达到快速定位的目的。
+默认情况下，`anettrace`会跟踪报文从进入到内核协议栈到离开（销毁）的过程。对于有一定内核网络经验的人来说，可以通过报文的内核路径来快速推断出当前的网络问题，达到快速定位的目的。
 
 #### 3.1.1 跟踪ping报文
 
 ```shell
-sudo ./nettrace -p icmp --saddr 169.254.128.15
+sudo ./anettrace -p icmp --saddr 169.254.128.15
 begin trace...
 ***************** e8fbc700,e8fbdc00 ***************
 [1273445.360831] [dev_gro_receive     ] ICMP: 169.254.128.15 -> 172.27.0.6 ping request, seq: 54754
@@ -240,7 +289,7 @@ begin trace...
 #### 3.1.2 显示详细信息
 
 ```shell
-sudo ./nettrace -p icmp --saddr 169.254.128.15 --detail
+sudo ./anettrace -p icmp --saddr 169.254.128.15 --detail
 begin trace...
 ***************** e8fbcd00,e8fbcc00 ***************
 [1273732.110173] [e8fbcd00][dev_gro_receive     ][cpu:40 ][ens5 ][pid:0      ][swapper/40  ] ICMP: 169.254.128.15 -> 172.27.0.6 ping request, seq: 56464
@@ -271,7 +320,7 @@ begin trace...
 在对报文进行跟踪时，一旦报文被跟踪起来（命中过滤条件），那么这个报文即使内容发生了变化也会持续被跟踪，直到报文被释放。下面是NAT场景下的跟踪，可以看到报文的源地址由`192.168.122.8`通过SNAT被修改成了`9.135.224.89`，但是报文依然被跟踪到了：
 
 ```shell
-$ sudo ./nettrace -p icmp --addr 192.168.122.8
+$ sudo ./anettrace -p icmp --addr 192.168.122.8
 begin tracing......
 <------------------- skb: 8f02f900 ---------------------->
 463697.331957: [netif_receive_skb]: ICMP: 192.168.122.8 -> 10.123.119.98, ping request   , seq: 0
@@ -298,7 +347,7 @@ begin tracing......
 可以通过`--trace-stack`来指定需要进行内核堆栈打印的`traces`，使用方式与`--trace`完全一致。出于性能的考虑，尽量不要一次跟踪多个内核函数的堆栈。基本用法：
 
 ```shell
-$ sudo ./nettrace -p icmp --trace-stack consume_skb,icmp_rcv
+$ sudo ./anettrace -p icmp --trace-stack consume_skb,icmp_rcv
 begin trace...
 ***************** 2cafd200,2cafdc00 ***************
 [2846531.810609] [nf_hook_slow        ] ICMP: 127.0.0.1 -> 127.0.0.1 ping reply, seq: 3, id: 51956 *ipv4 in chain: OUTPUT*
@@ -368,7 +417,7 @@ Call Stack:
 默认情况下，每个被跟踪的函数都会尝试进行报文的解析和匹配，这个是比较产生较大的开销的。在网络带宽较大的情况下，会严重影响系统的性能。最坏的情况下，可能会导致性能下降80%。为了提升跟踪所产生的开销，可以指定进行报文匹配的函数。例如，对于收包阶段，可以指定`netif_receive_skb`作为报文匹配函数。由于GRO相关的函数调用频率比较高，如果定位的问题和GRO无关，可以将GRO的两个函数从跟踪列表中排出掉：
 
 ```shell
-./nettrace --trace-matcher netif_receive_skb --trace-exclude napi_gro_receive_entry,dev_gro_receive -p tcp --port 12345 --tcp-flags S
+./anettrace --trace-matcher netif_receive_skb --trace-exclude napi_gro_receive_entry,dev_gro_receive -p tcp --port 12345 --tcp-flags S
 ```
 
 使用这种方式进行跟踪所产生的性能开销要小得多，预计在10-20%的样子。
@@ -378,7 +427,7 @@ Call Stack:
 精简显示模式下，除了第一个函数，其他函数上报的事件数据量都比较小，因此可以显著节省系统开销。在报文内容不被修改的情况下，可以使用这种方式：
 
 ```shell
-$ ./nettrace --tiny-show -p tcp --port 9999
+$ ./anettrace --tiny-show -p tcp --port 9999
 begin trace...
 ***************** 63618400,636184e8 ***************
 [11485.683405] [__tcp_transmit_skb  ] TCP: 127.0.0.1:39642 -> 127.0.0.1:9999 seq:1977307561, ack:0, flags:
@@ -421,7 +470,7 @@ begin trace...
 - `ERROR`：异常信息，报文发生了问题（比如被丢弃）。
 
 ```shell
-./nettrace -p icmp --diag --saddr 192.168.122.8
+./anettrace -p icmp --diag --saddr 192.168.122.8
 begin trace...
 ***************** ad356200 ***************
 [3445.575957] [netif_receive_skb] ICMP: 192.168.122.8 -> 10.123.119.98 ping request, seq: 0
@@ -456,7 +505,7 @@ begin trace...
 如果当前报文存在`ERROR`，那么工具会给出一定的诊断修复建议，并终止当前诊断操作。通过添加`diag-keep`可以在发生`ERROR`事件时不退出，继续进行跟踪分析。下面是发生异常时的日志：
 
 ```shell
-./nettrace -p icmp --diag --saddr 192.168.122.8
+./anettrace -p icmp --diag --saddr 192.168.122.8
 begin trace...
 ***************** b3c64f00 ***************
 [4049.295546] [netif_receive_skb] ICMP: 192.168.122.8 -> 10.123.119.98 ping request, seq: 0
@@ -503,10 +552,10 @@ end trace...
 
 #### 3.2.2 netfilter支持
 
-网络防火墙是网络故障、网络不同发生的重灾区，因此`netfilter`工具对`netfilter`提供了完美适配，包括老版本的`iptables-legacy`和新版本的`iptables-nft`。诊断模式下，`nettrace`能够跟踪报文所经过的`iptables`表和`iptables`链，并在发生由于iptables导致的丢包时给出一定的提示，上面的示例充分展现出了这部分。出了对iptables的支持，`nettrace`对整个netfilter大模块也提供了支持，能够显示在经过每个HOOK点时对应的协议族和链的名称。除此之外，为了应对一些注册到netfilter中的第三方内核模块导致的丢包问题，nettrace还可以通过添加参数`hooks`来打印出当前`HOOK`上所有的的钩子函数，从而深入分析问题：
+网络防火墙是网络故障、网络不同发生的重灾区，因此`netfilter`工具对`netfilter`提供了完美适配，包括老版本的`iptables-legacy`和新版本的`iptables-nft`。诊断模式下，`anettrace`能够跟踪报文所经过的`iptables`表和`iptables`链，并在发生由于iptables导致的丢包时给出一定的提示，上面的示例充分展现出了这部分。出了对iptables的支持，`anettrace`对整个netfilter大模块也提供了支持，能够显示在经过每个HOOK点时对应的协议族和链的名称。除此之外，为了应对一些注册到netfilter中的第三方内核模块导致的丢包问题，anettrace还可以通过添加参数`hooks`来打印出当前`HOOK`上所有的的钩子函数，从而深入分析问题：
 
 ```shell
-./nettrace -p icmp --diag --saddr 192.168.122.8 --hooks
+./anettrace -p icmp --diag --saddr 192.168.122.8 --hooks
 begin trace...
 ***************** aa054500 ***************
 [5810.702473] [netif_receive_skb] ICMP: 192.168.122.8 -> 10.123.119.98 ping request, seq: 943
@@ -555,12 +604,12 @@ end trace...
 
 #### 3.2.3 其他场景
 
-由于对`drop reason`内核特性进行了适配，因此对于支持`drop reason`的系统，基于`drop reason`本工具可以诊断70+种丢包问题。`nettrace`通过将网络诊断经验翻译成规则存储到规则库的方式来进行诊断分析，通过扩充规则配置文件的方式能够不断增强其诊断功能。目前，本工具已经集成了20+典型网络故障诊断功能，并且在实践中不断完善知识库（规则库）。
+由于对`drop reason`内核特性进行了适配，因此对于支持`drop reason`的系统，基于`drop reason`本工具可以诊断70+种丢包问题。`anettrace`通过将网络诊断经验翻译成规则存储到规则库的方式来进行诊断分析，通过扩充规则配置文件的方式能够不断增强其诊断功能。目前，本工具已经集成了20+典型网络故障诊断功能，并且在实践中不断完善知识库（规则库）。
 
 端口未监听导致的丢包：
 
 ```shell
-./nettrace --diag --diag-quiet
+./anettrace --diag --diag-quiet
 begin trace...
 ***************** 97730ee0 ***************
 [365673.326016] [ip_output           ] TCP: 127.0.0.1:40392 -> 127.0.0.1:9999 seq:3067626996, ack:0, flags:S
@@ -594,7 +643,7 @@ begin trace...
 XDP导致的丢包（XDP转发会给提示）：
 
 ```shell
-./nettrace -p icmp --diag --diag-quiet 
+./anettrace -p icmp --diag --diag-quiet
 begin trace...
 ***************** 015acc00 ***************
 [18490.607809] [netif_receive_skb] ICMP: 192.168.122.8 -> 10.123.119.98 ping request, seq: 0
@@ -622,7 +671,7 @@ analysis finished!
 
 ### 3.3 丢包监控
 
-使用命令`nettrace --drop`可以对系统中的丢包事件进行监控，对于支持内核特性`skb drop reason`的内核，这里还会打印出丢包原因。可以通过查看`/tracing/events/skb/kfree_skb/format`来判断当前系统是否支持该特性：
+使用命令`anettrace --drop`可以对系统中的丢包事件进行监控，对于支持内核特性`skb drop reason`的内核，这里还会打印出丢包原因。可以通过查看`/tracing/events/skb/kfree_skb/format`来判断当前系统是否支持该特性：
 
 ```shell
 cat /tracing/events/skb/kfree_skb/format 
@@ -645,7 +694,7 @@ print fmt: "skbaddr=%p protocol=%u location=%p reason: %s", REC->skbaddr, REC->p
 该模式下使用的效果与原先的`droptrace`完全相同，如下所示：
 
 ```shell
-nettrace --drop
+anettrace --drop
 begin trace...
 [142.097193] TCP: 162.241.189.135:57022 -> 172.27.0.6:22 seq:299038593, ack:3843597961, flags:AR, reason: NOT_SPECIFIED, tcp_v4_rcv+0x81
 [142.331798] TCP: 162.241.189.135:57022 -> 172.27.0.6:22 seq:299038593, ack:3843597961, flags:A, reason: NOT_SPECIFIED, tcp_v4_do_rcv+0x83
@@ -659,7 +708,7 @@ begin trace...
 同样可以使用`man dropreason`命令来查看对应的丢包原因的详细解释。对于不支持`skb drop reason`特性的内核，该模式下将不会打印丢包原因字段，效果如下所示：
 
 ```shell
-nettrace --drop
+anettrace --drop
 begin trace...
 [2016.965295] TCP: 162.241.189.135:45432 -> 172.27.0.6:22 seq:133152310, ack:2529234288, flags:AR, tcp_v4_rcv+0x50
 [2017.201315] TCP: 162.241.189.135:45432 -> 172.27.0.6:22 seq:133152310, ack:2529234288, flags:A, tcp_v4_do_rcv+0x70
@@ -675,7 +724,7 @@ begin trace...
 套接口跟踪在原理上与skb的basic模式很类似，只不过跟踪对象从skb换成了sock。常规的过滤参数，如ip、端口等，在该模式下都可以直接使用，基本用法如下所示：
 
 ```shell
-sudo ./nettrace -p tcp --port 9999 --sock
+sudo ./anettrace -p tcp --port 9999 --sock
 begin trace...
 [2157947.050509] [inet_listen         ] TCP: 0.0.0.0:9999 -> 0.0.0.0:0 info:(0 0)
 [2157958.364842] [__tcp_transmit_skb  ] TCP: 127.0.0.1:36562 -> 127.0.0.1:9999 info:(1 0)
@@ -705,7 +754,7 @@ begin trace...
 基本用法（在内核特性完全支持的情况下）：
 
 ```shell
-$ nettrace --monitor
+$ anettrace --monitor
 begin trace...
 [25.167980] [nft_do_chain        ] ICMP: 192.168.122.1 -> 192.168.122.9 ping request, seq: 1, id: 1523 *iptables table:filter, chain:INPUT* *packet is dropped by iptables/iptables-nft*
 [25.167996] [kfree_skb           ] ICMP: 192.168.122.1 -> 192.168.122.9 ping request, seq: 1, id: 1523, reason: NETFILTER_DROP, nf_hook_slow+0xa8
@@ -715,7 +764,7 @@ begin trace...
 监控模式下，也可以使用普通模式的下各种参数，如报文过滤、`--detail`详情显示等。默认情况下，monitor模式下不跟踪rtt。但是如果指定了`--filter-minrtt`或者`--filter-srtt`参数，那么就会跟踪rtt事件：
 
 ```shell
-./src/nettrace --monitor --filter-minrtt 10 
+./src/anettrace --monitor --filter-minrtt 10
 begin trace...
 [2651830.434898] [tcp_ack_update_rtt.isra.51] TCP: 127.0.0.1:14275 -> 127.0.0.1:62522 ESTABLISHED CA_Open info:(0 0) mem:(w0 r0) *srtt:8ms, rtt:40ms*
 [2651830.435267] [tcp_ack_update_rtt.isra.51] TCP: 10.37.80.82:22 -> 10.85.114.159:53493 ESTABLISHED CA_Open info:(0 0) mem:(w0 r0) *srtt:38ms, rtt:41ms*
@@ -734,7 +783,7 @@ begin trace...
 在特定场景下，如网络时延问题诊断的时候，我们可能要关注处理时长协议栈哪个环节处理比较耗时。此时，就需要根据报文的处理时长进行输出过滤。目前，是根据报文从被跟踪到，直到被释放的前一个函数来作为报文的处理时长的。这里没有考虑报文被释放的延迟，是因为内核里会存在“延迟批量销毁skb”的行为，影响延迟测量的准确性。下面的命令会过滤处理时长超过1ms的报文：
 
 ```shell
-$ sudo ./nettrace -p icmp --latency-show
+$ sudo ./anettrace -p icmp --latency-show
 begin trace...
 ***************** 723c4700 ***************
 [37898.357352] [netif_receive_skb] ICMP: 192.168.122.9 -> 192.168.122.1 ping request, seq: 3, id: 9573
@@ -755,7 +804,7 @@ begin trace...
 total latency: 0.071ms
 ```
 
-可以使用`--min-latency`来根据协议栈处理耗时对报文进行过滤，单位是us，例如：`nettrace -p icmp --min-latency 1000`，可过滤处理耗时超过1ms的报文。指定该参数的时候，会默认显示延迟信息。
+可以使用`--min-latency`来根据协议栈处理耗时对报文进行过滤，单位是us，例如：`anettrace -p icmp --min-latency 1000`，可过滤处理耗时超过1ms的报文。指定该参数的时候，会默认显示延迟信息。
 
 上面的这种方式可以显示协议栈各个处理环节的详细延迟信息，但是效率是比较低的，特别是在网络流量很大的时候。这时因为上面的模式下，是将每个匹配到的报文事件上送到用户态，在用户态程序中进行的延迟过滤。为了提升性能，可以使用延迟跟踪模式。这种模式产生的性能开销比较小，缺点是只能跟踪报文开始（第一次匹配到）到截止（释放前的函数）的耗时，不能查看各个环节的耗时。
 
@@ -764,13 +813,13 @@ total latency: 0.071ms
 跟踪报文被放到收包队列 -> 用户将报文从收包队列中取走的延迟。这部分延迟主要是由于用户态程序收包不及时导致的：
 
 ```shell
-nettrace -p tcp --latency -t tcp_queue_rcv,tcp_data_queue_ofo --trace-matcher tcp_queue_rcv,tcp_data_queue_ofo --latency-free --min-latency 1000
+anettrace -p tcp --latency -t tcp_queue_rcv,tcp_data_queue_ofo --trace-matcher tcp_queue_rcv,tcp_data_queue_ofo --latency-free --min-latency 1000
 ```
 
 跟踪网卡驱动收包报文 -> 放到套接口收包队列的延迟。这部分如果存在延迟，那说明是CPU处理的延迟：
 
 ```shell
-nettrace -p tcp --latency -t netif_receive_skb,tcp_queue_rcv,tcp_data_queue_ofo --trace-matcher netif_receive_skb --trace-free tcp_queue_rcv,tcp_data_queue_ofo --min-latency 1000
+anettrace -p tcp --latency -t netif_receive_skb,tcp_queue_rcv,tcp_data_queue_ofo --trace-matcher netif_receive_skb --trace-free tcp_queue_rcv,tcp_data_queue_ofo --min-latency 1000
 ```
 
 **发包阶段**
@@ -778,19 +827,19 @@ nettrace -p tcp --latency -t netif_receive_skb,tcp_queue_rcv,tcp_data_queue_ofo 
 跟踪报文放到发包队列 -> 报文开始发送，一般由nagle算法引发的报文聚合延迟。下面的命令会输出该阶段延迟超过1ms的报文：
 
 ```shell
-nettrace -p tcp --latency -t skb_entail,tcp_skb_entail,__tcp_transmit_skb,__tcp_retransmit_skb --trace-matcher skb_entail,tcp_skb_entail --trace-free __tcp_transmit_skb,__tcp_retransmit_skb --min-latency 1000
+anettrace -p tcp --latency -t skb_entail,tcp_skb_entail,__tcp_transmit_skb,__tcp_retransmit_skb --trace-matcher skb_entail,tcp_skb_entail --trace-free __tcp_transmit_skb,__tcp_retransmit_skb --min-latency 1000
 ```
 
 跟踪报文从传输层（TCP层）到网卡驱动层的延迟。这个中间有个qdisc，因此如果有延迟的话，可能是这块导致的：
 
 ```shell
-nettrace -p tcp --latency -t __ip_queue_xmit,dev_hard_start_xmit --trace-matcher __ip_queue_xmit --trace-free dev_hard_start_xmit --min-latency 1000
+anettrace -p tcp --latency -t __ip_queue_xmit,dev_hard_start_xmit --trace-matcher __ip_queue_xmit --trace-free dev_hard_start_xmit --min-latency 1000
 ```
 
 跟踪报文从放到发送队列到收到ack之间的延迟，这个延迟会受到nagle和延迟ACK的双重影响：
 
 ```shell
-nettrace -p tcp --latency -t skb_entail,tcp_skb_entail,tcp_rate_skb_delivered --trace-matcher skb_entail,tcp_skb_entail --trace-free tcp_rate_skb_delivered --min-latency 1000
+anettrace -p tcp --latency -t skb_entail,tcp_skb_entail,tcp_rate_skb_delivered --trace-matcher skb_entail,tcp_skb_entail --trace-free tcp_rate_skb_delivered --min-latency 1000
 ```
 
 默认情况下，是不会将报文被释放的延迟当作协议栈处理耗时的，可以通过加上`--latency-free`来将报文释放的耗时也考虑进去。这对于收报过程中的网络延迟分析比较有用，比如我们可以通过报文被释放的延迟来分析出来收包队列中的数据被用户态取走而释放的延迟。
@@ -798,7 +847,7 @@ nettrace -p tcp --latency -t skb_entail,tcp_skb_entail,tcp_rate_skb_delivered --
 除此之外，还可以通过指定`--latency-summary`来进行协议栈处理延迟的统计，如下所示：
 
 ```shell
-./nettrace --latency -p tcp --latency -t skb_entail,tcp_skb_entail,__tcp_transmit_skb,__tcp_retransmit_skb --trace-matcher skb_entail,tcp_skb_entail --trace-free __tcp_transmit_skb,__tcp_retransmit_skb --latency-summary
+./anettrace --latency -p tcp --latency -t skb_entail,tcp_skb_entail,__tcp_transmit_skb,__tcp_retransmit_skb --trace-matcher skb_entail,tcp_skb_entail --trace-free __tcp_transmit_skb,__tcp_retransmit_skb --latency-summary
 latency distribution:             21
                      0 -     1us: 0        0.0000
                      2 -     3us: 1        0.0476
@@ -829,7 +878,7 @@ end trace...
 rtt模式下可以去分析连接的RTT变化，支持根据rtt和srtt来进行过滤。这里是通过跟踪tcp_ack_update_rtt内核函数的调用来获取套接口的rtt更新事件的，默认情况下是统计RTT的分布情况的，使用方式如下：
 
 ```shell
-./nettrace --rtt
+./anettrace --rtt
 begin trace...
 rtt distribution:                 29
                      0 -     1ms: 12       0.4137
@@ -846,7 +895,7 @@ rtt distribution:                 29
 上面的信息分别代表：加上`--rtt-detail`参数，即可查看每个报文的rtt情况。在需要监控系统中超过一定阈值的RTT的情况下，比较适合使用这种方式。例如，下面是监控系统中数据传输延迟超过10ms的报文情况：
 
 ```shell
-./nettrace --sock -t tcp_ack_update_rtt --filter-srtt 10
+./anettrace --sock -t tcp_ack_update_rtt --filter-srtt 10
 begin trace...
 [11281.589357] [tcp_ack_update_rtt  ] TCP: 192.168.0.111:42890 -> 43.129.25.208:38000 ESTABLISHED CA_Open out:(p0 r0) unack:196997740 mem:(w0 r0) timer:(loss_probe, 0.176s) *rtt:152ms, rtt_min:152ms*
 [11281.802090] [tcp_ack_update_rtt  ] TCP: 192.168.0.111:42890 -> 43.129.25.208:38000 ESTABLISHED CA_Open out:(p0 r0) unack:196998022 mem:(w0 r0) timer:(loss_probe, 0.124s) *rtt:209ms, rtt_min:209ms*
