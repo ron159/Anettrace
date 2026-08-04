@@ -234,6 +234,11 @@ static int do_parse_args(int argc, char *argv[])
 			.desc = "print timestamp in date-time format",
 		},
 		{
+			.lname = "mark", .dest = &trace_args->show_mark,
+			.type = OPTION_BOOL,
+			.desc = "show skb mark in hexadecimal",
+		},
+		{
 			.lname = "count", .sname = 'c', .dest = &trace_args->count,
 			.type = OPTION_U32,
 			.desc = "exit after receiving count packets",
@@ -374,6 +379,8 @@ static int do_parse_args(int argc, char *argv[])
 	pkt_args->saddr_v6_enable = !!saddr_pf;
 	pkt_args->daddr_v6_enable = !!daddr_pf;
 	pkt_args->addr_v6_enable = !!addr_pf;
+	if (bpf_args->detail)
+		trace_args->show_mark = true;
 
 	return 0;
 err:

@@ -114,6 +114,7 @@ typedef struct trace_args {
 	bool monitor;
 	bool drop;
 	bool date;
+	bool show_mark;
 	bool drop_stack;
 	bool show_traces;
 	bool sock;

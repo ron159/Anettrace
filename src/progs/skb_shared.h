@@ -107,7 +107,11 @@ typedef struct {
 	u16 proto_l3;
 	u8 proto_l4;
 	u8 pad;
+	u32 mark;
 } packet_t;
+
+_Static_assert(__builtin_offsetof(packet_t, mark) + sizeof(u32) ==
+	       sizeof(packet_t), "packet mark must remain the final field");
 
 typedef struct {
 	u64	ts;

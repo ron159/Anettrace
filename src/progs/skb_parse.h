@@ -492,6 +492,7 @@ static inline int probe_parse_skb(struct sk_buff *skb, struct sock *sk,
 	ctx->network_header = skb->network_header;
 	ctx->mac_header = skb->mac_header;
 	ctx->data = skb->head;
+	pkt->mark = skb->mark;
 
 	if (skb_l2_check(ctx->mac_header)) {
 		int family;

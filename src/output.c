@@ -12,6 +12,7 @@
 #include "utils/sys_utils.h"
 
 #include "output.h"
+#include "trace.h"
 
 static time_t time_offset;
 static struct tm *convert_ts_to_date(u64 ts)
@@ -101,6 +102,8 @@ void ts_print_packet(char *buf, packet_t *pkt, char *minfo,
 		BUF_FMT("ether protocol: 0x%04x", pkt->proto_l3);
 		return;
 	}
+	if (trace_ctx.args.show_mark)
+		BUF_FMT("mark:0x%x ", pkt->mark);
 
 	l4 = pkt->proto_l4;
 	l4_desc = i2l4(l4);
