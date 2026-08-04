@@ -61,7 +61,17 @@ jobs:
               ! grep -q NEEDED output/anettrace.dynamic.txt
 
               src/anettrace --version
-              src/anettrace -h >/dev/null
+              src/anettrace -h > /tmp/anettrace-help.txt
+              grep -q -- "--uid" /tmp/anettrace-help.txt
+              grep -q -- "--timestamp" /tmp/anettrace-help.txt
+              grep -q -- "--id" /tmp/anettrace-help.txt
+              grep -q -- "--mark" /tmp/anettrace-help.txt
+              if src/anettrace --date --timestamp \
+                > /tmp/anettrace-conflict.txt 2>&1; then
+                exit 1
+              fi
+              grep -q -- "--date and --timestamp cannot be used together" \
+                /tmp/anettrace-conflict.txt
 
               archive=output/anettrace-0.4.0-android-arm64-tracing.tar.bz2
               test -f "${archive}"

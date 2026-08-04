@@ -2,7 +2,7 @@
 # Run README demo smoke tests directly on VM.
 #
 # Usage:
-#   ./tests/selftests.sh [-t case1,case2] [-s case3,case4] [-l] [-v] [./src/nettrace-x86] [/tmp/nettrace-selftest]
+#   ./tests/selftests.sh [-t case1,case2] [-s case3,case4] [-l] [-v] [./src/anettrace] [/tmp/anettrace-selftest]
 
 set -euo pipefail
 
@@ -46,8 +46,8 @@ while getopts ":t:s:lvh" opt; do
 done
 shift $((OPTIND - 1))
 
-BIN="${1:-./src/nettrace}"
-OUT="${2:-/tmp/nettrace-selftest}"
+BIN="${1:-./src/anettrace}"
+OUT="${2:-/tmp/anettrace-selftest}"
 mkdir -p "$OUT"
 
 pass=0

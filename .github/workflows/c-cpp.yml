@@ -18,9 +18,10 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y --no-install-recommends \
-          ca-certificates clang gcc libbpf-dev libelf-dev libzstd-dev llvm \
-          make pkg-config python3 python3-yaml wget zlib1g-dev
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          ca-certificates clang gcc iperf3 iproute2 iptables iputils-ping \
+          libbpf-dev libelf-dev libzstd-dev llvm make netcat-openbsd \
+          pkg-config python3 python3-yaml wget zlib1g-dev
     - name: Install libbpf 1.6.2
       run: |
         wget -q \
@@ -34,3 +35,13 @@ jobs:
         test "$(pkg-config --modversion libbpf)" = "1.6.2"
     - name: Build Linux BTF binary
       run: make all
+    - name: Run source contract checks
+      run: ./tests/source-contracts.sh
+    - name: Run timezone offset tests
+      run: |
+        gcc -O2 -Wall -Wextra -Isrc \
+          tests/timezone_offset_test.c src/utils/sys_utils.c \
+          -o /tmp/timezone-offset-test
+        /tmp/timezone-offset-test
+    - name: Run Linux BTF selftests
+      run: sudo ./tests/selftests.sh ./src/anettrace
