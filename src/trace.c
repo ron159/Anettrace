@@ -10,6 +10,7 @@
 #include "analysis.h"
 #include "dropreason.h"
 #include "rstreason.h"
+#include "perfetto_export.h"
 
 const char *cond_pre = "verlte() { [ \"$1\" = \"$2\" ] && echo 0 && return; "
 		       "[ \"$1\" = \"$(/bin/echo -e \"$1\\n$2\" | sort -V | head -n1)\" ] "
@@ -405,6 +406,9 @@ static void trace_check_sock_skb()
 	bool require_skb, require_sk;
 	trace_t *trace;
 
+	if (trace_ctx.bpf_args.perfetto)
+		return;
+
 	require_skb = mode_mask & TRACE_MODE_SKB_REQUIRE_MASK;
 	require_sk = mode_mask & TRACE_MODE_SOCK_REQUIRE_MASK;
 
@@ -418,6 +422,20 @@ static void trace_check_sock_skb()
 
 static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 {
+	static char perfetto_traces[] =
+		"sk_alloc,inet_sock_set_state,inet_listen,tcp_sendmsg_locked,"
+		"tcp_close,tcp_skb_entail,skb_entail,__tcp_transmit_skb,"
+		"__ip_queue_xmit,__ip_local_out,ip_output,ip_finish_output,"
+		"__dev_queue_xmit,dev_hard_start_xmit,consume_skb,kfree_skb,"
+		"__kfree_skb";
+
+	if (args->perfetto_events) {
+		bpf_args->perfetto = true;
+		bpf_args->detail = true;
+		if (!args->traces)
+			args->traces = perfetto_traces;
+		trace_set_ret(&trace_sk_alloc);
+	}
 	if (args->rtt_detail) {
 		args->traces = "tcp_ack_update_rtt";
 		args->sock = true;
@@ -511,6 +529,15 @@ static int trace_prepare_args()
 	bpf_args->__rate_limit = bpf_args->rate_limit;
 	bpf_args->has_filter = trace_has_pkt_filter() || bpf_args->pid ||
 		bpf_args->uid_enabled;
+	if (bpf_args->perfetto && !bpf_args->has_filter && !args->force) {
+		pr_err("--perfetto-events requires --uid, --pid, a packet filter, or --force\n");
+		goto err;
+	}
+	if (bpf_args->perfetto && bpf_args->uid_enabled && !bpf_args->uid &&
+	    !bpf_args->pid && !trace_has_pkt_filter() && !args->force) {
+		pr_err("--uid 0 is too broad for Perfetto capture; add --pid, a packet filter, or --force\n");
+		goto err;
+	}
 
 	trace_parse_traces(args->trace_exclude, 4);
 	if (args->trace_matcher) {
@@ -870,6 +897,10 @@ static int trace_bpf_load()
 
 static void trace_prepare_ops()
 {
+	if (trace_ctx.bpf_args.perfetto) {
+		trace_ctx.ops->trace_poll = perfetto_poll_handler;
+		return;
+	}
 	if (trace_ctx.bpf_args.func_stats) {
 		trace_ctx.ops->raw_poll = func_stats_poll_handler;
 		return;
@@ -922,11 +953,12 @@ err:
 
 static void trace_on_lost(void *ctx, int cpu, __u64 cnt)
 {
+	perfetto_export_lost(cpu, cnt);
 	pr_err("event losting happened, this can happen when the packets"
 	       "we trace are too many.\n"
 	       "Please add some filter argument (such as ip or port) to "
 	       "prevent this happens.\n");
-	exit(-1);
+	trace_stop();
 }
 
 static inline void poll_handler_wrap(void *ctx, int cpu, void *data,
@@ -935,6 +967,7 @@ static inline void poll_handler_wrap(void *ctx, int cpu, void *data,
 	if (trace_stopped())
 		return;
 
+	perfetto_export_event(data, cpu, size);
 	trace_ctx.ops->trace_poll(ctx, cpu, data, size);
 }
 

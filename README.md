@@ -20,6 +20,8 @@ Anettrace 是面向 Linux 与已 root Android 设备的 eBPF 网络诊断工具�
   本地时间或原始单调时间戳。
 - **线程流量视图**：`--traffic` 按 PID/TID、协议和本地/远端端点累计 TCP/UDP
   应用层收发字节。
+- **Perfetto 联合时间线**：记录 socket 创建/状态、TCP 发包路径的逐点时间戳和结束点，
+  与 Perfetto 的线程调度状态合并；不保存报文 payload。
 
 常用示例：
 
@@ -38,6 +40,10 @@ sudo ./src/anettrace --traffic --proto tcp --uid 1000 --interval 2
 
 # 查看当前内核实际可用的追踪目标
 sudo ./src/anettrace -t "?"
+
+# 仅导出指定 UID 的 socket/发包元数据，供 Perfetto 转换
+sudo ./src/anettrace --uid 10000 \
+  --perfetto-events /data/local/tmp/anettrace-events.jsonl
 ```
 
 完整参数以 `./src/anettrace --help` 为准。
@@ -82,6 +88,45 @@ perf event / map 快照 -> 用户态聚合、规则匹配、格式化输出
 
 `--traffic` 是独立统计通路：它在 TCP/UDP send/recv 的入口保存调用上下文，
 在返回点按真实返回值累计字节，因此显示的是可归属到线程的应用层流量，不包含纯内核转发流量。
+
+### Perfetto 联合时间线
+
+`--perfetto-events FILE` 启用最小数据导出，默认采集：
+
+- `sk_alloc` 的 socket 分配开始/结束；
+- `sock:inet_sock_set_state`、`tcp_close` 等 TCP 生命周期事件；
+- `tcp_sendmsg_locked` 到 TCP/IP、qdisc/NIC 发送点，以及 `consume_skb`/`kfree_skb`
+  结束点；
+- 每个事件的单调时钟时间、TID/TGID/UID、CPU、网卡和协议元数据。
+
+该模式不读取或写出包体；内核对象地址会先按本次会话加盐哈希。逻辑 `packet_id`
+使用五元组和 TCP seq/ack/flags 关联 skb clone 前后的发送阶段，匿名 `skb_id` 只用于观察
+buffer 生命周期。socket lifetime 在 `tcp_close` 或采集结束时闭合。
+
+为避免无边界的全机追踪，必须指定 `--uid`、`--pid`、地址/端口/协议过滤之一，或显式使用
+`--force`。单独 `--uid 0` 仍然过宽，必须再加 `--pid`/包过滤，或明确使用 `--force`。
+
+在已 root Android 设备上一键联合采集：
+
+```shell
+tools/capture_android_perfetto.sh \
+  --uid 10000 \
+  --duration 10 \
+  --anettrace src/anettrace \
+  --out output/perfetto-demo
+```
+
+脚本同时用系统 Perfetto 采集 `sched_switch`、`sched_waking` 和进程信息，再生成
+`anettrace-combined.pftrace`。把该文件拖入 [Perfetto UI](https://ui.perfetto.dev/) 后，
+发包时间点位于实际执行线程轨道，线程 Running/Runnable/Sleeping 状态来自系统 sched 数据。
+首个版本聚焦 TCP TX；UDP TX、socket cookie 归属和 Android netId/VPN/Fwmark 关联留待后续。
+
+只做离线转换时：
+
+```shell
+uv run --with perfetto==0.57.2 python tools/anettrace_to_perfetto.py \
+  anettrace-events.jsonl anettrace.pftrace
+```
 
 ## 运行要求
 

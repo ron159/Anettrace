@@ -76,6 +76,9 @@
 #define DEFINE_TP(name, cata, tp, skb_index, offset)		\
 	DEFINE_TP_INIT(name, cata, tp,				\
 		       .skb = *(void **)(ctx + offset))
+#define DEFINE_TP_SK(name, cata, tp, sk_index, offset)		\
+	DEFINE_TP_INIT(name, cata, tp,				\
+		       .sk = *(void **)(ctx + offset))
 #define TP_DEFAULT(name, cata, tp, skb, offset)			\
 	DEFINE_TP(name, cata, tp, skb, offset)			\
 	{							\

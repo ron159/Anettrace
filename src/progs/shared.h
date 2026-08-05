@@ -25,6 +25,7 @@ typedef struct {
 	bool func_stats;
 	bool match_mode;
 	bool latency_free;
+	bool perfetto;
 	u32  first_rtt;
 	u32  last_rtt;
 	u32  rate_limit;
@@ -164,6 +165,15 @@ DEFINE_EVENT(qdisc_event_t,
 DEFINE_EVENT(rtt_event_t,
 	event_field(u32, first_rtt)
 	event_field(u32, last_rtt)
+)
+
+DEFINE_EVENT(socket_create_event_t,
+	event_field(u64, start_ts)
+)
+
+DEFINE_EVENT(sock_state_event_t,
+	event_field(int, oldstate)
+	event_field(int, newstate)
 )
 
 #define MAX_EVENT_SIZE sizeof(detail_nf_hooks_event_t)

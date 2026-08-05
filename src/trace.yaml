@@ -453,6 +453,14 @@ children:
   - name: tcp-state
     desc: TCP socket state releated hooks
     children:
+    - name: sk_alloc/0
+      custom: true
+      default: false
+    - name: inet_sock_set_state/0
+      tp: sock/inet_sock_set_state
+      skoffset: 8
+      custom: true
+      default: false
     - name: inet_listen/0
       custom: true
       rules:

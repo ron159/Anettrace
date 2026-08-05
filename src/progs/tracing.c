@@ -98,6 +98,9 @@
 #define DEFINE_TP(name, cata, tp, skb_index, offset)		\
 	DEFINE_TP_INIT(name, cata, tp,				\
 		       .skb = ctx_get_arg(ctx, skb_index))
+#define DEFINE_TP_SK(name, cata, tp, sk_index, offset)		\
+	DEFINE_TP_INIT(name, cata, tp,				\
+		       .sk = ctx_get_arg(ctx, sk_index))
 #define TP_DEFAULT(name, cata, tp, skb_index, offset)		\
 	DEFINE_TP(name, cata, tp, skb_index, offset)		\
 	{							\

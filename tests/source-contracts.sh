@@ -46,6 +46,19 @@ require_text '(s32)PT_REGS_RC(ctx)' src/progs/traffic.c
 require_text 'TX_KB' src/traffic.c
 require_text 'LADDR:PORT' src/traffic.c
 require_text 'traffic_print_snapshot' src/traffic.c
+require_text '.lname = "perfetto-events"' src/anettrace.c
+require_text 'bool perfetto;' src/progs/shared.h
+require_text 'SEC("kprobe/sk_alloc")' src/progs/core.c
+require_text 'DEFINE_TP_SK(inet_sock_set_state' src/progs/core.c
+require_text 'perfetto_export_event(data, cpu, size);' src/trace.c
+require_text '\"type\":\"packet_event\"' src/perfetto_export.c
+require_text '\"skb_id\":' src/perfetto_export.c
+require_text '--uid 0 is too broad for Perfetto capture' src/trace.c
+require_text '--uid 0 is too broad for this helper; use --pid' \
+	tools/capture_android_perfetto.sh
+require_text 'sched/sched_switch' tools/capture_android_perfetto.sh
+require_text 'sched/sched_waking' tools/capture_android_perfetto.sh
+require_text 'perfetto==0.57.2' tools/requirements-perfetto.txt
 require_text 'anettrace-0.4.0-android-arm64-dual.tar.bz2' \
 	.github/workflows/build-android-arm64.yml
 

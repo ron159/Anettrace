@@ -170,10 +170,12 @@ static void analy_entry_output(analy_entry_t *entry, analy_entry_t *prev)
 		static char ifbuf[IF_NAMESIZE];
 		char *ifname = detail->ifname;
 
-		if (ifname[0] == '\0') {
+		if (ifname[0] == '\0' && detail->ifindex) {
 			ifname = if_indextoname(detail->ifindex, ifbuf);
 			ifname = ifname ?: "";
 		}
+		if (!ifname)
+			ifname = "";
 
 		sprintf(tinfo, "[%x][%-20s]%s[cpu:%-3u][%-5s][%s-tid:%u/pid:%u][uid:%u][ns:%u] ",
 			detail->key, t->name, func_range, entry->cpu, ifname,
@@ -598,6 +600,21 @@ check_pending:
 void ctx_poll_handler(void *raw_ctx, int cpu, void *data, u32 size)
 {
 	do_async_poll(cpu, data, size, ctx_async_poll_cb);
+}
+
+void perfetto_poll_handler(void *ctx, int cpu, void *data, u32 size)
+{
+	event_t *event = data;
+	trace_t *trace;
+
+	if (size < sizeof(event_t) || event->meta == FUNC_TYPE_RET) {
+		ctx_poll_handler(ctx, cpu, data, size);
+		return;
+	}
+	trace = get_trace(event->func);
+	if (trace && trace_using_sk(trace))
+		return;
+	ctx_poll_handler(ctx, cpu, data, size);
 }
 
 static inline bool trace_analyse_ret(trace_t *trace)

@@ -265,7 +265,7 @@ static inline int pre_handle_entry(context_info_t *info, u16 func)
 		return -1;
 
 	info->func_status = get_func_status(info->args, func);
-	if (mode_has_context(args)) {
+	if (mode_has_context(args) && info->skb) {
 		match_val_t *match_val = bpf_map_lookup_elem(&m_matched,
 							     &info->skb);
 
@@ -315,7 +315,7 @@ static inline void handle_entry_finish(context_info_t *info, int err)
 	if (err < 0)
 		return;
 
-	if (mode_has_context(info->args)) {
+	if (mode_has_context(info->args) && info->skb) {
 		if (func_is_free(info->func_status)) {
 			if (info->matched)
 				consume_map_ctx(info->args, &info->skb);
@@ -366,7 +366,7 @@ static int auto_inline handle_entry(context_info_t *info)
 	u32 tgid = (u32)(pid_tgid >> 32);
 	u32 uid = (u32)bpf_get_current_uid_gid();
 
-	mode_ctx = mode_has_context(args);
+	mode_ctx = mode_has_context(args) && skb;
 	filter = !info->matched;
 	pkt_args = &args->pkt;
 	pkt = &e->pkt;
@@ -418,15 +418,15 @@ no_filter:
 		goto out;
 
 	/* store more (detail) information about net or task. */
-	dev = _C(skb, dev);
 	detail = (void *)e;
 
 	bpf_get_current_comm(detail->task, sizeof(detail->task));
+	dev = skb ? _C(skb, dev) : NULL;
 	if (dev) {
 		bpf_core_read_str(detail->ifname, sizeof(detail->ifname) - 1,
 				  &dev->name);
 		detail->ifindex = _C(dev, ifindex);
-	} else {
+	} else if (skb) {
 		detail->ifindex = _C(skb, skb_iif);
 		detail->ifname[0] = '\0';
 	}
@@ -436,9 +436,9 @@ out:
 	try_trace_stack(info);
 	pkt->ts = bpf_ktime_get_ns();
 #ifdef __PROG_TYPE_TRACING
-	e->key = (u64)(void *)_(skb);
+	e->key = skb ? (u64)(void *)_(skb) : (u64)(void *)_(info->sk);
 #else
-	e->key = (u64)(void *)skb;
+	e->key = skb ? (u64)(void *)skb : (u64)(void *)info->sk;
 #endif
 	e->func = info->func;
 	e->tid = tid;
@@ -541,6 +541,16 @@ DEFINE_TP(kfree_skb, skb, kfree_skb, 0, 8)
 
 	e->location = *(u64 *)info_tp_args(info, 16, 1);
 	e->reason = reason;
+
+	return handle_entry_output(info, e);
+}
+
+DEFINE_TP_SK(inet_sock_set_state, sock, inet_sock_set_state, 0, 8)
+{
+	DECLARE_EVENT(sock_state_event_t, e)
+
+	e->oldstate = *(int *)info_tp_args(info, 16, 1);
+	e->newstate = *(int *)info_tp_args(info, 20, 2);
 
 	return handle_entry_output(info, e);
 }
@@ -773,6 +783,71 @@ DEFINE_KPROBE_INIT(tcp_send_active_reset, tcp_send_active_reset, 3,
  * Following is socket related custom BPF program.
  * 
  *******************************************************************/
+
+#ifndef __PROG_TYPE_TRACING
+struct {
+#ifdef BPF_MAP_TYPE_LRU_HASH
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+#else
+	__uint(type, BPF_MAP_TYPE_HASH);
+#endif
+	__uint(key_size, sizeof(u64));
+	__uint(value_size, sizeof(u64));
+	__uint(max_entries, 1024);
+} m_socket_create_start SEC(".maps");
+
+SEC("kprobe/sk_alloc")
+int TRACE_NAME(sk_alloc)(struct pt_regs *ctx)
+{
+	bpf_args_t *args = (void *)CONFIG();
+	u64 pid_tgid = bpf_get_current_pid_tgid();
+	u32 tid = (u32)pid_tgid;
+	u32 uid = (u32)bpf_get_current_uid_gid();
+	u64 start_ts;
+
+	if (!args->ready || !args->perfetto || args_check(args, pid, tid) ||
+	    (args->uid_enabled && args->uid != uid))
+		return 0;
+	start_ts = bpf_ktime_get_ns();
+	bpf_map_update_elem(&m_socket_create_start, &pid_tgid, &start_ts,
+			    BPF_ANY);
+	return 0;
+}
+
+SEC("kretprobe/sk_alloc")
+int TRACE_RET_NAME(sk_alloc)(struct pt_regs *ctx)
+{
+	bpf_args_t *args = (void *)CONFIG();
+	detail_socket_create_event_t event = {};
+	u64 pid_tgid = bpf_get_current_pid_tgid();
+	u64 *start_ts;
+	struct sock *sk;
+
+	if (!args->ready || !args->perfetto)
+		return 0;
+	start_ts = bpf_map_lookup_elem(&m_socket_create_start, &pid_tgid);
+	if (!start_ts)
+		return 0;
+	sk = (void *)PT_REGS_RC(ctx);
+	if (!sk)
+		goto out;
+
+	event.event.func = INDEX_sk_alloc;
+	event.event.meta = FUNC_TYPE_FUNC;
+	event.event.key = (u64)(void *)sk;
+	event.event.ske.ts = bpf_ktime_get_ns();
+	event.event.tid = (u32)pid_tgid;
+	event.event.tgid = (u32)(pid_tgid >> 32);
+	event.event.uid = (u32)bpf_get_current_uid_gid();
+	bpf_get_current_comm(event.event.task, sizeof(event.event.task));
+	event.start_ts = *start_ts;
+	EVENT_OUTPUT(ctx, event);
+	args->event_count++;
+out:
+	bpf_map_delete_elem(&m_socket_create_start, &pid_tgid);
+	return 0;
+}
+#endif
 
 DEFINE_KPROBE_INIT(inet_listen, inet_listen, 2,
 		   .sk = _C((struct socket *)ctx_get_arg(ctx, 0), sk))

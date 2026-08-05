@@ -149,6 +149,7 @@ void ctx_poll_handler(void *raw_ctx, int cpu, void *data, u32 size);
 void basic_poll_handler(void *ctx, int cpu, void *data, u32 size);
 void async_poll_handler(void *ctx, int cpu, void *data, u32 size);
 void latency_poll_handler(void *ctx, int cpu, void *data, u32 size);
+void perfetto_poll_handler(void *ctx, int cpu, void *data, u32 size);
 
 int stats_poll_handler();
 int func_stats_poll_handler();

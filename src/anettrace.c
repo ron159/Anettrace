@@ -11,6 +11,7 @@
 #include "anettrace.h"
 #include "trace.h"
 #include "traffic.h"
+#include "perfetto_export.h"
 
 arg_config_t config = {
 	.name = "anettrace",
@@ -245,6 +246,11 @@ static void do_parse_args(int argc, char *argv[])
 			.desc = "show extern packet info, such as pid, ifname, etc",
 		},
 		{
+			.lname = "perfetto-events", .dest = &trace_args->perfetto_events,
+			.type = OPTION_STRING,
+			.desc = "write socket and packet timeline metadata as JSONL for Perfetto",
+		},
+		{
 			.lname = "date", .dest = &date,
 			.type = OPTION_BOOL,
 			.desc = "print local date and time",
@@ -452,6 +458,7 @@ static void do_exit(int code)
 	trace_ctx.ops->trace_close();
 	pr_debug("BPF skel is destroied\n");
 	trace_ctx.stop = true;
+	perfetto_export_close(event_count);
 
 	pr_info("total event: %llu, %d context skipped\n",
 		event_count, ctx_count);
@@ -467,6 +474,8 @@ int main(int argc, char *argv[])
 
 	if (trace_prepare())
 		goto err;
+	if (perfetto_export_open(trace_ctx.args.perfetto_events))
+		goto err;
 
 	if (trace_bpf_load_and_attach()) {
 		pr_err("failed to load bpf\n");
@@ -481,5 +490,6 @@ int main(int argc, char *argv[])
 	do_exit(0);
 	return 0;
 err:
+	perfetto_export_close(0);
 	return -1;
 }
