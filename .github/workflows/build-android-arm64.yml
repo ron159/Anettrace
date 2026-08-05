@@ -46,7 +46,6 @@ jobs:
               libbpf_libdir="/usr/lib/$(gcc -dumpmachine)"
               make -C libbpf/src install \
                 PREFIX=/usr LIBDIR="${libbpf_libdir}"
-              ldconfig
               test "$(PKG_CONFIG_PATH="${libbpf_libdir}/pkgconfig" \
                 pkg-config --modversion libbpf)" = "1.6.2"
 
