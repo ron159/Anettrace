@@ -139,7 +139,12 @@ static __always_inline int traffic_exit(struct pt_regs *ctx, u32 operation,
 		.operation = operation,
 	};
 	traffic_flow_key_t *stored, flow = {};
-	s64 bytes = PT_REGS_RC(ctx);
+	/*
+	 * These sendmsg/recvmsg helpers return int. On arm64, a negative
+	 * 32-bit return value can be observed zero-extended in the return
+	 * register, so cast to the declared return type before testing it.
+	 */
+	s32 bytes = (s32)PT_REGS_RC(ctx);
 
 	stored = bpf_map_lookup_elem(&traffic_inflight, &inflight_key);
 	if (!stored)

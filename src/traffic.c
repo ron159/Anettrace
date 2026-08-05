@@ -97,25 +97,38 @@ static int traffic_collect_rows(int map_fd, struct traffic_row *rows,
 	return count;
 }
 
-static void traffic_print_row(const struct traffic_row *row)
+static void traffic_format_endpoint(const struct traffic_row *row, bool local,
+				    char *endpoint, size_t endpoint_size)
 {
-	char local[INET6_ADDRSTRLEN] = "?";
-	char remote[INET6_ADDRSTRLEN] = "?";
-	int af = row->key.family == AF_INET6 ? 6 : 4;
+	char address[INET6_ADDRSTRLEN] = "?";
+	const traffic_addr_t *addr = local ? &row->key.laddr : &row->key.raddr;
+	u16 port = local ? row->key.lport : row->key.rport;
 
 	if (row->key.family == AF_INET) {
-		inet_ntop(AF_INET, &row->key.laddr.v4, local, sizeof(local));
-		inet_ntop(AF_INET, &row->key.raddr.v4, remote, sizeof(remote));
+		inet_ntop(AF_INET, &addr->v4, address, sizeof(address));
+		snprintf(endpoint, endpoint_size, "%s:%u", address, port);
 	} else if (row->key.family == AF_INET6) {
-		inet_ntop(AF_INET6, row->key.laddr.v6, local, sizeof(local));
-		inet_ntop(AF_INET6, row->key.raddr.v6, remote, sizeof(remote));
+		inet_ntop(AF_INET6, addr->v6, address, sizeof(address));
+		snprintf(endpoint, endpoint_size, "[%s]:%u", address, port);
+	} else {
+		snprintf(endpoint, endpoint_size, "?:%u", port);
 	}
+}
 
-	printf("%-7u %-7u %-16.16s %-2s %-2d %-39s %-5u "
-	       "%-39s %-5u %10.2f %10.2f\n",
+static void traffic_print_row(const struct traffic_row *row, int local_width,
+			      int remote_width)
+{
+	char local[INET6_ADDRSTRLEN + 8];
+	char remote[INET6_ADDRSTRLEN + 8];
+	int af = row->key.family == AF_INET6 ? 6 : 4;
+
+	traffic_format_endpoint(row, true, local, sizeof(local));
+	traffic_format_endpoint(row, false, remote, sizeof(remote));
+
+	printf("%-7u %-7u %-16.16s %-3s %-2d %-*s %-*s %10.2f %10.2f\n",
 	       row->key.tgid, row->key.tid, row->key.comm,
-	       traffic_protocol_name(row->key.protocol), af, local,
-	       row->key.lport, remote, row->key.rport,
+	       traffic_protocol_name(row->key.protocol), af, local_width, local,
+	       remote_width, remote,
 	       row->value.tx_bytes / 1024.0, row->value.rx_bytes / 1024.0);
 }
 
@@ -125,22 +138,36 @@ static int traffic_print_snapshot(struct traffic *skel, trace_args_t *args,
 {
 	char timestamp[64];
 	int flow_fd = bpf_map__fd(skel->maps.traffic_flows);
-	int count, i;
+	int count, i, local_width = (int)strlen("LADDR:PORT");
+	int remote_width = (int)strlen("RADDR:PORT");
 
 	count = traffic_collect_rows(flow_fd, rows, TRAFFIC_MAX_FLOWS,
 				     since_ns, now_ns);
 	qsort(rows, count, sizeof(*rows), traffic_row_compare);
+	for (i = 0; i < count; i++) {
+		char local[INET6_ADDRSTRLEN + 8];
+		char remote[INET6_ADDRSTRLEN + 8];
+		int width;
+
+		traffic_format_endpoint(&rows[i], true, local, sizeof(local));
+		traffic_format_endpoint(&rows[i], false, remote, sizeof(remote));
+		width = (int)strlen(local);
+		if (width > local_width)
+			local_width = width;
+		width = (int)strlen(remote);
+		if (width > remote_width)
+			remote_width = width;
+	}
 	ts_print_ts(timestamp, now_ns, args->time_mode);
 	printf("\n%sTraffic %s (cumulative per flow)\n", timestamp,
 	       trace_ctx.bpf_args.pkt.l4_proto ?
 	       traffic_protocol_name(trace_ctx.bpf_args.pkt.l4_proto) :
 	       "TCP/UDP");
-	printf("%-7s %-7s %-16s %-2s %-2s %-39s %-5s %-39s %-5s "
-	       "%10s %10s\n",
-	       "PID", "TID", "COMM", "P", "AF", "LADDR", "LPORT",
-	       "RADDR", "RPORT", "TX_KB", "RX_KB");
+	printf("%-7s %-7s %-16s %-3s %-2s %-*s %-*s %10s %10s\n",
+	       "PID", "TID", "COMM", "P", "AF", local_width,
+	       "LADDR:PORT", remote_width, "RADDR:PORT", "TX_KB", "RX_KB");
 	for (i = 0; i < count; i++)
-		traffic_print_row(&rows[i]);
+		traffic_print_row(&rows[i], local_width, remote_width);
 	if (!count)
 		printf("(no traffic in this interval)\n");
 	fflush(stdout);

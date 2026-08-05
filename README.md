@@ -78,7 +78,9 @@ anettrace --traffic --proto tcp --interval 2
 anettrace --traffic --proto udp --pid 1234 --uid 0 --interval 1 -c 10
 ```
 
-输出列为 `PID TID COMM P AF LADDR LPORT RADDR RPORT TX_KB RX_KB`，其中
+输出列为 `PID TID COMM P AF LADDR:PORT RADDR:PORT TX_KB RX_KB`，IPv6 端点使用
+`[address]:port` 形式；列宽会按当前快照中的实际端点长度收缩，避免 IPv4 地址和端口
+之间出现大片空白。其中
 `TX_KB/RX_KB` 是该流从本次启动开始的累计应用层收发字节。默认覆盖 TCP/UDP；
 协议过滤当前支持 `tcp` 和 `udp`。未连接 UDP socket 无法从 `struct sock` 得到单次
 `sendto/recvfrom` 对端时，会显示 `0.0.0.0:0` 或 `[::]:0`。纯内核转发流量没有可归属的

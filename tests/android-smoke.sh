@@ -132,11 +132,19 @@ run_tcp_traffic_report() {
 run_tcp_traffic_report traffic-all
 grep -q 'Traffic TCP/UDP' "$OUT/traffic-all.txt" ||
 	fail "whole-device traffic heading missing"
-grep -q 'PID.*TID.*COMM.*LADDR.*LPORT.*RADDR.*RPORT.*TX_KB.*RX_KB' \
+grep -q 'PID.*TID.*COMM.*LADDR:PORT.*RADDR:PORT.*TX_KB.*RX_KB' \
 	"$OUT/traffic-all.txt" || fail "traffic columns missing"
 grep -q ' TCP ' "$OUT/traffic-all.txt" || fail "TCP flow row missing"
 grep -q "$PING_TARGET" "$OUT/traffic-all.txt" ||
 	fail "traffic endpoint missing"
+awk '
+	/ (TCP|UDP) [46] / {
+		seen = 1
+		if ($(NF - 1) > 1048576 || $NF > 1048576)
+			exit 1
+	}
+	END { if (!seen) exit 2 }
+' "$OUT/traffic-all.txt" || fail "implausible traffic byte count"
 
 run_tcp_traffic_report traffic-tcp --proto tcp
 grep -q 'Traffic TCP ' "$OUT/traffic-tcp.txt" ||
