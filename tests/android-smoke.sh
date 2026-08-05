@@ -7,6 +7,7 @@ BIN="${1:-./anettrace}"
 OUT="${2:-/data/local/tmp/anettrace-smoke}"
 TRACE_PID=""
 WATCHDOG_PID=""
+PING_TARGET=""
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -24,6 +25,17 @@ trap cleanup EXIT INT TERM
 [ -x "$BIN" ] || fail "binary is not executable: $BIN"
 [ -r /sys/kernel/btf/vmlinux ] || fail "missing readable /sys/kernel/btf/vmlinux"
 mkdir -p "$OUT"
+
+PING_TARGET="$(ip route get 1.1.1.1 2>/dev/null | awk '
+	{
+		for (i = 1; i <= NF; i++) {
+			if ($i == "src") {
+				print $(i + 1)
+				exit
+			}
+		}
+	}')"
+[ -n "$PING_TARGET" ] || fail "unable to determine a local IPv4 address"
 
 "$BIN" --version | tee "$OUT/version.txt"
 "$BIN" -h > "$OUT/help.txt"
@@ -50,7 +62,9 @@ run_icmp_trace() {
 	) &
 	WATCHDOG_PID=$!
 	sleep 1
-	ping -c 1 127.0.0.1 >/dev/null 2>&1 || true
+	if ! ping -c 2 "$PING_TARGET" >/dev/null 2>&1; then
+		fail "unable to generate local ICMP traffic via $PING_TARGET"
+	fi
 	if ! wait "$TRACE_PID"; then
 		TRACE_PID=""
 		kill "$WATCHDOG_PID" 2>/dev/null || true
