@@ -19,7 +19,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-          ca-certificates clang gcc iperf3 iproute2 iptables iputils-ping \
+          ca-certificates clang gcc git iperf3 iproute2 iptables iputils-ping \
           libelf-dev libzstd-dev llvm make netcat-openbsd \
           pkg-config python3 python3-yaml wget zlib1g-dev
     - name: Install libbpf 1.6.2
@@ -36,8 +36,14 @@ jobs:
         sudo ldconfig
         test "$(PKG_CONFIG_PATH="${libbpf_libdir}/pkgconfig" \
           pkg-config --modversion libbpf)" = "1.6.2"
+
+        git clone --branch v7.6.0 --depth 1 \
+          --recurse-submodules --shallow-submodules \
+          https://github.com/libbpf/bpftool.git /tmp/bpftool
+        make -C /tmp/bpftool/src -j2
+        /tmp/bpftool/src/bpftool version
     - name: Build Linux BTF binary
-      run: make all
+      run: make BPFTOOL=/tmp/bpftool/src/bpftool all
     - name: Run source contract checks
       run: ./tests/source-contracts.sh
     - name: Run timezone offset tests
