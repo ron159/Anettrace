@@ -8,7 +8,7 @@
 
 #include "utils/arg_parse.h"
 
-#include "nettrace.h"
+#include "anettrace.h"
 #include "trace.h"
 #include "analysis.h"
 

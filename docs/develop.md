@@ -8,7 +8,7 @@
 
 - docs：项目的文档目录
 
-- legacy：老的基于BCC的nettrace，已遗弃
+- legacy：老的基于BCC的anettrace，已遗弃
 
 - nodetrace：节点报文跟踪模块
 
@@ -24,7 +24,7 @@
 
   - bpf_utils.c：封装的一些用户简化BPF程序处理的函数
 
-- src：nettrace的核心代码
+- src：anettrace的核心代码
 
   - progs：BPF代码目录，其中kprobe.c是基于kprobe-BPF实现的BPF程序，tracing是基于tracing-BPF技术（还未实现，等待开发中）。除了该目录下，其他的代码都是用户态的代码。
 
@@ -34,7 +34,7 @@
 
   - gen_trace.py：根据`trace.yaml`里定义的内核函数和tracepoint来生成`trace_group.c`和`trace_funcs.h`
 
-  - nettrace.c：nettrace主程序的入口函数，定义了命令行参数等
+  - anettrace.c：anettrace主程序的入口函数，定义了命令行参数等
 
   - trace_probe.c：用于处理基于kprobe-BPF类型的BPF程序的加载和数据处理
 
@@ -42,7 +42,7 @@
 
   - trace.c：BPF程序的检查、加载等部分的功能函数
 
-  - trace.yaml：定义了nettrace所有的支持跟踪的内核函数和tracepoint。同时，诊断模式的规则也定义在了这里面
+  - trace.yaml：定义了anettrace所有的支持跟踪的内核函数和tracepoint。同时，诊断模式的规则也定义在了这里面
 
   - vmlinux_header.h：对于不支持BTF（COMPAT模式）的情况，会使用这里的头文件
 
@@ -51,7 +51,7 @@
 项目的部分编译过程如下图所示，其中kprobe.o是经过CLANG编译出来的BPF的ELF文件，经过bpftool生成skel头文件。
 
 ```
-                               nettrace.c ----------------- nettrace
+                               anettrace.c ----------------- anettrace
                                   trace.c                       |
                                     xxxxx                       |
                                                                 |
@@ -69,9 +69,9 @@ trace.yaml -- gen_trace.py                                      |
 
 ## 二、项目加载及运行
 
-整个nettrace在运行过程中的代码执行逻辑如下图所示：
+整个anettrace在运行过程中的代码执行逻辑如下图所示：
 
-![](images/nettrace-start.svg)
+![](images/anettrace-start.svg)
 
 这里没有列出`poll`（BPF事件处理）的逻辑，这块比较复杂，后面再补上。
 
@@ -156,7 +156,7 @@ DEFINE_EVENT(qdisc_event_t,
 - DEFINE_ANALYZER_ENTRY：采用这个宏定义的诊断器会在函数入口（函数被执行的时候）触发的事件中被调用，针对的是kprobe阶段
 - DEFINE_ANALYZER_EXIT：采用这个宏定义的诊断器会在函数执行结束触发的事件中被调用，针对的是kretprobe阶段。如果要分析函数的返回值，需要使用这个宏。
 
-宏定义的第一个参数为诊断器的名称，这里假设我们定义了`drop`诊断器。第二个是诊断器针对的模式，当前nettrace支持`basic/timeline/diag/drop/sock`五种模式。
+宏定义的第一个参数为诊断器的名称，这里假设我们定义了`drop`诊断器。第二个是诊断器针对的模式，当前anettrace支持`basic/timeline/diag/drop/sock`五种模式。
 
 ```c
 DEFINE_ANALYZER_EXIT(qdisc, TRACE_MODE_DIAG_MASK)

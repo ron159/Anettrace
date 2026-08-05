@@ -25,7 +25,7 @@ forbid_text() {
 	fi
 }
 
-require_text '.set = &bpf_args->uid_enabled' src/nettrace.c
+require_text '.set = &bpf_args->uid_enabled' src/anettrace.c
 require_text 'bpf_args->uid_enabled' src/trace.c
 require_text 'pid_tgid = bpf_get_current_pid_tgid();' src/progs/tracing.c
 require_text 'uid_gid = bpf_get_current_uid_gid();' src/progs/tracing.c
@@ -37,7 +37,7 @@ require_text 'Android tracing requires Linux 6.6 or newer' src/trace.c
 require_text 'packet mark must remain the final field' src/progs/skb_shared.h
 require_text 'pkt->mark = skb->mark;' src/progs/skb_parse.h
 require_text 'pkt->l3.ipv4.id = bpf_ntohs(ipv4->id);' src/progs/skb_parse.h
-require_text '--date and --timestamp cannot be used together' src/nettrace.c
+require_text '--date and --timestamp cannot be used together' src/anettrace.c
 require_text 'TIME_MODE_MONOTONIC' src/output.c
 require_text '"/system/bin/date"' src/output.c
 require_text 'id:0x%x' src/output.c

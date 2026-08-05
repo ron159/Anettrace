@@ -13,7 +13,7 @@ ANETTRACE_SRCS	:= $(UTILS_SRC) \
 		   trace.c output.c trace_tracing.c \
 		   analysis.c $(trace_group) \
 		   dropreason.c rstreason.c \
-		   nettrace.c
+		   anettrace.c
 
 CC		:= $(CROSS_COMPILE)gcc
 CLANG		?= clang

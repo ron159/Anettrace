@@ -86,7 +86,7 @@ root@imagedong-LC1:/home/xm# cat /tracing/trace
 
 在丢包事件中，用户已经可以清晰地看出报文丢包的原因。该功能发布于Kernel5.18版本中，经过笔者的不懈努力，目前常用的网络协议，如`IP`、`TCP`、`UDP`、`ICMP`等已经完成了接口的替换，抽象出来的各个协议层的丢包原因也将近70个。
 
-虽然`dropwatch`目前也已经支持了丢包原因，但是该工具目前还不支持报文过滤的功能，也不能直接显示报文内容，使用起来多有不便。综合考虑，笔者决定基于eBPF自己写一个轻量级的用于丢包监控的工具，并命名为`droptrace`，作为`nettrace`工具下的一个子工具（不排除后期将功能合并到nettrace中的可能）。
+虽然`dropwatch`目前也已经支持了丢包原因，但是该工具目前还不支持报文过滤的功能，也不能直接显示报文内容，使用起来多有不便。综合考虑，笔者决定基于eBPF自己写一个轻量级的用于丢包监控的工具，并命名为`droptrace`，作为`anettrace`工具下的一个子工具（不排除后期将功能合并到anettrace中的可能）。
 
 ## 二、使用方法
 
@@ -94,11 +94,11 @@ root@imagedong-LC1:/home/xm# cat /tracing/trace
 
 ### 2.1 构建
 
-可以直接从`github`中下载编译好的二进制程序`droptrace`或者`nettrace`的rpm包，也可以自行进行编译构建：
+可以直接从`github`中下载编译好的二进制程序`droptrace`或者`anettrace`的rpm包，也可以自行进行编译构建：
 
 ```shell
-git clone https://github.com/OpenCloudOS/nettrace.git
-cd nettrace/droptrace
+git clone https://github.com/ron159/Anettrace.git
+cd Anettrace
 make all
 ```
 

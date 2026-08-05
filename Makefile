@@ -6,7 +6,7 @@ UPSTREAM_BTF_COMMIT ?= d455f001
 BUILD_TYPE	?= tracing
 export UPSTREAM_BTF_COMMIT BUILD_TYPE
 
-man-target 	:= script/zh_CN/nettrace.8
+man-target 	:= script/zh_CN/anettrace.8
 
 ROOT		:= $(abspath .)
 export ROOT
@@ -38,7 +38,7 @@ install:
 	make -C src install
 
 	@mkdir -p ${MAN_DIR}/zh_CN/man8/ ${MAN_DIR}/man8/
-	@gzip -c $(SCRIPT)/zh_CN/nettrace.8 > \
+	@gzip -c $(SCRIPT)/zh_CN/anettrace.8 > \
 		${MAN_DIR}/zh_CN/man8/anettrace.8.gz
 	@gzip -c $(SCRIPT)/dropreason.8 > ${MAN_DIR}/man8/dropreason.8.gz
 	@ln -sf ../zh_CN/man8/anettrace.8.gz ${MAN_DIR}/man8/anettrace.8.gz
@@ -46,7 +46,7 @@ install:
 	@mkdir -p $(BCOMP); cd $(BCOMP); cp $(SCRIPT)/bash-completion.sh \
 		./anettrace
 	@mkdir -p ${PREFIX}/usr/share/fish/vendor_completions.d/; \
-		cp $(SCRIPT)/nettrace.fish \
+		cp $(SCRIPT)/anettrace.fish \
 		${PREFIX}/usr/share/fish/vendor_completions.d/anettrace.fish
 
 pack:
@@ -60,8 +60,8 @@ rpm:
 	@make clean
 	@rm -rf ${SOURCE_DIR} && mkdir -p ${SOURCE_DIR}
 	@cp -r docs src script Makefile README.md LICENSE ${SOURCE_DIR}/
-	@sed -i 's/%{VERSION}/$(VERSION)/' ${SOURCE_DIR}/script/nettrace.spec
+	@sed -i 's/%{VERSION}/$(VERSION)/' ${SOURCE_DIR}/script/anettrace.spec
 	@cd ~/rpmbuild/SOURCES/ && tar -czf anettrace-${VERSION}.tar.gz	\
 		anettrace-${VERSION}
 	@rpmbuild -D 'dist $(RELEASE)' --target ${ARCH}			\
-		-ba ${SOURCE_DIR}/script/nettrace.spec
+		-ba ${SOURCE_DIR}/script/anettrace.spec
