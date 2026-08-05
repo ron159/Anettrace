@@ -16,15 +16,17 @@
 
 #define BUF_FMT(fmt, args...) pos += sprintf(buf + pos, fmt, ##args)
 
-enum {
-	TIME_MODE_RAW = 0,
-	TIME_MODE_TIME,
+enum time_mode {
+	TIME_MODE_LOCAL,
 	TIME_MODE_DATE,
+	TIME_MODE_MONOTONIC,
 };
 
+void output_time_init(void);
 void ts_print_packet(char *buf, packet_t *pkt, char *minfo,
-		     int time_mode);
-void ts_print_sock(char *buf, sock_t *ske, char *minfo, int time_mode);
-int  ts_print_ts(char *buf, u64 ts, int time_mode);
+		     enum time_mode time_mode);
+void ts_print_sock(char *buf, sock_t *ske, char *minfo,
+		   enum time_mode time_mode);
+int  ts_print_ts(char *buf, u64 ts, enum time_mode time_mode);
 
 #endif

@@ -110,6 +110,7 @@ typedef struct {
 	u16 proto_l3;
 	u8 proto_l4;
 	u8 pad;
+	/* packet mark must remain the final field for event ABI stability */
 	u32 mark;
 } packet_t;
 

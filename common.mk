@@ -8,10 +8,16 @@ LIBELF_ZSTD_FLAGS = -lzstd
 endif
 
 HOST_CFLAGS	= \
-		-lbpf -lelf -lz $(LIBELF_ZSTD_FLAGS) -O2 -static $(CFLAGS) -Wall \
+		-lbpf -lelf -lz $(LIBELF_ZSTD_FLAGS) -pthread -O2 -static $(CFLAGS) -Wall \
 		-Wno-deprecated-declarations -DVERSION=$(VERSION)	\
 		-DRELEASE=$(RELEASE)					\
+		-DUPSTREAM_COMMIT=$(UPSTREAM_COMMIT)			\
+		-DBUILD_TYPE=$(BUILD_TYPE) -DTARGET_PLATFORM=$(TARGET_PLATFORM) \
 		-I$(ROOT)/shared/ -I$(ROOT)/utils
+
+ifneq ($(filter android-%,$(TARGET_PLATFORM)),)
+HOST_CFLAGS	+= -DANETTRACE_ANDROID_TARGET=1
+endif
 
 CC		:= $(CROSS_COMPILE)gcc
 

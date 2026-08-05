@@ -1,4 +1,9 @@
-# nettrace - 网络诊断工具
+# Anettrace - Android/Linux 网络诊断工具
+
+Anettrace 基于 OpenCloudOS/nettrace 演进。`master` 从 0.4.0 起维护双后端：普通追踪、
+`--basic` 和诊断模式使用 KPROBE/KRETPROBE，`--monitor` 使用 BPF TRACING
+fentry/fexit；内核 tracepoint 继续使用 tracepoint/tp_btf。Android 专属能力包括
+TID/TGID/UID、UID 过滤（包含 UID 0）、skb mark、本地时间、原始单调时间戳和 IPv4 ID。
 
 ## 一、工具简介
 
@@ -12,11 +17,11 @@
 - `BCC`：功能单一，临时编写`BCC`程序跟踪效率低，需要对内核有一定了解，入手难
 - `dropwatch`：功能单一，只能查看网络丢包问题，且无法得到丢包原因和解决方案
 
-在此背景下，笔者结合多年的Kernel网络协议栈故障定位经验，基于eBPF开发了Linux环境下网络故障定位工具集——`nettrace`。
+本项目在上游能力基础上维护 Android arm64 静态制品和设备验证流程。
 
 ### 1.2 功能介绍
 
-`nettrace`是一款基于eBPF的集网络报文跟踪（故障定位）、网络故障诊断、网络异常监控于一体的网络工具集，旨在能够提供一种更加高效、易用的方法来解决复杂场景下的网络问题。目前，其实现的功能包括：
+`anettrace`是一款基于eBPF的集网络报文跟踪（故障定位）、网络故障诊断、网络异常监控于一体的网络工具集，旨在能够提供一种更加高效、易用的方法来解决复杂场景下的网络问题。目前，其实现的功能包括：
 
 - 网络报文跟踪：跟踪网络报文从进入到内核协议栈到释放/丢弃的过程中在内核中所走过的路径，实现报文整个生命周期的监控，并采集生命周期各个阶段的事件、信息。通过观察报文在内核中的路径，对于有一定内核协议栈经验的人来说可以快速、有效地发现网络问题。
 - 网络故障诊断：将以往的经验集成到工具的知识库，通过知识匹配的方式来主动诊断当前网络故障，给出诊断结果以及修复建议。该功能入手简单、易用性强，无需过多的网络经验即可进行网络问题定位。
@@ -26,7 +31,38 @@
 
 ## 二、编译安装
 
-nettrace是采用C语言编写的基于eBPF（libbpf）的命令行工具，在使用和安装时可以用编译好的RPM包和二进制程序。本工具对各个版本的内核都进行了兼容，最低可支持centos7的3.10版本的内核（需要自己编译）。
+Anettrace 是采用 C 语言编写的 eBPF（libbpf）命令行工具，在使用和安装时可以用编译好的 RPM 包和二进制程序。本工具对各个版本的内核都进行了兼容，最低可支持 centos7 的 3.10 版本内核（需要自己编译）。
+
+### Android arm64 双后端制品
+
+Android CI 生成并校验以下文件：
+
+```text
+anettrace-0.4.0-android-arm64-dual.tar.bz2
+anettrace-0.4.0-android-arm64-dual.tar.bz2.sha256
+```
+
+运行要求与后端选择：
+
+- 需要 root 权限和可读的 `/sys/kernel/btf/vmlinux`。
+- 普通追踪、`--basic` 和诊断模式使用 KPROBE/KRETPROBE，需要
+  `CONFIG_KPROBES=y` 与 `CONFIG_KPROBE_EVENTS=y`。
+- `--monitor` 使用 fentry/fexit，需要 BPF trampoline、function tracer 和 dynamic
+  ftrace direct calls；缺少这些能力时不应使用 `--monitor`。
+- `--detail` 与挂载后端无关，在 KPROBE 模式同样支持 TID/TGID/UID、网卡、CPU、
+  IPv4 ID 和 skb mark 输出。
+
+设备侧最小验证：
+
+```shell
+adb push anettrace /data/local/tmp/anettrace
+adb push tests/android-smoke.sh /data/local/tmp/android-smoke.sh
+adb shell chmod 0755 /data/local/tmp/anettrace /data/local/tmp/android-smoke.sh
+adb shell /data/local/tmp/android-smoke.sh /data/local/tmp/anettrace
+```
+
+CI 会校验 SHA-256、AArch64 架构、静态链接属性和 CLI 契约；CI 成功不等于目标设备
+内核兼容性验证完成。
 
 ### 2.1 RPM/DEB安装
 
@@ -190,7 +226,8 @@ Usage:
     -p, --proto      filter L3/L4 protocol, such as 'tcp', 'arp'
     --netns          filter by net namespace inode
     --netns-current  filter by current net namespace
-    --pid            filter by current process id(pid)
+    --pid            filter by current thread id (legacy --pid semantics)
+    --uid            filter by current user id(uid), including uid 0
     --min-latency    filter by the minial time to live of the skb in us
     --pkt-len        filter by the IP packet length (include header) in byte
     --tcp-flags      filter by TCP flags, such as: SAPR
@@ -214,10 +251,13 @@ Usage:
                      show latency by statistics
 
     -t, --trace      enable trace group or trace. Some traces are disabled by default, use "all" to enable all
-    --force          skip some check and force load nettrace
+    --force          skip some check and force load anettrace
     --ret            show function return value
     --detail         show extern packet info, such as pid, ifname, etc
-    --date           print timestamp in date-time format
+    --date           print local date and time
+    --timestamp      print the raw monotonic timestamp
+    --id             show IPv4 id in hexadecimal
+    --mark           show skb mark in hexadecimal
     -c, --count      exit after receiving count packets
     --hooks          print netfilter hooks if dropping by netfilter
     --tiny-show      set this option to show less infomation
@@ -232,17 +272,20 @@ Usage:
 
     -v               show log information
     --debug          show debug information
+    --libbpf-debug   show libbpf debug information
+    --bpf-debug      compatibility alias for --libbpf-debug
     -h, --help       show help information
-    -V, --version    show nettrace version
+    -V, --version    show anettrace version
 ```
 
 **过滤类参数**
 
-参数`s/d/addr/S/D/port/p/pid`用于进行报文的过滤，可以通过IP地址（包括IPv6地址）、端口、协议等属性进行过滤。其他参数的用途包括：
+参数`s/d/addr/S/D/port/p/pid/uid`用于进行报文过滤，可以通过 IP 地址（包括 IPv6 地址）、端口、协议、TID 和 UID 等属性进行过滤。其他参数的用途包括：
 
 - `netns`：根据网络命名空间进行过滤，该参数后面跟的是网络命名空间的inode，可以通过`ls -l /proc/<pid>/ns/net`来查看对应进程的网络命名空间的inode号
 - `netns-current`：仅显示当前网络命名空间的报文，等价于`--netns 当前网络命名空间的inode`
-- `pid`：根据当前处理报文的进程的ID进行过滤
+- `pid`：根据当前处理报文的线程 ID（TID）进行过滤，保留历史参数名
+- `uid`：根据当前用户 ID 过滤，UID 0 也会作为有效过滤值
 - `min-latency`：根据报文的寿命进行过滤，仅打印处理时长超过该值的报文，单位为us。该参数仅在`默认`/`diag`/`latency`模式下可用。
 - `pkt-len`：根据IP报文总长度（包括报文头部）来进行过滤
 - `tcp-flags`：根据TCP报文的flags进行过滤，支持的flag包括：SAPRF

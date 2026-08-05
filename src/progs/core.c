@@ -357,12 +357,12 @@ static int auto_inline handle_entry(context_info_t *info)
 	pkt_args_t *pkt_args;
 	bool mode_ctx, filter;
 	packet_t *pkt;
-	u32 pid;
+	u32 tid;
 	int err;
 
 	pr_debug_skb("begin to handle, func=%d", info->func);
 	u64 pid_tgid = bpf_get_current_pid_tgid();
-	pid = (u32)pid_tgid;
+	tid = (u32)pid_tgid;
 	u32 tgid = (u32)(pid_tgid >> 32);
 	u32 uid = (u32)bpf_get_current_uid_gid();
 
@@ -371,10 +371,10 @@ static int auto_inline handle_entry(context_info_t *info)
 	pkt_args = &args->pkt;
 	pkt = &e->pkt;
 
-	if (filter && args_check(args, pid, pid))
+	if (filter && args_check(args, pid, tid))
 		goto err;
 
-	if (filter && args_check(args, uid, uid))
+	if (filter && args->uid_enabled && args->uid != uid)
 		goto err;
 
 	/* why we call probe_parse_skb double times? because in the inline
@@ -441,7 +441,7 @@ out:
 	e->key = (u64)(void *)skb;
 #endif
 	e->func = info->func;
-	e->pid = pid;
+	e->tid = tid;
 	e->tgid = tgid;
 	e->uid = uid;
 

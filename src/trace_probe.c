@@ -188,7 +188,7 @@ static struct list_head *entry_head(u32 key)
 static analyzer_result_t probe_analy_exit(trace_t *trace, analy_exit_t *e)
 {
 	struct list_head *head;
-	u32 key = e->event.pid;
+	u32 key = e->event.tid;
 	analy_entry_t *pos;
 
 	head = entry_head(key);
@@ -203,7 +203,7 @@ static analyzer_result_t probe_analy_exit(trace_t *trace, analy_exit_t *e)
 	 */
 	list_for_each_entry(pos, head, ret_list) {
 		if (pos->event->func == e->event.func &&
-		    pos->event->pid == key)
+		    pos->event->tid == key)
 			goto found;
 	}
 	pr_debug("no entry found for exit: %s pid: %d; func: %d, "
@@ -235,11 +235,11 @@ static analyzer_result_t probe_analy_entry(trace_t *trace, analy_entry_t *e)
 			 e->ctx->refs);
 		goto out;
 	}
-	head = entry_head(e->event->pid);
+	head = entry_head(e->event->tid);
 	list_add(&e->ret_list, head);
 	get_fake_analy_ctx(e->fake_ctx);
 	pr_debug("mounted entry %s(%llx) pid %d, ctx:%llx:%d\n", trace->name,
-		 (u64)e->event->key, e->event->pid, PTR2X(e->ctx),
+		 (u64)e->event->key, e->event->tid, PTR2X(e->ctx),
 		 e->ctx->refs);
 	e->status |= ANALY_ENTRY_ONLIST;
 

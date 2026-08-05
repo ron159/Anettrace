@@ -5,6 +5,7 @@ utils		:= $(ROOT)/utils
 prog-anettrace-origin = \
 		$(utils)/parse_sym.c $(utils)/net_utils.c \
 		$(utils)/arg_parse.c $(utils)/sys_utils.c \
+		$(utils)/time_utils.c \
 		$(utils)/bpf_utils.c \
 		trace.c trace_probe.c output.c trace_tracing.c \
 		analysis.c trace_group.c \

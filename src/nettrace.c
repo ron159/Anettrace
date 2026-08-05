@@ -3,6 +3,8 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <signal.h>
+#include <stdarg.h>
+#include <bpf/libbpf.h>
 
 #include <arg_parse.h>
 
@@ -15,9 +17,17 @@ arg_config_t config = {
 	.desc = "",
 };
 
+static int print_all_levels(enum libbpf_print_level level, const char *format,
+			    va_list args)
+{
+	(void)level;
+	return vfprintf(stdout, format, args);
+}
+
 static void do_parse_args(int argc, char *argv[])
 {
 	bool show_log = false, debug = false, version = false;
+	bool libbpf_debug = false;
 	bool timestamp = false, date = false;
 	trace_args_t *trace_args = &trace_ctx.args;
 	bpf_args_t *bpf_args = &trace_ctx.bpf_args;
@@ -95,12 +105,13 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "pid", .type = OPTION_U32,
 			.dest = &bpf_args->pid,
-			.desc = "filter by current process id(pid)",
+			.desc = "filter by current thread id (legacy --pid semantics)",
 		},
 		{
 			.lname = "uid", .type = OPTION_U32,
 			.dest = &bpf_args->uid,
-			.desc = "filter by current user id(uid)",
+			.set = &bpf_args->uid_enabled,
+			.desc = "filter by current user id(uid), including uid 0",
 		},
 		{
 			.lname = "min-latency", .dest = &trace_args->min_latency,
@@ -210,7 +221,7 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "force", .dest = &trace_args->force,
 			.type = OPTION_BOOL,
-			.desc = "skip some check and force load nettrace",
+			.desc = "skip some check and force load anettrace",
 		},
 		{
 			.lname = "ret", .dest = &trace_args->ret,
@@ -225,22 +236,22 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "date", .dest = &date,
 			.type = OPTION_BOOL,
-			.desc = "print date and time",
+			.desc = "print local date and time",
 		},
 		{
 			.lname = "timestamp", .dest = &timestamp,
 			.type = OPTION_BOOL,
-			.desc = "print timestamp instead of date-time format",
+			.desc = "print the raw monotonic timestamp",
 		},
 		{
 			.lname = "id", .dest = &trace_args->show_id,
 			.type = OPTION_BOOL,
-			.desc = "show ip id",
+			.desc = "show IPv4 id in hexadecimal",
 		},
 		{
 			.lname = "mark", .dest = &trace_args->show_mark,
 			.type = OPTION_BOOL,
-			.desc = "show skb mark",
+			.desc = "show skb mark in hexadecimal",
 		},
 		{
 			.lname = "count", .sname = 'c', .dest = &trace_args->count,
@@ -308,11 +319,21 @@ static void do_parse_args(int argc, char *argv[])
 			.type = OPTION_BOOL,
 			.desc = "show debug information",
 		},
+		{
+			.lname = "libbpf-debug", .dest = &libbpf_debug,
+			.type = OPTION_BOOL,
+			.desc = "show libbpf debug information",
+		},
+		{
+			.lname = "bpf-debug", .dest = &libbpf_debug,
+			.type = OPTION_BOOL,
+			.desc = "compatibility alias for --libbpf-debug",
+		},
 #ifdef BPF_DEBUG
 		{
-			.lname = "bpf-debug", .dest = &bpf_args->pkt.bpf_debug,
+			.lname = "bpf-program-debug", .dest = &bpf_args->pkt.bpf_debug,
 			.type = OPTION_BOOL,
-			.desc = "show bpf debug information",
+			.desc = "show in-kernel BPF debug information",
 		},
 #endif
 		{
@@ -325,22 +346,26 @@ static void do_parse_args(int argc, char *argv[])
 			.lname = "version", .dest = &version,
 			.sname = 'V',
 			.type = OPTION_BOOL,
-			.desc = "show nettrace version",
+			.desc = "show anettrace version",
 		},
 	};
 
 	if (parse_args(argc, argv, &config, opts, ARRAY_SIZE(opts)))
 		goto err;
+	if (date && timestamp) {
+		pr_err("--date and --timestamp cannot be used together\n");
+		goto err;
+	}
 
 	if (show_log)
 		set_log_level(1);
 
-	if (!debug) {
-		/* turn off warning of libbpf */
+	if (!debug && !libbpf_debug)
 		libbpf_set_print(NULL);
-	} else {
+	if (libbpf_debug)
+		libbpf_set_print(print_all_levels);
+	if (debug)
 		set_log_level(2);
-	}
 
 	if (version) {
 		pr_version();
@@ -381,12 +406,12 @@ static void do_parse_args(int argc, char *argv[])
 	pkt_args->daddr_v6_enable = !!daddr_pf;
 	pkt_args->addr_v6_enable = !!addr_pf;
 
-	if (timestamp)
-		trace_args->time_mode = TIME_MODE_RAW;
-	else if (date)
+	if (date)
 		trace_args->time_mode = TIME_MODE_DATE;
+	else if (timestamp)
+		trace_args->time_mode = TIME_MODE_MONOTONIC;
 	else
-		trace_args->time_mode = TIME_MODE_TIME;
+		trace_args->time_mode = TIME_MODE_LOCAL;
 
 	if (bpf_args->detail) {
 		trace_args->show_id = true;
@@ -423,7 +448,7 @@ static void do_exit(int code)
 
 int main(int argc, char *argv[])
 {
-	init_timezone_offset();
+	output_time_init();
 	init_trace_group();
 	do_parse_args(argc, argv);
 

@@ -1,7 +1,9 @@
 
-export VERSION	= 0.3
-RELEASE		?= .tl3
-export RELEASE
+export VERSION	?= 0.4.0
+RELEASE		?= 1
+UPSTREAM_COMMIT ?= a9f13347
+BUILD_TYPE	?= dual
+export RELEASE UPSTREAM_COMMIT BUILD_TYPE
 
 man-target 	:= script/zh_CN/nettrace.8
 
@@ -15,8 +17,10 @@ export PREFIX
 SCRIPT		= $(ROOT)/script
 export SCRIPT
 ARCH		?= $(shell uname -m)
+TARGET_PLATFORM ?= linux-$(ARCH)
+export TARGET_PLATFORM
 SOURCE_DIR	:= ~/rpmbuild/SOURCES/anettrace-${VERSION}
-PACK_TARGET 	:= anettrace-$(VERSION)-1$(RELEASE).$(ARCH)
+PACK_TARGET 	:= anettrace-$(VERSION)-$(TARGET_PLATFORM)-$(BUILD_TYPE)
 PACK_PATH	:= $(abspath $(PREFIX)/$(PACK_TARGET))
 PACK_NAME	:= $(PACK_TARGET).tar.bz2
 

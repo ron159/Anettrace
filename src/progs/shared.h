@@ -11,6 +11,7 @@ typedef struct {
 	u32  trace_mode;
 	u32  pid;
 	u32  uid;
+	bool uid_enabled;
 	u32  netns;
 	u32  max_event;
 	bool drop_reason;
@@ -54,7 +55,7 @@ typedef struct {
 #ifdef __F_STACK_TRACE
 	u32		stack_id;
 #endif
-	u32		pid;
+	u32		tid;
 	u32		tgid;
 	u32		uid;
 	int		__event_filed[0];
@@ -79,7 +80,7 @@ typedef struct {
 #ifdef __F_STACK_TRACE
 	u32		stack_id;
 #endif
-	u32		pid;
+	u32		tid;
 	u32		tgid;
 	u32		uid;
 	/* fields above are exactly the same as event_t's, and the below
@@ -170,7 +171,7 @@ DEFINE_EVENT(rtt_event_t,
 typedef struct __attribute__((__packed__)) {
 	u16 meta;
 	u16 func;
-	u32 pid;
+	u32 tid;
 	u64 ts;
 	u64 val;
 } retevent_t;

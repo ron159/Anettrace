@@ -2,20 +2,42 @@ name: Build CI
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ master ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
-    - name: apt-update
-      run: sudo apt update
-    - name: prepare
-      run: sudo apt install python3 python3-yaml libelf-dev libbpf-dev linux-headers-`uname -r` clang llvm gcc linux-tools-`uname -r` linux-tools-generic -y
-    - name: make
-      run: make all
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            clang gcc libbpf-dev libelf-dev libzstd-dev llvm make \
+            pkg-config python3 python3-yaml zlib1g-dev
+      - name: Build Linux dual-backend binary
+        run: make all
+      - name: Check CLI contracts
+        run: |
+          ./src/anettrace --version | grep -q 'Anettrace 0.4.0'
+          ./src/anettrace -h | grep -q -- '--uid'
+          if ./src/anettrace --date --timestamp > /tmp/conflict.txt 2>&1; then
+            exit 1
+          fi
+          grep -q -- '--date and --timestamp cannot be used together' \
+            /tmp/conflict.txt
+      - name: Run source contract checks
+        run: ./tests/source-contracts.sh
+      - name: Run timezone offset tests
+        run: |
+          gcc -O2 -Wall -Wextra -Iutils \
+            tests/timezone_offset_test.c utils/time_utils.c \
+            -o /tmp/timezone-offset-test
+          /tmp/timezone-offset-test

@@ -115,7 +115,7 @@ static inline void analy_entry_free(analy_entry_t *entry)
 		trace_t *t = get_trace_from_analy_entry(entry);
 		list_del(&entry->ret_list);
 		pr_err("entry %s is still on hash pid=%d\n", t->name,
-		       entry->event->pid);
+		       entry->event->tid);
 	}
 
 	if (entry->status & ANALY_ENTRY_DLIST)
@@ -177,10 +177,10 @@ static void analy_entry_output(analy_entry_t *entry, analy_entry_t *prev)
 
 		sprintf(tinfo, "[%x][%-20s]%s[cpu:%-3u][%-5s][%s-tid:%u/pid:%u][uid:%u][ns:%u] ",
 			detail->key, t->name, func_range, entry->cpu, ifname,
-			detail->task, e->pid, e->tgid, e->uid, detail->netns);
+			detail->task, e->tid, e->tgid, e->uid, detail->netns);
 	} else if (trace_ctx.mode != TRACE_MODE_DROP) {
 		sprintf(tinfo, "[%-20s]%s[tid:%u/pid:%u][uid:%u] ", t->name, func_range,
-			e->pid, e->tgid, e->uid);
+			e->tid, e->tgid, e->uid);
 	}
 
 	if (trace_using_sk(t))

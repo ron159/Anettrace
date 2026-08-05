@@ -263,7 +263,8 @@ static int trace_check_force()
 	    args->rtt)
 		return 0;
 
-	if (trace_has_pkt_filter() || bpf_args->pid || bpf_args->uid || bpf_args->first_rtt ||
+	if (trace_has_pkt_filter() || bpf_args->pid || bpf_args->uid_enabled ||
+	    bpf_args->first_rtt ||
 	    bpf_args->last_rtt ||
 	    (args->traces && strcmp(args->traces, "all") != 0) ||
 	    args->count)
@@ -507,7 +508,8 @@ static int trace_prepare_args()
 		goto err;
 	}
 	bpf_args->__rate_limit = bpf_args->rate_limit;
-	bpf_args->has_filter = trace_has_pkt_filter();
+	bpf_args->has_filter = trace_has_pkt_filter() || bpf_args->pid ||
+		bpf_args->uid_enabled;
 
 	trace_parse_traces(args->trace_exclude, 4);
 	if (args->trace_matcher) {

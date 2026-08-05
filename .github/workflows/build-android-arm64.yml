@@ -1,12 +1,14 @@
-name: build-android-arm64-anettrace
+name: Build Android arm64 dual backend
 
 on:
   push:
     branches: [ master ]
   pull_request:
     branches: [ master ]
-  # 手动触发
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build-android-arm64:
@@ -16,54 +18,121 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # 可选：显式注册 QEMU，确保能运行 arm64 容器
-      - name: Set up QEMU
+      - name: Set up arm64 emulation
         uses: docker/setup-qemu-action@v3
         with:
           platforms: linux/arm64
 
-      - name: Build anettrace (Android arm64 / BTF)
+      - name: Build static arm64 artifact
         run: |
-          docker run --rm --privileged --platform=linux/arm64 \
-            -v "$PWD":/work \
+          docker run --rm --platform=linux/arm64 \
+            -e GITHUB_SHA \
+            -v "$PWD:/work" \
             -w /work \
             ubuntu:22.04 \
-            /bin/bash -euxc '
-              # 1. 基础依赖（不装 linux-headers / linux-tools）
-              apt update
-              DEBIAN_FRONTEND=noninteractive apt install -y \
-                python3 python3-yaml \
-                clang llvm gcc make \
-                libelf-dev pkg-config \
-                wget git file ca-certificates
+            /bin/bash -euxo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                binutils bzip2 ca-certificates clang file gcc git \
+                libelf-dev libzstd-dev llvm make pkg-config python3 \
+                python3-yaml wget zlib1g-dev
 
-              # 2. 从源码安装较新的 libbpf
               cd /tmp
-              wget https://github.com/libbpf/libbpf/archive/refs/tags/v1.6.2.tar.gz
-              tar -xf v1.6.2.tar.gz
-              cd libbpf-1.6.2/src
-              make BUILD_SHARED=1 BUILD_STATIC=1
-              make install PREFIX=/usr LIBDIR=/usr/lib
-              ldconfig
+              wget -q \
+                https://github.com/libbpf/libbpf/archive/refs/tags/v1.6.2.tar.gz \
+                -O libbpf.tar.gz
+              mkdir libbpf
+              tar -xzf libbpf.tar.gz -C libbpf --strip-components=1
+              make -C libbpf/src BUILD_SHARED=1 BUILD_STATIC=1
+              libbpf_libdir="/usr/lib/$(gcc -dumpmachine)"
+              make -C libbpf/src install \
+                PREFIX=/usr LIBDIR="${libbpf_libdir}"
+              test "$(PKG_CONFIG_PATH="${libbpf_libdir}/pkgconfig" \
+                pkg-config --modversion libbpf)" = "1.6.2"
 
-              # 3. 覆盖 linux/bpf.h 头文件（使用 6.12 的版本）
-              cd /tmp
-              wget https://raw.githubusercontent.com/torvalds/linux/v6.12/tools/include/uapi/linux/bpf.h
-              mkdir -p /work/shared/bpf/linux
-              cp bpf.h /work/shared/bpf/linux/
+              git clone --branch v7.6.0 --depth 1 \
+                --recurse-submodules --shallow-submodules \
+                https://github.com/libbpf/bpftool.git bpftool
+              make -C bpftool/src -j2
+              bpftool/src/bpftool version
 
-              # 4. 编译 BTF/CO-RE 版 anettrace
+              wget -q \
+                https://raw.githubusercontent.com/torvalds/linux/v6.12/tools/include/uapi/linux/bpf.h \
+                -O /work/shared/bpf/linux/bpf.h
+
               cd /work
               make clean
-              make all
-              make pack
+              make BPFTOOL=/tmp/bpftool/src/bpftool \
+                TARGET_PLATFORM=android-arm64 BUILD_TYPE=dual all
+              make BPFTOOL=/tmp/bpftool/src/bpftool \
+                TARGET_PLATFORM=android-arm64 BUILD_TYPE=dual pack
+
+              file src/anettrace | tee output/anettrace.file.txt
+              readelf -h src/anettrace > output/anettrace.elf-header.txt
+              readelf -l src/anettrace > output/anettrace.program-headers.txt
+              readelf -d src/anettrace > output/anettrace.dynamic.txt
+
+              grep -q "Machine:.*AArch64" output/anettrace.elf-header.txt
+              ! grep -q INTERP output/anettrace.program-headers.txt
+              ! grep -q NEEDED output/anettrace.dynamic.txt
+
+              src/anettrace --version
+              src/anettrace -h > /tmp/anettrace-help.txt
+              grep -q -- "--uid" /tmp/anettrace-help.txt
+              grep -q -- "--timestamp" /tmp/anettrace-help.txt
+              grep -q -- "--id" /tmp/anettrace-help.txt
+              grep -q -- "--mark" /tmp/anettrace-help.txt
+              grep -q -- "--libbpf-debug" /tmp/anettrace-help.txt
+              if src/anettrace --date --timestamp \
+                > /tmp/anettrace-conflict.txt 2>&1; then
+                exit 1
+              fi
+              grep -q -- "--date and --timestamp cannot be used together" \
+                /tmp/anettrace-conflict.txt
+
+              archive=output/anettrace-0.4.0-android-arm64-dual.tar.bz2
+              test -f "${archive}"
+              sha256sum "${archive}" > "${archive}.sha256"
+              sha256sum src/anettrace "${archive}" > output/SHA256SUMS
+              {
+                echo "source_commit=${GITHUB_SHA}"
+                echo "upstream_commit=a9f133477b02728e2430f7db9249d556b7162b84"
+                echo "libbpf_version=1.6.2"
+                echo "target=android-arm64-dual"
+                gcc --version | head -1
+                clang --version | head -1
+              } > output/build-metadata.txt
             '
 
-      - name: Upload packed artifact
+      - name: Upload Android arm64 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: anettrace-android-arm64
-          path: |
-            output/anettrace-*.tar.bz2
-            src/anettrace
+          name: anettrace-0.4.0-android-arm64-dual
           if-no-files-found: error
+          path: |
+            src/anettrace
+            output/anettrace-*.tar.bz2
+            output/anettrace-*.tar.bz2.sha256
+            output/SHA256SUMS
+            output/build-metadata.txt
+            output/anettrace.*.txt
+
+      - name: Download uploaded artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: anettrace-0.4.0-android-arm64-dual
+          path: downloaded
+
+      - name: Verify downloaded artifact
+        run: |
+          cd downloaded
+          archive=output/anettrace-0.4.0-android-arm64-dual.tar.bz2
+          sha256sum --check output/SHA256SUMS
+          sha256sum --check "${archive}.sha256"
+          file src/anettrace | grep -q 'ARM aarch64'
+          readelf -h src/anettrace | grep -q 'Machine:.*AArch64'
+          ! readelf -l src/anettrace | grep -q INTERP
+          ! readelf -d src/anettrace | grep -q NEEDED
+          tar -tjf "${archive}" | \
+            grep -q '^anettrace-0.4.0-android-arm64-dual/anettrace$'
