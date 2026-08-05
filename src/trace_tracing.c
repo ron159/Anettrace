@@ -12,6 +12,12 @@
 
 static struct tracing *skel;
 
+/*
+ * ENOTSUPP is an internal Linux kernel errno used by some BPF tracing paths.
+ * It is intentionally not exported through UAPI errno headers.
+ */
+#define KERNEL_ENOTSUPP 524
+
 static int attach_trace_prog(trace_t *trace, int prog_fd,
 			     enum bpf_attach_type attach_type,
 			     int *link_fd);
@@ -23,6 +29,14 @@ static int tracing_errno(int err)
 	if (err > 0)
 		return err;
 	return errno;
+}
+
+static const char *tracing_strerror(int code)
+{
+	if (code == KERNEL_ENOTSUPP)
+		return "operation not supported by kernel";
+
+	return strerror(code);
 }
 
 static void tracing_report_capability_error(const char *stage, int err)
@@ -39,8 +53,10 @@ static void tracing_report_capability_error(const char *stage, int err)
 	case EINVAL:
 	case EOPNOTSUPP:
 	case ENOSYS:
+	case KERNEL_ENOTSUPP:
 		pr_err("%s failed: the kernel does not provide the required "
-		       "BPF TRACING capability (%s)\n", stage, strerror(code));
+		       "BPF TRACING capability (%s)\n", stage,
+		       tracing_strerror(code));
 		break;
 	case ENOENT:
 		pr_err("%s failed: required BTF data or target function was not "
@@ -50,7 +66,8 @@ static void tracing_report_capability_error(const char *stage, int err)
 		pr_err("%s failed: BPF TRACING is not supported\n", stage);
 		break;
 	default:
-		pr_err("%s failed: %s (errno=%d)\n", stage, strerror(code), code);
+		pr_err("%s failed: %s (errno=%d)\n", stage,
+		       tracing_strerror(code), code);
 		break;
 	}
 }
@@ -62,6 +79,7 @@ static bool tracing_trace_error_is_skippable(int err)
 	case EOPNOTSUPP:
 	case ENOSYS:
 	case ENOENT:
+	case KERNEL_ENOTSUPP:
 		return true;
 	default:
 		return false;
@@ -79,7 +97,7 @@ static bool tracing_skip_unsupported_trace(trace_t *trace, const char *stage,
 	code = tracing_errno(err);
 	trace_set_invalid_reason(trace, reason);
 	pr_warn("trace %s skipped: %s failed: %s (errno=%d)\n",
-		trace->name, stage, strerror(code), code);
+		trace->name, stage, tracing_strerror(code), code);
 	return true;
 }
 
@@ -183,25 +201,38 @@ static bool tracing_support_feat_args_ext()
 	return supported;
 }
 
+static int tracing_trace_prog_fd(trace_t *trace, bool ret)
+{
+	struct bpf_program *prog;
+	int fd;
+
+	if (!trace->custom)
+		fd = ret ? trace->ret_prog_fd : trace->prog_fd;
+	else {
+		prog = bpf_pbn(skel->obj, ret ? trace->ret_prog : trace->prog);
+		fd = prog ? bpf_program__fd(prog) : -1;
+	}
+
+	return fd >= 0 ? fd : -ENOENT;
+}
+
 static int tracing_trace_attach()
 {
 	trace_t *trace;
-	int err;
-
-	err = tracing__attach(skel);
-	if (err) {
-		tracing_report_capability_error("attaching built-in tracing programs",
-						err);
-		return err;
-	}
+	int err, prog_fd, ret_prog_fd;
 
 	trace_for_each(trace) {
+		bool need_entry, need_exit;
+
 		if (trace_is_invalid(trace) || !trace_is_enable(trace) ||
-		    trace->custom)
+		    trace->attach_btf_id < 0)
 			continue;
 
+		prog_fd = tracing_trace_prog_fd(trace, false);
+		ret_prog_fd = tracing_trace_prog_fd(trace, true);
+
 		if (!trace_is_func(trace)) {
-			err = attach_trace_prog(trace, trace->prog_fd,
+			err = attach_trace_prog(trace, prog_fd,
 						BPF_TRACE_RAW_TP,
 						&trace->link_fd);
 			if (!err)
@@ -211,44 +242,54 @@ static int tracing_trace_attach()
 					"tp_btf attach unsupported", err))
 				continue;
 			pr_err("failed to attach tp_btf trace %s: %s\n",
-			       trace->name, strerror(tracing_errno(err)));
+			       trace->name,
+			       tracing_strerror(tracing_errno(err)));
 			tracing_report_capability_error("attaching tp_btf program",
 							err);
 			return err;
 		}
 
-		err = attach_trace_prog(trace, trace->prog_fd,
-					BPF_TRACE_FENTRY,
-					&trace->link_fd);
-		if (err && tracing_skip_unsupported_trace(trace,
-				"attaching fentry program",
-				"fentry attach unsupported", err))
-			continue;
-		if (err) {
-			pr_err("failed to attach fentry trace %s: %s\n",
-			       trace->name, strerror(tracing_errno(err)));
-			tracing_report_capability_error("attaching fentry program",
-							err);
-			return err;
+		need_entry = !trace_is_retonly(trace);
+		need_exit = trace_is_ret(trace) || trace_is_retonly(trace);
+
+		if (need_entry) {
+			err = attach_trace_prog(trace, prog_fd,
+						BPF_TRACE_FENTRY,
+						&trace->link_fd);
+			if (err && tracing_skip_unsupported_trace(trace,
+					"attaching fentry program",
+					"fentry attach unsupported", err))
+				continue;
+			if (err) {
+				pr_err("failed to attach fentry trace %s: %s\n",
+				       trace->name,
+				       tracing_strerror(tracing_errno(err)));
+				tracing_report_capability_error(
+					"attaching fentry program", err);
+				return err;
+			}
 		}
 
-		err = attach_trace_prog(trace, trace->ret_prog_fd,
-					BPF_TRACE_FEXIT,
-					&trace->ret_link_fd);
-		if (err && tracing_skip_unsupported_trace(trace,
-				"attaching fexit program",
-				"fexit attach unsupported", err)) {
-			if (trace->link_fd >= 0)
-				close(trace->link_fd);
-			trace->link_fd = -1;
-			continue;
-		}
-		if (err) {
-			pr_err("failed to attach fexit trace %s: %s\n",
-			       trace->name, strerror(tracing_errno(err)));
-			tracing_report_capability_error("attaching fexit program",
-							err);
-			return err;
+		if (need_exit) {
+			err = attach_trace_prog(trace, ret_prog_fd,
+						BPF_TRACE_FEXIT,
+						&trace->ret_link_fd);
+			if (err && tracing_skip_unsupported_trace(trace,
+					"attaching fexit program",
+					"fexit attach unsupported", err)) {
+				if (trace->link_fd >= 0)
+					close(trace->link_fd);
+				trace->link_fd = -1;
+				continue;
+			}
+			if (err) {
+				pr_err("failed to attach fexit trace %s: %s\n",
+				       trace->name,
+				       tracing_strerror(tracing_errno(err)));
+				tracing_report_capability_error(
+					"attaching fexit program", err);
+				return err;
+			}
 		}
 	}
 
@@ -469,7 +510,7 @@ static int attach_trace_prog(trace_t *trace, int prog_fd,
 	DECLARE_LIBBPF_OPTS(bpf_link_create_opts, opts);
 
 	if (prog_fd < 0)
-		return 0;
+		return prog_fd;
 
 	*link_fd = bpf_link_create(prog_fd, trace->attach_btf_fd,
 				   attach_type, &opts);
