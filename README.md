@@ -119,6 +119,14 @@ tools/capture_android_perfetto.sh \
 脚本同时用系统 Perfetto 采集 `sched_switch`、`sched_waking` 和进程信息，再生成
 `anettrace-combined.pftrace`。把该文件拖入 [Perfetto UI](https://ui.perfetto.dev/) 后，
 发包时间点位于实际执行线程轨道，线程 Running/Runnable/Sleeping 状态来自系统 sched 数据。
+
+整合方式是：设备端的 `perfetto` 负责产生系统级调度轨迹，Anettrace 只输出网络事件 JSONL；
+脚本以同一采集窗口将二者转换、合并为一个 trace 文件。因而可在同一时间轴上从
+`tcp_sendmsg_locked` 等网络阶段跳到对应 TID 的调度切换，判断延迟来自线程未被调度、内核网络
+路径，还是网卡发送之后。它不会替代系统 Perfetto，也不会向系统 trace 写入报文 payload。
+
+如果设备没有系统 `perfetto` 命令，先单独使用 `--perfetto-events` 生成 JSONL 后离线转换；
+该结果仅包含 Anettrace 网络轨道，不能提供 Running/Runnable/Sleeping 等调度状态。
 首个版本聚焦 TCP TX；UDP TX、socket cookie 归属和 Android netId/VPN/Fwmark 关联留待后续。
 
 只做离线转换时：
