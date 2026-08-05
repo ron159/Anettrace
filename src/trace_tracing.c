@@ -55,6 +55,45 @@ static void tracing_report_capability_error(const char *stage, int err)
 	}
 }
 
+static bool tracing_trace_error_is_skippable(int err)
+{
+	switch (tracing_errno(err)) {
+	case EINVAL:
+	case EOPNOTSUPP:
+	case ENOSYS:
+	case ENOENT:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool tracing_skip_unsupported_trace(trace_t *trace, const char *stage,
+					   const char *reason, int err)
+{
+	int code;
+
+	if (!tracing_trace_error_is_skippable(err))
+		return false;
+
+	code = tracing_errno(err);
+	trace_set_invalid_reason(trace, reason);
+	pr_warn("trace %s skipped: %s failed: %s (errno=%d)\n",
+		trace->name, stage, strerror(code), code);
+	return true;
+}
+
+static bool tracing_has_usable_trace(void)
+{
+	trace_t *trace;
+
+	trace_for_each(trace)
+		if (trace_is_usable(trace))
+			return true;
+
+	return false;
+}
+
 static int tracing_lookup_sym_type(const char **names, const int *types,
 				   int nr, const char *name)
 {
@@ -165,22 +204,57 @@ static int tracing_trace_attach()
 			err = attach_trace_prog(trace, trace->prog_fd,
 						BPF_TRACE_RAW_TP,
 						&trace->link_fd);
-			if (err)
-				return err;
-			continue;
+			if (!err)
+				continue;
+			if (tracing_skip_unsupported_trace(trace,
+					"attaching tp_btf program",
+					"tp_btf attach unsupported", err))
+				continue;
+			pr_err("failed to attach tp_btf trace %s: %s\n",
+			       trace->name, strerror(tracing_errno(err)));
+			tracing_report_capability_error("attaching tp_btf program",
+							err);
+			return err;
 		}
 
 		err = attach_trace_prog(trace, trace->prog_fd,
 					BPF_TRACE_FENTRY,
 					&trace->link_fd);
-		if (err)
+		if (err && tracing_skip_unsupported_trace(trace,
+				"attaching fentry program",
+				"fentry attach unsupported", err))
+			continue;
+		if (err) {
+			pr_err("failed to attach fentry trace %s: %s\n",
+			       trace->name, strerror(tracing_errno(err)));
+			tracing_report_capability_error("attaching fentry program",
+							err);
 			return err;
+		}
 
 		err = attach_trace_prog(trace, trace->ret_prog_fd,
 					BPF_TRACE_FEXIT,
 					&trace->ret_link_fd);
-		if (err)
+		if (err && tracing_skip_unsupported_trace(trace,
+				"attaching fexit program",
+				"fexit attach unsupported", err)) {
+			if (trace->link_fd >= 0)
+				close(trace->link_fd);
+			trace->link_fd = -1;
+			continue;
+		}
+		if (err) {
+			pr_err("failed to attach fexit trace %s: %s\n",
+			       trace->name, strerror(tracing_errno(err)));
+			tracing_report_capability_error("attaching fexit program",
+							err);
 			return err;
+		}
+	}
+
+	if (!tracing_has_usable_trace()) {
+		pr_err("no enabled trace can be attached on this kernel\n");
+		return -EOPNOTSUPP;
 	}
 
 	return 0;
@@ -399,15 +473,8 @@ static int attach_trace_prog(trace_t *trace, int prog_fd,
 
 	*link_fd = bpf_link_create(prog_fd, trace->attach_btf_fd,
 				   attach_type, &opts);
-	if (*link_fd < 0) {
-		int err = errno;
-
-		pr_err("failed to attach prog for trace %s: btf_id=%d btf_fd=%d attach_type=%d fd=%d %s\n",
-		       trace->name, trace->attach_btf_id, trace->attach_btf_fd,
-		       attach_type, prog_fd, strerror(err));
-		tracing_report_capability_error("attaching tracing program", err);
-		return -err;
-	}
+	if (*link_fd < 0)
+		return *link_fd;
 
 	return 0;
 }
@@ -488,6 +555,10 @@ static int tracing_trace_load()
 			}
 			fd = load_cloned_prog(trace, tmpl_tp, trace->prog);
 			if (fd < 0) {
+				if (tracing_skip_unsupported_trace(trace,
+						"loading tp_btf program",
+						"tp_btf load unsupported", fd))
+					continue;
 				pr_err("failed to load tp prog %s: %d\n",
 				       trace->prog, fd);
 				tracing_report_capability_error("loading tp_btf program", fd);
@@ -509,6 +580,10 @@ static int tracing_trace_load()
 			}
 			fd = load_cloned_prog(trace, tmpl_entry, trace->prog);
 			if (fd < 0) {
+				if (tracing_skip_unsupported_trace(trace,
+						"loading fentry program",
+						"fentry load unsupported", fd))
+					continue;
 				pr_err("failed to load prog %s: %d\n",
 				       trace->prog, fd);
 				tracing_report_capability_error("loading fentry program", fd);
@@ -526,6 +601,14 @@ static int tracing_trace_load()
 			}
 			fd = load_cloned_prog(trace, tmpl_exit, trace->ret_prog);
 			if (fd < 0) {
+				if (tracing_skip_unsupported_trace(trace,
+						"loading fexit program",
+						"fexit load unsupported", fd)) {
+					if (trace->prog_fd >= 0)
+						close(trace->prog_fd);
+					trace->prog_fd = -1;
+					continue;
+				}
 				pr_err("failed to load ret prog %s: %d\n",
 				       trace->ret_prog, fd);
 				tracing_report_capability_error("loading fexit program", fd);
@@ -534,6 +617,12 @@ static int tracing_trace_load()
 			}
 			trace->ret_prog_fd = fd;
 		}
+	}
+
+	if (!tracing_has_usable_trace()) {
+		pr_err("no enabled trace can be loaded on this kernel\n");
+		err = -EOPNOTSUPP;
+		goto err;
 	}
 
 	return 0;
