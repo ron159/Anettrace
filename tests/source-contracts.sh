@@ -15,7 +15,7 @@ require_text() {
 	fi
 }
 
-require_text '.set = &bpf_args->uid_enabled' src/nettrace.c
+require_text '.set = &bpf_args->uid_enabled' src/anettrace.c
 require_text 'bpf_args->uid_enabled' src/trace.c
 require_text 'pid_tgid = bpf_get_current_pid_tgid();' src/progs/core.c
 require_text 'u32 uid = (u32)bpf_get_current_uid_gid();' src/progs/core.c
@@ -27,15 +27,15 @@ require_text 'ANETTRACE_ANDROID_TARGET=1' common.mk
 require_text 'packet mark must remain the final field' src/progs/skb_shared.h
 require_text 'pkt->mark = _C(skb, mark);' src/progs/skb_parse.h
 require_text 'pkt->l3.ipv4.id = bpf_ntohs(_C(ipv4, id));' src/progs/skb_parse.h
-require_text '--date and --timestamp cannot be used together' src/nettrace.c
+require_text '--date and --timestamp cannot be used together' src/anettrace.c
 require_text 'TIME_MODE_MONOTONIC' src/output.c
 require_text '"/system/bin/date"' src/output.c
 require_text 'id:0x%x' src/output.c
 require_text 'mark:0x%x' src/output.c
 require_text 'bpf_program__attach_kprobe' src/trace_probe.c
 require_text 'progs/kprobe' src/Makefile
-require_text '.lname = "traffic"' src/nettrace.c
-require_text '.lname = "interval"' src/nettrace.c
+require_text '.lname = "traffic"' src/anettrace.c
+require_text '.lname = "interval"' src/anettrace.c
 require_text 'progs/traffic' src/Makefile
 require_text 'SEC("kprobe/tcp_sendmsg")' src/progs/traffic.c
 require_text 'SEC("kretprobe/tcp_recvmsg")' src/progs/traffic.c

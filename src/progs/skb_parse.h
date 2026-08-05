@@ -94,7 +94,7 @@ const volatile bool bpf_func_exist[BPF_LOCAL_FUNC_MAX] = {0};
 #ifdef BPF_DEBUG
 #define pr_bpf_debug(fmt, args...) {				\
 	if (CONFIG()->bpf_debug)				\
-		bpf_printk("nettrace: "fmt"\n", ##args);	\
+		bpf_printk("anettrace: "fmt"\n", ##args);	\
 }
 #else
 #define pr_bpf_debug(fmt, ...)

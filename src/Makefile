@@ -10,7 +10,7 @@ prog-anettrace-origin = \
 		trace.c trace_probe.c output.c trace_tracing.c traffic.c \
 		analysis.c trace_group.c \
 		dropreason.c rstreason.c
-prog-anettrace	= $(prog-anettrace-origin) nettrace.c
+prog-anettrace	= $(prog-anettrace-origin) anettrace.c
 
 ifdef COMPAT
 	NO_GLOBAL_DATA	:= 1
@@ -89,9 +89,9 @@ trace_group.c: trace.yaml
 progs/*.c: progs/kprobe_trace.h
 	@:
 
-nettrace.c: $(prog-anettrace-origin)
+anettrace.c: $(prog-anettrace-origin)
 
-anettrace: nettrace.c
+anettrace: anettrace.c
 
 all: $(progs)
 

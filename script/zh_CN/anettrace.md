@@ -1,16 +1,16 @@
-# NETTRACE 8 "20 JULY 2022" Linux "User Manuals"
+# ANETTRACE 8 "20 JULY 2022" Linux "User Manuals"
 
 ## NAME
 
-nettrace - Linux系统下的网络报文跟踪、网络问题诊断工具
+anettrace - Linux系统下的网络报文跟踪、网络问题诊断工具
 
 ## SYNOPSIS
 
-`nettrace` [选项]
+`anettrace` [选项]
 
 ## DESCRIPTION
 
-`nettrace`是基于eBPF的集网络报文跟踪（故障定位）、网络故障诊断、网络异常监控于一体的网
+`anettrace`是基于eBPF的集网络报文跟踪（故障定位）、网络故障诊断、网络异常监控于一体的网
 络工具集，旨在能够提供一种更加高效、易用的方法来解决复杂场景下的网络问题。
 
 ## OPTIONS
@@ -117,13 +117,13 @@ nettrace - Linux系统下的网络报文跟踪、网络问题诊断工具
 
   这里将这些被跟踪的对象（内核函数、tracepoint等）简称为跟踪器，
   所有的跟踪器以树状图的方式被组织了起来，使用命令：
-  *nettrace -t ?*
+  *anettrace -t ?*
   可以查看所有的跟踪器。
 
   默认情况下，大部分的跟踪器会被启用，一些设备相关的跟踪器（如ipvlan、bridge等）默认
   不启用。使用参数*-t all*可启用所有的跟踪器。
 
-  可以同时指定多个跟踪器，以*,*分隔，比如*nettrace -t ip,link,kfree_skb*。
+  可以同时指定多个跟踪器，以*,*分隔，比如*anettrace -t ip,link,kfree_skb*。
   可以指定跟踪器的目录，也可以直接指定跟踪器。
 
 `--ret`
@@ -177,16 +177,16 @@ nettrace - Linux系统下的网络报文跟踪、网络问题诊断工具
 ### 生命周期跟踪
 
 跟踪源地址为`192.168.1.8`的ping报文：
-  *nettrace -p icmp -s 192.168.1.8*
+  *anettrace -p icmp -s 192.168.1.8*
 
 跟踪源地址为`192.168.1.8`的ping报文在IP协议层和ICMP协议层的路径：
-  *nettrace -p icmp -s 192.168.1.8 -t ip,icmp*
+  *anettrace -p icmp -s 192.168.1.8 -t ip,icmp*
 
 显示详细信息：
-  *nettrace -p icmp -s 192.168.1.8 --detail*
+  *anettrace -p icmp -s 192.168.1.8 --detail*
 
 打印堆栈：
-  *nettrace -p icmp -s 192.168.1.8 --trace-stack consume_skb,icmp_rcv*
+  *anettrace -p icmp -s 192.168.1.8 --trace-stack consume_skb,icmp_rcv*
 
 ### 诊断模式
 
@@ -206,7 +206,7 @@ nettrace - Linux系统下的网络报文跟踪、网络问题诊断工具
 加`diag-keep`可以在发生`ERROR`事件时不退出，继续进行跟踪分析。下面是发生异常时的日志：
 
 ```shell
-./nettrace -p icmp --diag --saddr 192.168.122.8
+./anettrace -p icmp --diag --saddr 192.168.122.8
 begin trace...
 ***************** ffff889fb3c64f00 ***************
 [4049.295546] [__netif_receive_skb_core] ICMP: 192.168.122.8 -> 10.123.119.98 ping request, seq: 0
@@ -255,18 +255,18 @@ end trace...
 适配的，可以理解为将droptrace的功能集成到了这里的诊断结果中，这里可以看出其给出的丢包
 原因是`NETFILTER_DROP`。因此，可以通过一下命令来监控内核中所有的丢包事件以及丢包原因：
 
-*nettrace -t kfree_skb --diag --diag-keep*
+*anettrace -t kfree_skb --diag --diag-keep*
 
 ### 丢包监控
 
-使用命令`nettrace --drop`可以对系统中的丢包事件进行监控，对于支持内核特性
+使用命令`anettrace --drop`可以对系统中的丢包事件进行监控，对于支持内核特性
 `skb drop reason`的内核，这里还会打印出丢包原因。可以通过查看
 `/tracing/events/skb/kfree_skb/format`来判断当前系统是否支持该特性。
 
 该模式下使用的效果与原先的`droptrace`完全相同，如下所示：
 
 ```shell
-nettrace --drop
+anettrace --drop
 begin trace...
 [142.097193] TCP: 162.241.189.135:57022 -> 172.27.0.6:22 seq:299038593, ack:3843597961, flags:AR, reason: NOT_SPECIFIED, tcp_v4_rcv+0x81
 [142.331798] TCP: 162.241.189.135:57022 -> 172.27.0.6:22 seq:299038593, ack:3843597961, flags:A, reason: NOT_SPECIFIED, tcp_v4_do_rcv+0x83
@@ -281,7 +281,7 @@ begin trace...
 `skb drop reason`特性的内核，该模式下将不会打印丢包原因字段，效果如下所示：
 
 ```shell
-nettrace --drop
+anettrace --drop
 begin trace...
 [2016.965295] TCP: 162.241.189.135:45432 -> 172.27.0.6:22 seq:133152310, ack:2529234288, flags:AR, tcp_v4_rcv+0x50
 [2017.201315] TCP: 162.241.189.135:45432 -> 172.27.0.6:22 seq:133152310, ack:2529234288, flags:A, tcp_v4_do_rcv+0x70
@@ -296,15 +296,15 @@ begin trace...
 
 网络防火墙是网络故障、网络不同发生的重灾区，因此`netfilter`工具对`netfilter`提供了
 完美适配，包括老版本的`iptables-legacy`和新版本的`iptables-nft`。诊断模式下，
-`nettrace`能够跟踪报文所经过的`iptables`表和`iptables`链，并在发生由于iptables
+`anettrace`能够跟踪报文所经过的`iptables`表和`iptables`链，并在发生由于iptables
 导致的丢包时给出一定的提示，上面的示例充分展现出了这部分。出了对iptables的支持，
-`nettrace`对整个netfilter大模块也提供了支持，能够显示在经过每个HOOK点时对应的协议族
+`anettrace`对整个netfilter大模块也提供了支持，能够显示在经过每个HOOK点时对应的协议族
 和链的名称。除此之外，为了应对一些注册到netfilter中的第三方内核模块导致的丢包问题，
-`nettrace`还可以通过添加参数`hooks`来打印出当前`HOOK`上所有的的钩子函数，从而深入
+`anettrace`还可以通过添加参数`hooks`来打印出当前`HOOK`上所有的的钩子函数，从而深入
 分析问题：
 
 ```shell
-./nettrace -p icmp --diag --saddr 192.168.122.8 --hooks
+./anettrace -p icmp --diag --saddr 192.168.122.8 --hooks
 begin trace...
 ***************** ffff889faa054500 ***************
 [5810.702473] [__netif_receive_skb_core] ICMP: 192.168.122.8 -> 10.123.119.98 ping request, seq: 943
@@ -358,7 +358,7 @@ end trace...
 常规的过滤参数，如ip、端口等，在该模式下都可以直接使用，基本用法如下所示：
 
 ```shell
-sudo ./nettrace -p tcp --port 9999 --sock
+sudo ./anettrace -p tcp --port 9999 --sock
 begin trace...
 [2157947.050509] [inet_listen         ] TCP: 0.0.0.0:9999 -> 0.0.0.0:0 info:(0 0)
 [2157958.364842] [__tcp_transmit_skb  ] TCP: 127.0.0.1:36562 -> 127.0.0.1:9999 info:(1 0)
@@ -392,7 +392,7 @@ begin trace...
 基本用法（在内核特性完全支持的情况下）：
 
 ```shell
-$ nettrace --monitor
+$ anettrace --monitor
 begin trace...
 [25.167980] [nft_do_chain        ] ICMP: 192.168.122.1 -> 192.168.122.9 ping request, seq: 1, id: 1523 *iptables table:filter, chain:INPUT* *packet is dropped by iptables/iptables-nft*
 [25.167996] [kfree_skb           ] ICMP: 192.168.122.1 -> 192.168.122.9 ping request, seq: 1, id: 1523, reason: NETFILTER_DROP, nf_hook_slow+0xa8

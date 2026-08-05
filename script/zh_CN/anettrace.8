@@ -1,7 +1,7 @@
-.TH NETTRACE 8 "20 JULY 2022" Linux "User Manuals"
+.TH ANETTRACE 8 "20 JULY 2022" Linux "User Manuals"
 .SH NAME
 .PP
-nettrace \- Linux系统下的网络报文跟踪、网络问题诊断工具
+anettrace \- Linux系统下的网络报文跟踪、网络问题诊断工具
 .SH SYNOPSIS
 .PP
 \fB\fCnettrace\fR [选项]
@@ -201,7 +201,7 @@ nettrace \- Linux系统下的网络报文跟踪、网络问题诊断工具
 .PP
 .RS
 .nf
-\&./nettrace \-p icmp \-\-diag \-\-saddr 192.168.122.8
+\&./anettrace \-p icmp \-\-diag \-\-saddr 192.168.122.8
 begin trace...
 ***************** ffff889fb3c64f00 ***************
 [4049.295546] [__netif_receive_skb_core] ICMP: 192.168.122.8 \-> 10.123.119.98 ping request, seq: 0
@@ -262,7 +262,7 @@ end trace...
 .PP
 .RS
 .nf
-nettrace \-\-drop
+anettrace \-\-drop
 begin trace...
 [142.097193] TCP: 162.241.189.135:57022 \-> 172.27.0.6:22 seq:299038593, ack:3843597961, flags:AR, reason: NOT_SPECIFIED, tcp_v4_rcv+0x81
 [142.331798] TCP: 162.241.189.135:57022 \-> 172.27.0.6:22 seq:299038593, ack:3843597961, flags:A, reason: NOT_SPECIFIED, tcp_v4_do_rcv+0x83
@@ -279,7 +279,7 @@ begin trace...
 .PP
 .RS
 .nf
-nettrace \-\-drop
+anettrace \-\-drop
 begin trace...
 [2016.965295] TCP: 162.241.189.135:45432 \-> 172.27.0.6:22 seq:133152310, ack:2529234288, flags:AR, tcp_v4_rcv+0x50
 [2017.201315] TCP: 162.241.189.135:45432 \-> 172.27.0.6:22 seq:133152310, ack:2529234288, flags:A, tcp_v4_do_rcv+0x70
@@ -303,7 +303,7 @@ begin trace...
 .PP
 .RS
 .nf
-\&./nettrace \-p icmp \-\-diag \-\-saddr 192.168.122.8 \-\-hooks
+\&./anettrace \-p icmp \-\-diag \-\-saddr 192.168.122.8 \-\-hooks
 begin trace...
 ***************** ffff889faa054500 ***************
 [5810.702473] [__netif_receive_skb_core] ICMP: 192.168.122.8 \-> 10.123.119.98 ping request, seq: 943
@@ -358,7 +358,7 @@ end trace...
 .PP
 .RS
 .nf
-sudo ./nettrace \-p tcp \-\-port 9999 \-\-sock
+sudo ./anettrace \-p tcp \-\-port 9999 \-\-sock
 begin trace...
 [2157947.050509] [inet_listen         ] TCP: 0.0.0.0:9999 \-> 0.0.0.0:0 info:(0 0)
 [2157958.364842] [__tcp_transmit_skb  ] TCP: 127.0.0.1:36562 \-> 127.0.0.1:9999 info:(1 0)
@@ -399,7 +399,7 @@ bpf, x86: allow function arguments up to 12 for TRACING \[la]https://lore.kernel
 .PP
 .RS
 .nf
-$ nettrace \-\-monitor
+$ anettrace \-\-monitor
 begin trace...
 [25.167980] [nft_do_chain        ] ICMP: 192.168.122.1 \-> 192.168.122.9 ping request, seq: 1, id: 1523 *iptables table:filter, chain:INPUT* *packet is dropped by iptables/iptables\-nft*
 [25.167996] [kfree_skb           ] ICMP: 192.168.122.1 \-> 192.168.122.9 ping request, seq: 1, id: 1523, reason: NETFILTER_DROP, nf_hook_slow+0xa8
