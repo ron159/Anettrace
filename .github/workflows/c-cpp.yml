@@ -53,4 +53,4 @@ jobs:
           -o /tmp/timezone-offset-test
         /tmp/timezone-offset-test
     - name: Run Linux BTF selftests
-      run: sudo ./tests/selftests.sh ./src/anettrace
+      run: sudo ./tests/selftests.sh -v ./src/anettrace
