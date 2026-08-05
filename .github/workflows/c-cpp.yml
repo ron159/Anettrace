@@ -28,11 +28,19 @@ jobs:
         run: |
           ./src/anettrace --version | grep -q 'Anettrace 0.4.0'
           ./src/anettrace -h | grep -q -- '--uid'
+          ./src/anettrace -h | grep -q -- '--traffic'
+          ./src/anettrace -h | grep -q -- '--interval'
           if ./src/anettrace --date --timestamp > /tmp/conflict.txt 2>&1; then
             exit 1
           fi
           grep -q -- '--date and --timestamp cannot be used together' \
             /tmp/conflict.txt
+          if ./src/anettrace --traffic --proto icmp -c 1 \
+            > /tmp/traffic-proto.txt 2>&1; then
+            exit 1
+          fi
+          grep -q -- '--traffic supports only --proto tcp or --proto udp' \
+            /tmp/traffic-proto.txt
       - name: Run source contract checks
         run: ./tests/source-contracts.sh
       - name: Run timezone offset tests

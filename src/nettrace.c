@@ -10,6 +10,7 @@
 
 #include "nettrace.h"
 #include "trace.h"
+#include "traffic.h"
 
 arg_config_t config = {
 	.name = "anettrace",
@@ -129,6 +130,16 @@ static void do_parse_args(int argc, char *argv[])
 			.desc = "filter by TCP flags, such as: SAPR",
 		},
 		{ .type = OPTION_BLANK },
+		{
+			.lname = "traffic", .dest = &trace_args->traffic,
+			.type = OPTION_BOOL,
+			.desc = "show per-thread TCP/UDP traffic totals instead of socket lifecycle",
+		},
+		{
+			.lname = "interval", .dest = &trace_args->traffic_interval,
+			.type = OPTION_U32,
+			.desc = "traffic refresh interval in seconds (default 1)",
+		},
 		{
 			.lname = "basic", .dest = &trace_args->basic,
 			.type = OPTION_BOOL,
@@ -256,7 +267,7 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "count", .sname = 'c', .dest = &trace_args->count,
 			.type = OPTION_U32,
-			.desc = "exit after receiving count packets",
+			.desc = "exit after count packets, or count reports in traffic mode",
 		},
 		{
 			.lname = "hooks", .dest = &bpf_args->hooks,
@@ -451,6 +462,8 @@ int main(int argc, char *argv[])
 	output_time_init();
 	init_trace_group();
 	do_parse_args(argc, argv);
+	if (trace_ctx.args.traffic)
+		return traffic_run(&trace_ctx.args, &trace_ctx.bpf_args);
 
 	if (trace_prepare())
 		goto err;

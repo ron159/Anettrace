@@ -34,6 +34,17 @@ require_text 'id:0x%x' src/output.c
 require_text 'mark:0x%x' src/output.c
 require_text 'bpf_program__attach_kprobe' src/trace_probe.c
 require_text 'progs/kprobe' src/Makefile
+require_text '.lname = "traffic"' src/nettrace.c
+require_text '.lname = "interval"' src/nettrace.c
+require_text 'progs/traffic' src/Makefile
+require_text 'SEC("kprobe/tcp_sendmsg")' src/progs/traffic.c
+require_text 'SEC("kretprobe/tcp_recvmsg")' src/progs/traffic.c
+require_text 'SEC("kprobe/udp_sendmsg")' src/progs/traffic.c
+require_text 'SEC("kprobe/udpv6_recvmsg")' src/progs/traffic.c
+require_text 'BPF_MAP_TYPE_LRU_HASH' src/progs/traffic.c
+require_text 'PT_REGS_RC(ctx)' src/progs/traffic.c
+require_text 'TX_KB' src/traffic.c
+require_text 'traffic_print_snapshot' src/traffic.c
 require_text 'anettrace-0.4.0-android-arm64-dual.tar.bz2' \
 	.github/workflows/build-android-arm64.yml
 

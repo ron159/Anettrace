@@ -17,6 +17,7 @@ const char *cond_pre = "verlte() { [ \"$1\" = \"$2\" ] && echo 0 && return; "
 
 trace_context_t trace_ctx = {
 	.mode = TRACE_MODE_TIMELINE,
+	.args.traffic_interval = 1,
 };
 
 extern trace_ops_t tracing_ops;

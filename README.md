@@ -61,6 +61,29 @@ adb shell chmod 0755 /data/local/tmp/anettrace /data/local/tmp/android-smoke.sh
 adb shell /data/local/tmp/android-smoke.sh /data/local/tmp/anettrace
 ```
 
+### 整机 TCP/UDP 流量视图
+
+`--traffic` 提供独立于 socket 生命周期的流量统计视图。它在进程上下文的
+`tcp_sendmsg/tcp_recvmsg/udp_sendmsg/udp_recvmsg` 返回点按实际返回值累计字节数，
+每个刷新周期只打印本周期有流量的 PID/TID/线程名和网络端点：
+
+```shell
+# 整机 TCP + UDP，默认每秒刷新
+anettrace --traffic
+
+# 只看 TCP，每 2 秒刷新一次
+anettrace --traffic --proto tcp --interval 2
+
+# 只看指定线程或 UID；-c 在流量模式表示输出的统计周期数
+anettrace --traffic --proto udp --pid 1234 --uid 0 --interval 1 -c 10
+```
+
+输出列为 `PID TID COMM P AF LADDR LPORT RADDR RPORT TX_KB RX_KB`，其中
+`TX_KB/RX_KB` 是该流从本次启动开始的累计应用层收发字节。默认覆盖 TCP/UDP；
+协议过滤当前支持 `tcp` 和 `udp`。未连接 UDP socket 无法从 `struct sock` 得到单次
+`sendto/recvfrom` 对端时，会显示 `0.0.0.0:0` 或 `[::]:0`。纯内核转发流量没有可归属的
+PID/TID，因此不属于这个视图；这类流量继续使用普通报文追踪模式。
+
 CI 会校验 SHA-256、AArch64 架构、静态链接属性和 CLI 契约；CI 成功不等于目标设备
 内核兼容性验证完成。
 
@@ -232,6 +255,8 @@ Usage:
     --pkt-len        filter by the IP packet length (include header) in byte
     --tcp-flags      filter by TCP flags, such as: SAPR
 
+    --traffic        show per-thread TCP/UDP traffic totals instead of socket lifecycle
+    --interval       traffic refresh interval in seconds (default 1)
     --basic          use 'basic' trace mode, don't trace skb's life
     --diag           enable 'diagnose' mode
     --diag-quiet     only print abnormal packet

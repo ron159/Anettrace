@@ -2,7 +2,7 @@ complete -W '-s --saddr -d --daddr --addr -p -D --dport -S --sport -P --port
              --netns --netns-current --pid --uid --min-latency --pkt-len
              --tcp-flags --pkt-len --tcp-rtt --tcp--srtt
 
-             --basic --diag --diag-quiet --diag-keep --drop --drop-stack
+             --traffic --interval --basic --diag --diag-quiet --diag-keep --drop --drop-stack
              --sock --monitor --rtt --rtt-detail --filter-srtt
              --filter-minrtt --latency-show --latency-free --latency
              --latency-summary

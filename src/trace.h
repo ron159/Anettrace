@@ -103,6 +103,7 @@ typedef struct trace_args {
 	bool intel_quiet;
 	bool intel_keep;
 	bool basic;
+	bool traffic;
 	bool monitor;
 	bool drop;
 	int  time_mode;
@@ -119,6 +120,7 @@ typedef struct trace_args {
 	bool latency;
 	bool traces_noclone;
 	u32  min_latency;
+	u32  traffic_interval;
 	char *traces;
 	char *traces_stack;
 	char *trace_matcher;

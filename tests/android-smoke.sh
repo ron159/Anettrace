@@ -8,6 +8,7 @@ OUT="${2:-/data/local/tmp/anettrace-smoke}"
 TRACE_PID=""
 WATCHDOG_PID=""
 PING_TARGET=""
+SERVER_PID=""
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -17,6 +18,7 @@ fail() {
 cleanup() {
 	[ -z "$TRACE_PID" ] || kill "$TRACE_PID" 2>/dev/null || true
 	[ -z "$WATCHDOG_PID" ] || kill "$WATCHDOG_PID" 2>/dev/null || true
+	[ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null || true
 }
 
 trap cleanup EXIT INT TERM
@@ -91,5 +93,55 @@ grep -Eq '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} ' "$OUT/date.txt" ||
 run_icmp_trace timestamp --timestamp
 grep -Eq '^\[[0-9]+\.[0-9]{6}\]' "$OUT/timestamp.txt" ||
 	fail "monotonic timestamp format missing"
+
+run_tcp_traffic_report() {
+	name="$1"
+	shift
+	log="$OUT/$name.txt"
+	port=$((46000 + $$ % 1000))
+
+	"$BIN" --traffic --interval 1 -c 4 --uid 0 "$@" > "$log" 2>&1 &
+	TRACE_PID=$!
+	(
+		sleep 20
+		kill "$TRACE_PID" 2>/dev/null || true
+	) &
+	WATCHDOG_PID=$!
+	sleep 1
+	nc -l -s "$PING_TARGET" -p "$port" >/dev/null 2>&1 &
+	SERVER_PID=$!
+	sleep 1
+	if ! dd if=/dev/zero bs=1024 count=8 2>/dev/null |
+		nc -w 3 "$PING_TARGET" "$port" >/dev/null 2>&1; then
+		fail "unable to generate local TCP traffic"
+	fi
+	wait "$SERVER_PID" 2>/dev/null || true
+	SERVER_PID=""
+	if ! wait "$TRACE_PID"; then
+		TRACE_PID=""
+		kill "$WATCHDOG_PID" 2>/dev/null || true
+		WATCHDOG_PID=""
+		fail "$name traffic report failed or timed out; inspect $log"
+	fi
+	TRACE_PID=""
+	kill "$WATCHDOG_PID" 2>/dev/null || true
+	wait "$WATCHDOG_PID" 2>/dev/null || true
+	WATCHDOG_PID=""
+}
+
+run_tcp_traffic_report traffic-all
+grep -q 'Traffic TCP/UDP' "$OUT/traffic-all.txt" ||
+	fail "whole-device traffic heading missing"
+grep -q 'PID.*TID.*COMM.*LADDR.*LPORT.*RADDR.*RPORT.*TX_KB.*RX_KB' \
+	"$OUT/traffic-all.txt" || fail "traffic columns missing"
+grep -q ' TCP ' "$OUT/traffic-all.txt" || fail "TCP flow row missing"
+grep -q "$PING_TARGET" "$OUT/traffic-all.txt" ||
+	fail "traffic endpoint missing"
+
+run_tcp_traffic_report traffic-tcp --proto tcp
+grep -q 'Traffic TCP ' "$OUT/traffic-tcp.txt" ||
+	fail "TCP protocol filter heading missing"
+grep -q ' TCP ' "$OUT/traffic-tcp.txt" ||
+	fail "TCP protocol filter produced no flow rows"
 
 echo "Android KPROBE smoke test: PASS ($OUT)"
