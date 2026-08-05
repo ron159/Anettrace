@@ -43,13 +43,25 @@ jobs:
               mkdir libbpf
               tar -xzf libbpf.tar.gz -C libbpf --strip-components=1
               make -C libbpf/src BUILD_SHARED=1 BUILD_STATIC=1
+              libbpf_libdir="/usr/lib/$(gcc -dumpmachine)"
               make -C libbpf/src install \
-                PREFIX=/usr LIBDIR=/usr/lib
+                PREFIX=/usr LIBDIR="${libbpf_libdir}"
+              ldconfig
+              test "$(PKG_CONFIG_PATH="${libbpf_libdir}/pkgconfig" \
+                pkg-config --modversion libbpf)" = "1.6.2"
+
+              git clone --branch v7.6.0 --depth 1 \
+                --recurse-submodules --shallow-submodules \
+                https://github.com/libbpf/bpftool.git bpftool
+              make -C bpftool/src -j2
+              bpftool/src/bpftool version
 
               cd /work
               make clean
-              make STATIC=1 TARGET_PLATFORM=android-arm64 all
-              make STATIC=1 TARGET_PLATFORM=android-arm64 pack
+              make BPFTOOL=/tmp/bpftool/src/bpftool \
+                STATIC=1 TARGET_PLATFORM=android-arm64 all
+              make BPFTOOL=/tmp/bpftool/src/bpftool \
+                STATIC=1 TARGET_PLATFORM=android-arm64 pack
 
               file src/anettrace | tee output/anettrace.file.txt
               readelf -h src/anettrace > output/anettrace.elf-header.txt

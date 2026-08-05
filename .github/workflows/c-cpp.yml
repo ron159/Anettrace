@@ -20,7 +20,7 @@ jobs:
         sudo apt-get update
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
           ca-certificates clang gcc iperf3 iproute2 iptables iputils-ping \
-          libbpf-dev libelf-dev libzstd-dev llvm make netcat-openbsd \
+          libelf-dev libzstd-dev llvm make netcat-openbsd \
           pkg-config python3 python3-yaml wget zlib1g-dev
     - name: Install libbpf 1.6.2
       run: |
@@ -30,9 +30,12 @@ jobs:
         mkdir /tmp/libbpf
         tar -xzf /tmp/libbpf.tar.gz -C /tmp/libbpf --strip-components=1
         make -C /tmp/libbpf/src BUILD_SHARED=1 BUILD_STATIC=1
-        sudo make -C /tmp/libbpf/src install PREFIX=/usr LIBDIR=/usr/lib
+        libbpf_libdir="/usr/lib/$(gcc -dumpmachine)"
+        sudo make -C /tmp/libbpf/src install \
+          PREFIX=/usr LIBDIR="${libbpf_libdir}"
         sudo ldconfig
-        test "$(pkg-config --modversion libbpf)" = "1.6.2"
+        test "$(PKG_CONFIG_PATH="${libbpf_libdir}/pkgconfig" \
+          pkg-config --modversion libbpf)" = "1.6.2"
     - name: Build Linux BTF binary
       run: make all
     - name: Run source contract checks
