@@ -45,6 +45,7 @@ static __always_inline int traffic_fill_key(struct sock *sk, u8 protocol,
 					     traffic_flow_key_t *key)
 {
 	struct sock_common *common = (void *)sk;
+	struct inet_sock *inet = (void *)sk;
 	struct in6_addr address = {};
 	u64 pid_tgid = bpf_get_current_pid_tgid();
 	u32 uid = (u32)bpf_get_current_uid_gid();
@@ -65,6 +66,8 @@ static __always_inline int traffic_fill_key(struct sock *sk, u8 protocol,
 	if (expected_family && key->family != expected_family)
 		return -1;
 	key->lport = BPF_CORE_READ(common, skc_num);
+	if (!key->lport)
+		key->lport = bpf_ntohs(BPF_CORE_READ(inet, inet_sport));
 	key->rport = bpf_ntohs(BPF_CORE_READ(common, skc_dport));
 	bpf_get_current_comm(key->comm, sizeof(key->comm));
 
