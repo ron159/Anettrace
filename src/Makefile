@@ -8,7 +8,7 @@ prog-anettrace-origin = \
 		$(utils)/time_utils.c \
 		$(utils)/bpf_utils.c \
 		trace.c trace_probe.c output.c trace_tracing.c traffic.c \
-		analysis.c trace_group.c perfetto_export.c \
+		analysis.c trace_group.c perfetto_export.c trace_capture.c \
 		dropreason.c rstreason.c
 prog-anettrace	= $(prog-anettrace-origin) anettrace.c
 

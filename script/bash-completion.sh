@@ -7,7 +7,8 @@ complete -W '-s --saddr -d --daddr --addr -p -D --dport -S --sport -P --port
              --filter-minrtt --latency-show --latency-free --latency
              --latency-summary
 
-             -t --trace --force --ret --detail --date --timestamp --id --mark
+             -t --trace --force --ret --detail --perfetto-events
+             --capture-trace --duration --output --date --timestamp --id --mark
              -c --count --hooks
              --tiny-show --trace-stack --trace-matcher --trace-noclone
              --func-stats --rate-limit --btf-path

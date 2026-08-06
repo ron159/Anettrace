@@ -84,7 +84,6 @@ SCHED_EVENTS = (
     "task/task_newtask",
     "task/task_rename",
     "power/suspend_resume",
-    "ftrace/print",
 )
 
 FULL_EVENTS = SCHED_EVENTS + (
@@ -379,25 +378,55 @@ def validate_event_stream(path: Path) -> dict[str, Any]:
 
 def convert_events(events: Path, output: Path) -> list[str]:
     converter = ROOT / "tools" / "anettrace_to_perfetto.py"
+    command = perfetto_python_command(converter, str(events), str(output))
+    run_command(command)
+    if not output.is_file() or output.stat().st_size == 0:
+        raise CaptureError("converter did not produce a non-empty Perfetto trace")
+    return command
+
+
+def perfetto_python_command(script: Path, *arguments: str) -> list[str]:
     if importlib.util.find_spec("perfetto") is not None:
-        command = [sys.executable, str(converter), str(events), str(output)]
-    elif shutil.which("uv"):
-        command = [
+        return [sys.executable, str(script), *arguments]
+    if shutil.which("uv"):
+        return [
             "uv",
             "run",
             "--with",
             "perfetto==0.57.2",
             "python",
-            str(converter),
-            str(events),
-            str(output),
+            str(script),
+            *arguments,
         ]
-    else:
-        raise CaptureError("install perfetto==0.57.2 or uv to convert the JSONL trace")
+    raise CaptureError("install perfetto==0.57.2 or uv to process the Perfetto trace")
+
+
+def merge_and_validate(
+    system_trace: Path,
+    anettrace_trace: Path,
+    output: Path,
+    report: Path,
+    trace_processor: Path | None,
+) -> tuple[list[str], dict[str, Any]]:
+    merger = ROOT / "tools" / "merge_trace_with_anettrace.py"
+    arguments = [
+        str(system_trace),
+        str(anettrace_trace),
+        str(output),
+        "--report",
+        str(report),
+    ]
+    if trace_processor:
+        arguments.extend(["--trace-processor", str(trace_processor)])
+    command = perfetto_python_command(merger, *arguments)
     run_command(command)
-    if not output.is_file() or output.stat().st_size == 0:
-        raise CaptureError("converter did not produce a non-empty Perfetto trace")
-    return command
+    try:
+        merge_report = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise CaptureError(f"cannot read merge integrity report: {error}") from error
+    if merge_report.get("status") != "success":
+        raise CaptureError("merged trace did not pass integrity checks")
+    return command, merge_report
 
 
 def concatenate_traces(inputs: Sequence[Path], output: Path) -> None:
@@ -476,6 +505,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", help="adb device serial")
     parser.add_argument("--adb", default="adb", help="adb executable")
     parser.add_argument("--perfetto-config", type=Path, help="custom Perfetto textproto config")
+    parser.add_argument(
+        "--trace-processor",
+        type=Path,
+        help="Trace Processor CLI used for strict merge validation",
+    )
     parser.add_argument("--simpleperf-app", help="also record this Android package")
     parser.add_argument("--simpleperf-pid", type=int, help="also record this process ID")
     parser.add_argument("--simpleperf-frequency", type=int, default=1000)
@@ -555,7 +589,6 @@ def capture(args: argparse.Namespace) -> Path:
         "commands": commands,
         "repository": repository_record(),
         "device": {},
-        "sync_marker": f"anettrace_sync_{session_id}",
         "outputs": [],
         "errors": errors,
         "warnings": warnings,
@@ -578,6 +611,8 @@ def capture(args: argparse.Namespace) -> Path:
             raise CaptureError(f"Anettrace binary does not exist: {args.anettrace}")
         if args.perfetto_config and not args.perfetto_config.is_file():
             raise CaptureError(f"Perfetto config does not exist: {args.perfetto_config}")
+        if args.trace_processor and not args.trace_processor.is_file():
+            raise CaptureError(f"Trace Processor does not exist: {args.trace_processor}")
 
         manifest["inputs"] = {"anettrace": input_record(args.anettrace.resolve())}
         if args.perfetto_config:
@@ -683,12 +718,6 @@ def capture(args: argparse.Namespace) -> Path:
             commands["external"] = list(args.external_command)
             external_process = start_external(args.external_command, output_dir)
 
-        marker = manifest["sync_marker"]
-        adb.shell(
-            f"printf %s {shlex.quote(marker)} > /sys/kernel/tracing/trace_marker",
-            check=False,
-        )
-
         deadline = time.monotonic() + args.duration
         while time.monotonic() < deadline:
             if stop_requested.wait(timeout=min(0.25, max(0.0, deadline - time.monotonic()))):
@@ -762,15 +791,20 @@ def capture(args: argparse.Namespace) -> Path:
         if not args.skip_convert:
             commands["converter"] = convert_events(events_path, anettrace_trace)
             if args.profile != "none":
-                concatenate_traces(
-                    [output_dir / "system.pftrace", anettrace_trace],
+                merge_command, merge_report = merge_and_validate(
+                    output_dir / "system.pftrace",
+                    anettrace_trace,
                     output_dir / "anettrace-combined.pftrace",
+                    output_dir / "merge-integrity.json",
+                    args.trace_processor,
                 )
+                commands["merge"] = merge_command
                 manifest["merge"] = {
-                    "method": "raw_tracepacket_concat",
+                    "method": merge_report["method"],
                     "inputs": ["system.pftrace", "anettrace.pftrace"],
                     "output": "anettrace-combined.pftrace",
-                    "scope": "built-in uncompressed Perfetto traces only",
+                    "integrity_report": "merge-integrity.json",
+                    "integrity": merge_report["integrity"],
                 }
 
         if interrupted:

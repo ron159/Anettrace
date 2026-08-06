@@ -66,8 +66,8 @@ class PerfettoExporter:
         self.socket_lifetimes: set[str] = set()
         self.closed_sockets: set[str] = set()
         self.global_track = stable_uuid("anettrace", "global")
-        self.monotonic_to_boottime_ns = 0
         self.capture_start_monotonic_ns = 0
+        self.clock_monotonic_ns: list[int] = []
         self.sequence_started = False
 
     def sequence_packet(self):
@@ -90,10 +90,10 @@ class PerfettoExporter:
             clock.clock_id = clock_id
             clock.timestamp = int(record[key])
         snapshot.primary_trace_clock = CLOCK_BOOTTIME
-        self.capture_start_monotonic_ns = int(record["monotonic_ns"])
-        self.monotonic_to_boottime_ns = int(record["boottime_ns"]) - int(
-            record["monotonic_ns"]
-        )
+        monotonic_ns = int(record["monotonic_ns"])
+        if not self.clock_monotonic_ns:
+            self.capture_start_monotonic_ns = monotonic_ns
+        self.clock_monotonic_ns.append(monotonic_ns)
 
     def descriptor(self, uuid: int, name: str, parent_uuid: int = 0):
         if uuid in self.descriptors:
@@ -150,7 +150,11 @@ class PerfettoExporter:
         return uuid
 
     def timestamp(self, monotonic_ns: int) -> int:
-        return monotonic_ns + self.monotonic_to_boottime_ns
+        if not self.clock_monotonic_ns:
+            raise ValueError("cannot emit an event without a clock snapshot")
+        if monotonic_ns < self.clock_monotonic_ns[0]:
+            raise ValueError("event timestamp precedes the first clock snapshot")
+        return monotonic_ns
 
     def add_annotations(self, event, record: dict[str, Any], keys: Iterable[str]) -> None:
         for key in keys:
@@ -182,7 +186,7 @@ class PerfettoExporter:
     ) -> None:
         packet = self.sequence_packet()
         packet.timestamp = self.timestamp(ts_ns)
-        packet.timestamp_clock_id = CLOCK_BOOTTIME
+        packet.timestamp_clock_id = CLOCK_MONOTONIC
         track_event = packet.track_event
         track_event.type = event_type
         track_event.track_uuid = track_uuid
@@ -398,7 +402,13 @@ class PerfettoExporter:
         clocks = [record for record in self.records if record.get("type") == "clock_snapshot"]
         if not clocks:
             raise ValueError("input has no clock_snapshot record")
-        self.add_clock_snapshot(clocks[0])
+        previous_monotonic = -1
+        for record in clocks:
+            monotonic_ns = int(record["monotonic_ns"])
+            if monotonic_ns <= previous_monotonic:
+                raise ValueError("clock snapshots must be strictly monotonic")
+            self.add_clock_snapshot(record)
+            previous_monotonic = monotonic_ns
         for record in self.records:
             record_type = record.get("type")
             if record_type == "clock_snapshot":

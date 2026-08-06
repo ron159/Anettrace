@@ -83,6 +83,9 @@ jobs:
               grep -q -- "--traffic" /tmp/anettrace-help.txt
               grep -q -- "--interval" /tmp/anettrace-help.txt
               grep -q -- "--perfetto-events" /tmp/anettrace-help.txt
+              grep -q -- "--capture-trace" /tmp/anettrace-help.txt
+              grep -q -- "--duration" /tmp/anettrace-help.txt
+              grep -q -- "--output" /tmp/anettrace-help.txt
               grep -q -- "--timestamp" /tmp/anettrace-help.txt
               grep -q -- "--id" /tmp/anettrace-help.txt
               grep -q -- "--mark" /tmp/anettrace-help.txt

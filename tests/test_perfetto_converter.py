@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import sys
 import unittest
@@ -70,9 +71,52 @@ class PerfettoConverterTest(unittest.TestCase):
         ]
         self.assertTrue(any(descriptor.thread.tid == 101 for descriptor in thread_descriptors))
 
-        snapshots = [packet.clock_snapshot for packet in trace.packet if packet.HasField("clock_snapshot")]
+        snapshots = [
+            packet.clock_snapshot
+            for packet in trace.packet
+            if packet.HasField("clock_snapshot")
+        ]
         self.assertEqual(len(snapshots), 1)
         self.assertEqual(snapshots[0].primary_trace_clock, MODULE.CLOCK_BOOTTIME)
+
+        event_packets = [
+            packet for packet in trace.packet if packet.HasField("track_event")
+        ]
+        self.assertTrue(event_packets)
+        self.assertTrue(
+            all(
+                packet.timestamp_clock_id == MODULE.CLOCK_MONOTONIC
+                for packet in event_packets
+            )
+        )
+
+    def test_multiple_clock_snapshots_cover_suspend_offset_changes(self) -> None:
+        fixture = ROOT / "tests" / "fixtures" / "perfetto-events.jsonl"
+        records = MODULE.read_records(fixture)
+        second_snapshot = copy.deepcopy(records[0])
+        second_snapshot.update(
+            monotonic_ns=1_060_000_000,
+            boottime_ns=6_160_000_000,
+            realtime_ns=1_800_000_005_060_000_000,
+        )
+        records.insert(-1, second_snapshot)
+
+        trace = Trace()
+        trace.ParseFromString(MODULE.PerfettoExporter(records).serialize())
+
+        snapshots = [
+            packet.clock_snapshot
+            for packet in trace.packet
+            if packet.HasField("clock_snapshot")
+        ]
+        self.assertEqual(len(snapshots), 2)
+        trace_end = next(
+            packet
+            for packet in trace.packet
+            if packet.HasField("track_event") and packet.track_event.name == "trace_end"
+        )
+        self.assertEqual(trace_end.timestamp, 1_070_000_000)
+        self.assertEqual(trace_end.timestamp_clock_id, MODULE.CLOCK_MONOTONIC)
 
 
 if __name__ == "__main__":

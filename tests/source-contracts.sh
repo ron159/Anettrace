@@ -53,6 +53,17 @@ require_text 'DEFINE_TP_SK(inet_sock_set_state' src/progs/core.c
 require_text 'perfetto_export_event(data, cpu, size);' src/trace.c
 require_text '\"type\":\"packet_event\"' src/perfetto_export.c
 require_text '\"skb_id\":' src/perfetto_export.c
+require_text 'CLOCK_SNAPSHOT_INTERVAL_NS' src/perfetto_export.c
+require_text 'perfetto_export_tick();' src/trace.c
+require_text '.lname = "capture-trace"' src/anettrace.c
+require_text '.lname = "duration"' src/anettrace.c
+require_text '.lname = "output"' src/anettrace.c
+require_text 'perfetto_export_native_open' src/anettrace.c
+require_text 'Trace.packet' src/perfetto_export.c
+require_text 'trace_capture_finish' src/anettrace.c
+require_text 'sched/sched_switch' src/trace_capture.c
+require_text 'packet.timestamp_clock_id = CLOCK_MONOTONIC' \
+	tools/anettrace_to_perfetto.py
 require_text '--uid 0 is too broad for Perfetto capture' src/trace.c
 require_text '--uid 0 alone is too broad; add --pid' \
 	tools/capture_android_trace.py
@@ -61,6 +72,11 @@ require_text 'sched/sched_waking' tools/capture_android_trace.py
 require_text 'android.surfaceflinger.frametimeline' tools/capture_android_trace.py
 require_text 'simpleperf' tools/capture_android_trace.py
 require_text 'session-manifest.json' tools/capture_android_trace.py
+require_text 'merge_trace_with_anettrace.py' tools/capture_android_trace.py
+require_text 'clock_sync_failure_no_path' \
+	tools/perfetto_sql/anettrace_integrity.sql
+require_text 'raw_native_tracepacket_concat' \
+	tools/merge_trace_with_anettrace.py
 require_text 'capture_android_trace.py' tools/capture_android_perfetto.sh
 require_text 'perfetto==0.57.2' tools/requirements-perfetto.txt
 require_text 'anettrace-0.4.0-android-arm64-dual.tar.bz2' \

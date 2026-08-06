@@ -31,6 +31,9 @@ jobs:
           ./src/anettrace -h | grep -q -- '--traffic'
           ./src/anettrace -h | grep -q -- '--interval'
           ./src/anettrace -h | grep -q -- '--perfetto-events'
+          ./src/anettrace -h | grep -q -- '--capture-trace'
+          ./src/anettrace -h | grep -q -- '--duration'
+          ./src/anettrace -h | grep -q -- '--output'
           if ./src/anettrace --date --timestamp > /tmp/conflict.txt 2>&1; then
             exit 1
           fi
@@ -56,4 +59,5 @@ jobs:
         run: |
           python3 -m venv /tmp/perfetto-venv
           /tmp/perfetto-venv/bin/pip install -r tools/requirements-perfetto.txt
-          /tmp/perfetto-venv/bin/python -m unittest tests/test_perfetto_converter.py
+          /tmp/perfetto-venv/bin/python -m unittest \
+            tests/test_perfetto_converter.py tests/test_trace_merge.py

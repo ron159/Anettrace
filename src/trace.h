@@ -129,6 +129,9 @@ typedef struct trace_args {
 	char *pkt_len;
 	char *tcp_flags;
 	char *perfetto_events;
+	bool capture_trace;
+	u32 duration;
+	char *output;
 	u32  count;
 	char *btf_path;
 } trace_args_t;

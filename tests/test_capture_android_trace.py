@@ -23,12 +23,12 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PerfettoProfileTest(unittest.TestCase):
-    def test_sched_profile_is_small_and_has_sync_events(self) -> None:
+    def test_sched_profile_is_small_and_has_suspend_events(self) -> None:
         config = MODULE.render_perfetto_config("sched", 7)
         self.assertIn("size_kb: 32768", config)
         self.assertIn('ftrace_events: "sched/sched_switch"', config)
         self.assertIn('ftrace_events: "power/suspend_resume"', config)
-        self.assertIn('ftrace_events: "ftrace/print"', config)
+        self.assertNotIn('ftrace_events: "ftrace/print"', config)
         self.assertIn("duration_ms: 7000", config)
 
     def test_full_profile_keeps_perfallinone_system_sources(self) -> None:

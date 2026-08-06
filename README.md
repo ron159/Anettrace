@@ -99,6 +99,10 @@ perf event / map 快照 -> 用户态聚合、规则匹配、格式化输出
   结束点；
 - 每个事件的单调时钟时间、TID/TGID/UID、CPU、网卡和协议元数据。
 
+导出器每 5 秒以及结束时记录一次 `MONOTONIC/BOOTTIME/REALTIME` 时钟快照；转换后的网络
+事件保留 `CLOCK_MONOTONIC` 时钟域，由 Trace Processor 使用最近快照对齐到 Android 系统
+trace 的 `CLOCK_BOOTTIME`。因此长时采集和 suspend/resume 不再依赖启动时的一次固定偏移。
+
 该模式不读取或写出包体；内核对象地址会先按本次会话加盐哈希。逻辑 `packet_id`
 使用五元组和 TCP seq/ack/flags 关联 skb clone 前后的发送阶段，匿名 `skb_id` 只用于观察
 buffer 生命周期。socket lifetime 在 `tcp_close` 或采集结束时闭合。
@@ -106,7 +110,46 @@ buffer 生命周期。socket lifetime 在 `tcp_close` 或采集结束时闭合�
 为避免无边界的全机追踪，必须指定 `--uid`、`--pid`、地址/端口/协议过滤之一，或显式使用
 `--force`。单独 `--uid 0` 仍然过宽，必须再加 `--pid`/包过滤，或明确使用 `--force`。
 
-在已 root Android 设备上一键联合采集（Windows、Linux、macOS 均使用同一 Python 入口）：
+已 root Android 设备可以直接通过 Anettrace 生成一个联合 trace。默认输出到当前目录，文件名为
+`anettrace-<时间>.pftrace`，默认时长为 10 秒：
+
+```shell
+adb shell
+cd /data/local/tmp
+./anettrace --capture-trace --uid 10187
+```
+
+设置采集时长和最终文件：
+
+```shell
+./anettrace \
+  --capture-trace \
+  --duration 15 \
+  --uid 10187 \
+  --output /data/local/tmp/browser-network.pftrace
+```
+
+`--output` 既可以是 `.pftrace` 文件，也可以是已经存在的目录；如果是目录，Anettrace 会在其中
+生成带时间戳的文件。已有目标文件不会被覆盖。成功结束后只保留一个最终文件，其中同时包含：
+
+- `sched_switch`、`sched_waking`、进程信息和 suspend/resume 等系统事件；
+- socket allocation/lifetime/state；
+- `tcp_sendmsg_locked` 到 TCP/IP、设备队列、NIC driver 和释放/drop 的逐阶段事件；
+- 原始 TID/TGID/UID、CPU、网卡、端点和匿名 packet/socket ID。
+
+Anettrace 会直接写原生 Perfetto TrackEvent protobuf，保留 BPF `CLOCK_MONOTONIC` 时间戳，再与
+Android 系统 Perfetto trace 合并；设备端不需要 Python。临时 system/network/config 文件在成功
+或失败后都会清理。完成后直接拉取并打开：
+
+```shell
+adb pull /data/local/tmp/browser-network.pftrace .
+```
+
+直接模式要求设备存在 `/system/bin/perfetto`。`--capture-trace` 与 `--perfetto-events` 是两个独立
+输出模式，不能同时使用。建议始终使用 UID 或 TID 过滤；`--uid 0` 仍需叠加更窄过滤或 `--force`。
+
+需要 `full/long` profile、simpleperf、外部主机工具、manifest 或自动 Trace Processor 完整性门禁
+时，继续使用跨平台 Python 编排器：
 
 ```shell
 python tools/capture_android_trace.py \
@@ -117,8 +160,7 @@ python tools/capture_android_trace.py \
 ```
 
 `tools/capture_android_perfetto.sh` 保留为 Linux 兼容入口，内部调用同一个 Python 编排器。
-默认 `sched` 档同时采集 `sched_switch`、`sched_waking`、进程信息、suspend/resume 和同步
-marker，再生成 `anettrace-combined.pftrace`。把该文件拖入
+默认不采集全局 `ftrace/print`，避免把其他应用的异常 atrace 文本带入结果。把最终文件拖入
 [Perfetto UI](https://ui.perfetto.dev/) 后，发包时间点位于实际执行线程轨道，线程
 Running/Runnable/Sleeping 状态来自系统 sched 数据。
 
@@ -156,19 +198,45 @@ python tools/capture_android_trace.py \
 
 工具统一转发中断、先停止 Anettrace 以确保 `trace_end` 落盘，再停止 companion，并拒绝空文件、
 缺失 `clock_snapshot`/`trace_end` 或外部工具提前退出。每次成功或失败都会生成
-`session-manifest.json`，记录设备、boot ID、过滤条件、命令、同步 marker、耗时以及各产物的
+`session-manifest.json`，记录设备、boot ID、过滤条件、命令、耗时以及各产物的
 大小和 SHA-256。输出目录必须是新目录或空目录，避免覆盖历史抓取。
 外部命令产生的文件会进入 manifest，但不会被猜测格式或自动拼接；只有编排器自身生成的两份
-未压缩原生 Perfetto trace 才使用已验证的 raw TracePacket 拼接。
+未压缩原生 Perfetto trace 才允许 raw TracePacket 兼容拼接。若指定的 Trace Processor 支持
+`util merge`，则优先使用官方严格合并：
 
-整合方式是：设备端的 `perfetto` 负责产生系统级轨迹，Anettrace 只输出网络事件 JSONL；
-编排器以同一采集窗口将二者转换、合并为一个 trace 文件。因而可在同一时间轴上从
+```shell
+python tools/capture_android_trace.py \
+  --uid 10123 \
+  --trace-processor /path/to/trace_processor \
+  --out output/strict-session
+```
+
+合并完成后必须通过 `tools/perfetto_sql/anettrace_integrity.sql`：网络事件、系统
+`thread_state` 和二者重叠都必须存在，时钟无路径、不可关联时钟域和负时间戳丢弃统计必须为零。
+任何 Trace Processor `severity='error'` 的输入/导入错误也会使检查失败。结果写入
+`merge-integrity.json`；检查失败时不会留下看似可用的 combined 文件。
+
+直接模式由设备端 `perfetto` 产生系统级轨迹，Anettrace 同时产生原生网络 TrackEvent，结束时
+合并为一个文件；Python 编排模式则保留 JSONL、转换、manifest 和严格验收能力。因而可在同一时间轴上从
 `tcp_sendmsg_locked` 等网络阶段跳到对应 TID 的调度切换，判断延迟来自线程未被调度、内核网络
 路径，还是网卡发送之后。它不会替代系统 Perfetto，也不会向系统 trace 写入报文 payload。
 
 如果设备没有系统 `perfetto` 命令，先单独使用 `--perfetto-events` 生成 JSONL 后离线转换；
 该结果仅包含 Anettrace 网络轨道，不能提供 Running/Runnable/Sleeping 等调度状态。
 首个版本聚焦 TCP TX；UDP TX、socket cookie 归属和 Android netId/VPN/Fwmark 关联留待后续。
+
+已有其他工具生成系统 `.pftrace` 时，可直接把它和 Anettrace JSONL 严格合并：
+
+```shell
+uv run --with perfetto==0.57.2 python tools/merge_trace_with_anettrace.py \
+  system.pftrace anettrace-events.jsonl combined.pftrace \
+  --trace-processor /path/to/trace_processor
+```
+
+该工具记录输入、输出的大小与 SHA-256，并生成 `combined.pftrace.integrity.json`。旧版 Trace
+Processor 没有 `util merge` 时，只接受经过 protobuf 校验的两份未压缩原生 Perfetto trace；
+systrace text、Chrome JSON、压缩文件或跨设备数据必须使用支持 manifest 的新版 Trace Processor，
+不能用 raw 拼接猜测时钟关系。
 
 只做离线转换时：
 

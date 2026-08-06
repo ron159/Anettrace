@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <list.h>
 #include <errno.h>
+#include <time.h>
 
 #include <parse_sym.h>
 
@@ -429,7 +430,7 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		"__dev_queue_xmit,dev_hard_start_xmit,consume_skb,kfree_skb,"
 		"__kfree_skb";
 
-	if (args->perfetto_events) {
+	if (args->perfetto_events || args->capture_trace) {
 		bpf_args->perfetto = true;
 		bpf_args->detail = true;
 		if (!args->traces)
@@ -895,10 +896,19 @@ static int trace_bpf_load()
 	return trace_ctx.ops->trace_load();
 }
 
+static void capture_poll_handler(void *ctx, int cpu, void *data, u32 size)
+{
+	(void)ctx;
+	(void)cpu;
+	(void)data;
+	(void)size;
+}
+
 static void trace_prepare_ops()
 {
 	if (trace_ctx.bpf_args.perfetto) {
-		trace_ctx.ops->trace_poll = perfetto_poll_handler;
+		trace_ctx.ops->trace_poll = trace_ctx.args.capture_trace ?
+			capture_poll_handler : perfetto_poll_handler;
 		return;
 	}
 	if (trace_ctx.bpf_args.func_stats) {
@@ -984,10 +994,21 @@ bpf_args_t *get_bpf_args()
 	return args;
 }
 
+static u64 poll_deadline_ns;
+
 static int poll_timeout(int err)
 {
+	struct timespec now;
+
 	if (trace_ctx.stop)
 		return 1;
+	if (trace_ctx.args.duration && poll_deadline_ns) {
+		if (!clock_gettime(CLOCK_MONOTONIC, &now) &&
+			   (u64)now.tv_sec * 1000000000ULL + now.tv_nsec >=
+			   poll_deadline_ns) {
+			return 1;
+		}
+	}
 
 	if (err == 0 && trace_ctx.args.count) {
 		if (trace_ctx.args.count <= get_bpf_args()->event_count) {
@@ -1003,6 +1024,7 @@ static int poll_timeout(int err)
 int trace_poll()
 {
 	struct perf_buffer *pb;
+	struct timespec now;
 	int err, map_fd;
 
 	if (trace_ctx.ops->raw_poll) {
@@ -1032,8 +1054,14 @@ int trace_poll()
 		return err;
 	}
 
+	poll_deadline_ns = 0;
+	if (trace_ctx.args.duration &&
+	    !clock_gettime(CLOCK_MONOTONIC, &now))
+		poll_deadline_ns = (u64)now.tv_sec * 1000000000ULL + now.tv_nsec +
+			(u64)trace_ctx.args.duration * 1000000000ULL;
 	trace_ctx.ops->trace_ready();
 	while ((err = perf_buffer__poll(pb, 1000)) >= 0) {
+		perfetto_export_tick();
 		if (poll_timeout(err))
 			break;
 	}

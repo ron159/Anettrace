@@ -12,6 +12,7 @@
 #include "trace.h"
 #include "traffic.h"
 #include "perfetto_export.h"
+#include "trace_capture.h"
 
 arg_config_t config = {
 	.name = "anettrace",
@@ -251,6 +252,21 @@ static void do_parse_args(int argc, char *argv[])
 			.desc = "write socket and packet timeline metadata as JSONL for Perfetto",
 		},
 		{
+			.lname = "capture-trace", .dest = &trace_args->capture_trace,
+			.type = OPTION_BOOL,
+			.desc = "capture system sched plus Anettrace events into one Perfetto trace",
+		},
+		{
+			.lname = "duration", .dest = &trace_args->duration,
+			.type = OPTION_U32,
+			.desc = "capture duration in seconds (default 10 with --capture-trace)",
+		},
+		{
+			.lname = "output", .dest = &trace_args->output,
+			.type = OPTION_STRING,
+			.desc = "combined .pftrace file or existing output directory",
+		},
+		{
 			.lname = "date", .dest = &date,
 			.type = OPTION_BOOL,
 			.desc = "print local date and time",
@@ -388,6 +404,24 @@ static void do_parse_args(int argc, char *argv[])
 		pr_version();
 		exit(0);
 	}
+	if (trace_args->capture_trace && trace_args->traffic) {
+		pr_err("--capture-trace cannot be used with --traffic\n");
+		goto err;
+	}
+	if (trace_args->capture_trace && trace_args->perfetto_events) {
+		pr_err("--capture-trace and --perfetto-events are separate output modes\n");
+		goto err;
+	}
+	if (trace_args->output && !trace_args->capture_trace) {
+		pr_err("--output requires --capture-trace\n");
+		goto err;
+	}
+	if (trace_args->duration && !trace_args->capture_trace) {
+		pr_err("--duration requires --capture-trace\n");
+		goto err;
+	}
+	if (trace_args->capture_trace && !trace_args->duration)
+		trace_args->duration = 10;
 
 /* convert the args to the eBPF pkt_arg struct */
 #define FILL_ADDR_PROTO(name, subfix, args, pf) if (name##_pf == pf) {	\
@@ -466,6 +500,8 @@ static void do_exit(int code)
 
 int main(int argc, char *argv[])
 {
+	int capture_err = 0;
+
 	output_time_init();
 	init_trace_group();
 	do_parse_args(argc, argv);
@@ -481,6 +517,13 @@ int main(int argc, char *argv[])
 		pr_err("failed to load bpf\n");
 		goto err;
 	}
+	if (trace_ctx.args.capture_trace) {
+		if (trace_capture_start(trace_ctx.args.output,
+					trace_ctx.args.duration))
+			goto err;
+		if (perfetto_export_native_open(trace_capture_network_path()))
+			goto err;
+	}
 
 	signal(SIGTERM, do_exit);
 	signal(SIGINT, do_exit);
@@ -488,8 +531,19 @@ int main(int argc, char *argv[])
 	pr_info("begin trace...\n");
 	trace_poll();
 	do_exit(0);
+	if (trace_ctx.args.capture_trace) {
+		if (perfetto_export_failed()) {
+			pr_err("failed to encode Anettrace Perfetto packets\n");
+			trace_capture_abort();
+			return -1;
+		}
+		capture_err = trace_capture_finish();
+		if (capture_err)
+			return -1;
+	}
 	return 0;
 err:
 	perfetto_export_close(0);
+	trace_capture_abort();
 	return -1;
 }
