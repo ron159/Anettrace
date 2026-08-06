@@ -254,7 +254,12 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "capture-trace", .dest = &trace_args->capture_trace,
 			.type = OPTION_BOOL,
-			.desc = "capture system sched plus Anettrace events into one Perfetto trace",
+			.desc = "capture system trace plus Anettrace events into one Perfetto trace",
+		},
+		{
+			.lname = "trace-profile", .dest = &trace_args->trace_profile,
+			.type = OPTION_STRING,
+			.desc = "system trace profile: full (default) or sched",
 		},
 		{
 			.lname = "duration", .dest = &trace_args->duration,
@@ -420,8 +425,20 @@ static void do_parse_args(int argc, char *argv[])
 		pr_err("--duration requires --capture-trace\n");
 		goto err;
 	}
+	if (trace_args->trace_profile && !trace_args->capture_trace) {
+		pr_err("--trace-profile requires --capture-trace\n");
+		goto err;
+	}
+	if (trace_args->capture_trace && trace_args->trace_profile &&
+	    strcmp(trace_args->trace_profile, "full") &&
+	    strcmp(trace_args->trace_profile, "sched")) {
+		pr_err("--trace-profile must be full or sched\n");
+		goto err;
+	}
 	if (trace_args->capture_trace && !trace_args->duration)
 		trace_args->duration = 10;
+	if (trace_args->capture_trace && !trace_args->trace_profile)
+		trace_args->trace_profile = "full";
 
 /* convert the args to the eBPF pkt_arg struct */
 #define FILL_ADDR_PROTO(name, subfix, args, pf) if (name##_pf == pf) {	\
@@ -519,7 +536,8 @@ int main(int argc, char *argv[])
 	}
 	if (trace_ctx.args.capture_trace) {
 		if (trace_capture_start(trace_ctx.args.output,
-					trace_ctx.args.duration))
+					trace_ctx.args.duration,
+					trace_ctx.args.trace_profile))
 			goto err;
 		if (perfetto_export_native_open(trace_capture_network_path()))
 			goto err;

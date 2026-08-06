@@ -30,7 +30,7 @@ struct capture_state {
 
 static struct capture_state capture;
 
-static const char perfetto_config[] =
+static const char sched_perfetto_config[] =
 	"buffers: { size_kb: 32768 fill_policy: RING_BUFFER }\n"
 	"data_sources: { config { name: \"linux.ftrace\" target_buffer: 0 "
 	"ftrace_config {\n"
@@ -46,6 +46,120 @@ static const char perfetto_config[] =
 	"process_stats_config { scan_all_processes_on_start: true "
 	"proc_stats_poll_ms: 1000 } } }\n"
 	"duration_ms: %llu\n";
+
+/* Keep this aligned with PerfAllInOne's full perfetto_cfg.pbtx profile. */
+static const char full_perfetto_config[] =
+	"buffers: { size_kb: 200600 fill_policy: RING_BUFFER }\n"
+	"buffers: { size_kb: 2048 fill_policy: RING_BUFFER }\n"
+	"buffers: { size_kb: 10240 fill_policy: RING_BUFFER }\n"
+	"data_sources: { config { name: \"android.gpu.memory\" } }\n"
+	"data_sources: { config { name: \"linux.process_stats\" "
+	"target_buffer: 1 process_stats_config { "
+	"scan_all_processes_on_start: true proc_stats_poll_ms: 60000 } } }\n"
+	"data_sources: { config { name: \"linux.ftrace\" target_buffer: 0 "
+	"ftrace_config {\n"
+	"symbolize_ksyms: true\n"
+	"atrace_categories: \"aidl\"\n"
+	"atrace_categories: \"am\"\n"
+	"atrace_categories: \"audio\"\n"
+	"atrace_categories: \"binder_driver\"\n"
+	"atrace_categories: \"binder_lock\"\n"
+	"atrace_categories: \"camera\"\n"
+	"atrace_categories: \"dalvik\"\n"
+	"atrace_categories: \"disk\"\n"
+	"atrace_categories: \"freq\"\n"
+	"atrace_categories: \"gfx\"\n"
+	"atrace_categories: \"hal\"\n"
+	"atrace_categories: \"idle\"\n"
+	"atrace_categories: \"input\"\n"
+	"atrace_categories: \"memreclaim\"\n"
+	"atrace_categories: \"network\"\n"
+	"atrace_categories: \"nnapi\"\n"
+	"atrace_categories: \"pdx\"\n"
+	"atrace_categories: \"pm\"\n"
+	"atrace_categories: \"power\"\n"
+	"atrace_categories: \"res\"\n"
+	"atrace_categories: \"rro\"\n"
+	"atrace_categories: \"rs\"\n"
+	"atrace_categories: \"sched\"\n"
+	"atrace_categories: \"sm\"\n"
+	"atrace_categories: \"ss\"\n"
+	"atrace_categories: \"sync\"\n"
+	"atrace_categories: \"thermal\"\n"
+	"atrace_categories: \"vibrator\"\n"
+	"atrace_categories: \"video\"\n"
+	"atrace_categories: \"view\"\n"
+	"atrace_categories: \"webview\"\n"
+	"atrace_categories: \"wm\"\n"
+	"atrace_categories: \"ftrace_print\"\n"
+	"atrace_apps: \"*\"\n"
+	"ftrace_events: \"sched/sched_switch\"\n"
+	"ftrace_events: \"power/suspend_resume\"\n"
+	"ftrace_events: \"sched/sched_wakeup\"\n"
+	"ftrace_events: \"sched/sched_wakeup_new\"\n"
+	"ftrace_events: \"sched/sched_waking\"\n"
+	"ftrace_events: \"power/cpu_frequency\"\n"
+	"ftrace_events: \"power/cpu_frequency_limits\"\n"
+	"ftrace_events: \"power/cpu_idle\"\n"
+	"ftrace_events: \"power/gpu_frequency\"\n"
+	"ftrace_events: \"sched/sched_process_exit\"\n"
+	"ftrace_events: \"sched/sched_process_free\"\n"
+	"ftrace_events: \"task/task_newtask\"\n"
+	"ftrace_events: \"task/task_rename\"\n"
+	"ftrace_events: \"ftrace/print\"\n"
+	"buffer_size_kb: 24576\n"
+	"drain_period_ms: 1000\n"
+	"} } }\n"
+	"data_sources: { config { name: \"linux.sys_stats\" target_buffer: 1 "
+	"sys_stats_config {\n"
+	"meminfo_period_ms: 1000\n"
+	"meminfo_counters: MEMINFO_MEM_TOTAL\n"
+	"meminfo_counters: MEMINFO_MEM_FREE\n"
+	"meminfo_counters: MEMINFO_MEM_AVAILABLE\n"
+	"meminfo_counters: MEMINFO_BUFFERS\n"
+	"meminfo_counters: MEMINFO_CACHED\n"
+	"meminfo_counters: MEMINFO_SWAP_CACHED\n"
+	"meminfo_counters: MEMINFO_ACTIVE\n"
+	"meminfo_counters: MEMINFO_INACTIVE\n"
+	"meminfo_counters: MEMINFO_ACTIVE_ANON\n"
+	"meminfo_counters: MEMINFO_INACTIVE_ANON\n"
+	"meminfo_counters: MEMINFO_ACTIVE_FILE\n"
+	"meminfo_counters: MEMINFO_INACTIVE_FILE\n"
+	"meminfo_counters: MEMINFO_UNEVICTABLE\n"
+	"meminfo_counters: MEMINFO_SWAP_TOTAL\n"
+	"meminfo_counters: MEMINFO_SWAP_FREE\n"
+	"meminfo_counters: MEMINFO_DIRTY\n"
+	"meminfo_counters: MEMINFO_WRITEBACK\n"
+	"meminfo_counters: MEMINFO_ANON_PAGES\n"
+	"meminfo_counters: MEMINFO_MAPPED\n"
+	"meminfo_counters: MEMINFO_SHMEM\n"
+	"stat_period_ms: 1000\n"
+	"stat_counters: STAT_CPU_TIMES\n"
+	"stat_counters: STAT_FORK_COUNT\n"
+	"} } }\n"
+	"data_sources: { config { name: "
+	"\"android.surfaceflinger.frametimeline\" target_buffer: 2 } }\n"
+	"data_sources: { config { name: \"linux.system_info\" } }\n"
+	"data_sources: { config { name: \"android.statsd\" target_buffer: 1 "
+	"statsd_tracing_config {\n"
+	"raw_push_atom_id: 29\n"
+	"raw_push_atom_id: 100002\n"
+	"raw_push_atom_id: 100009\n"
+	"raw_push_atom_id: 42\n"
+	"raw_push_atom_id: 169\n"
+	"raw_push_atom_id: 475\n"
+	"raw_push_atom_id: 476\n"
+	"raw_push_atom_id: 477\n"
+	"raw_push_atom_id: 100034\n"
+	"raw_push_atom_id: 100075\n"
+	"raw_push_atom_id: 100092\n"
+	"raw_push_atom_id: 100043\n"
+	"raw_push_atom_id: 100076\n"
+	"raw_push_atom_id: 100195\n"
+	"} } }\n"
+	"duration_ms: %llu\n"
+	"flush_period_ms: 30000\n"
+	"incremental_state_config { clear_period_ms: 5000 }\n";
 
 static int make_default_name(char *path, size_t size, const char *directory)
 {
@@ -136,13 +250,16 @@ static int write_all(int fd, const void *data, size_t size)
 	return 0;
 }
 
-static int write_config(__u32 duration_s)
+static int write_config(__u32 duration_s, const char *profile)
 {
-	char config_text[2048];
+	const char *template;
+	char config_text[16384];
 	int length, fd, err;
 
+	template = !strcmp(profile, "full") ? full_perfetto_config :
+		   sched_perfetto_config;
 	/* Keep the system trace alive slightly longer than the network capture. */
-	length = snprintf(config_text, sizeof(config_text), perfetto_config,
+	length = snprintf(config_text, sizeof(config_text), template,
 			  ((unsigned long long)duration_s + 1) * 1000);
 	if (length < 0 || length >= (int)sizeof(config_text))
 		return -EOVERFLOW;
@@ -252,13 +369,16 @@ static void cleanup_temporary(void)
 		unlink(capture.config);
 }
 
-int trace_capture_start(const char *output, __u32 duration_s)
+int trace_capture_start(const char *output, __u32 duration_s,
+			const char *profile)
 {
 	struct timespec startup_wait = { .tv_nsec = 250 * 1000 * 1000 };
 	int status, err;
 
 	memset(&capture, 0, sizeof(capture));
-	if (!duration_s)
+	if (!duration_s || !profile)
+		return -EINVAL;
+	if (strcmp(profile, "full") && strcmp(profile, "sched"))
 		return -EINVAL;
 	err = resolve_output(output);
 	if (err)
@@ -274,7 +394,7 @@ int trace_capture_start(const char *output, __u32 duration_s)
 	err = system_temporary_paths();
 	if (err)
 		goto fail;
-	err = write_config(duration_s);
+	err = write_config(duration_s, profile);
 	if (err)
 		goto fail;
 
@@ -302,7 +422,7 @@ int trace_capture_start(const char *output, __u32 duration_s)
 		err = -errno;
 		goto fail;
 	}
-	pr_info("system Perfetto capture started (pid %d)\n",
+	pr_info("system Perfetto %s capture started (pid %d)\n", profile,
 		capture.perfetto_pid);
 	return 0;
 

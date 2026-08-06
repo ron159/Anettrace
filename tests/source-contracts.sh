@@ -56,12 +56,20 @@ require_text '\"skb_id\":' src/perfetto_export.c
 require_text 'CLOCK_SNAPSHOT_INTERVAL_NS' src/perfetto_export.c
 require_text 'perfetto_export_tick();' src/trace.c
 require_text '.lname = "capture-trace"' src/anettrace.c
+require_text '.lname = "trace-profile"' src/anettrace.c
+require_text 'trace_args->trace_profile = "full"' src/anettrace.c
 require_text '.lname = "duration"' src/anettrace.c
 require_text '.lname = "output"' src/anettrace.c
 require_text 'perfetto_export_native_open' src/anettrace.c
 require_text 'Trace.packet' src/perfetto_export.c
 require_text 'trace_capture_finish' src/anettrace.c
 require_text 'sched/sched_switch' src/trace_capture.c
+require_text 'atrace_apps: \"*\"' src/trace_capture.c
+require_text 'atrace_categories: \"binder_driver\"' src/trace_capture.c
+require_text 'atrace_categories: \"ftrace_print\"' src/trace_capture.c
+require_text 'ftrace_events: \"ftrace/print\"' src/trace_capture.c
+require_text 'android.surfaceflinger.frametimeline' src/trace_capture.c
+require_text 'android.statsd' src/trace_capture.c
 require_text 'packet.timestamp_clock_id = CLOCK_MONOTONIC' \
 	tools/anettrace_to_perfetto.py
 require_text '--uid 0 is too broad for Perfetto capture' src/trace.c

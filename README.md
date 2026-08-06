@@ -129,10 +129,26 @@ cd /data/local/tmp
   --output /data/local/tmp/browser-network.pftrace
 ```
 
+设备端直采默认使用 `full` 系统 profile：以 PerfAllInOne
+`start_full_perfetto_trace_10s.bat` 对应的 `perfetto_cfg.pbtx` 为基线，再向同一份原生 Perfetto
+trace 追加 Anettrace 网络 TrackEvent。它包含全部应用的 atrace tag、Binder/AIDL 关系、调度和
+唤醒、CPU/GPU 频率与 idle、进程/内存统计、GPU memory、FrameTimeline 和 statsd 数据。
+如只需要低开销线程状态，可显式使用 `--trace-profile sched`：
+
+```shell
+./anettrace \
+  --capture-trace \
+  --trace-profile sched \
+  --duration 15 \
+  --uid 10187 \
+  --output /data/local/tmp/browser-network-sched.pftrace
+```
+
 `--output` 既可以是 `.pftrace` 文件，也可以是已经存在的目录；如果是目录，Anettrace 会在其中
 生成带时间戳的文件。已有目标文件不会被覆盖。成功结束后只保留一个最终文件，其中同时包含：
 
-- `sched_switch`、`sched_waking`、进程信息和 suspend/resume 等系统事件；
+- `full` 默认档的线程 Running 下 atrace tag、Binder/AIDL 调用关系及完整系统性能信息；
+- `sched_switch`、`sched_waking`、进程信息和 suspend/resume 等线程状态基础事件；
 - socket allocation/lifetime/state；
 - `tcp_sendmsg_locked` 到 TCP/IP、设备队列、NIC driver 和释放/drop 的逐阶段事件；
 - 原始 TID/TGID/UID、CPU、网卡、端点和匿名 packet/socket ID。
@@ -148,7 +164,7 @@ adb pull /data/local/tmp/browser-network.pftrace .
 直接模式要求设备存在 `/system/bin/perfetto`。`--capture-trace` 与 `--perfetto-events` 是两个独立
 输出模式，不能同时使用。建议始终使用 UID 或 TID 过滤；`--uid 0` 仍需叠加更窄过滤或 `--force`。
 
-需要 `full/long` profile、simpleperf、外部主机工具、manifest 或自动 Trace Processor 完整性门禁
+需要 `light/long` profile、simpleperf、外部主机工具、manifest 或自动 Trace Processor 完整性门禁
 时，继续使用跨平台 Python 编排器：
 
 ```shell
@@ -160,7 +176,8 @@ python tools/capture_android_trace.py \
 ```
 
 `tools/capture_android_perfetto.sh` 保留为 Linux 兼容入口，内部调用同一个 Python 编排器。
-默认不采集全局 `ftrace/print`，避免把其他应用的异常 atrace 文本带入结果。把最终文件拖入
+设备端 `full` 直采为了保留线程下的 atrace tag，会按 PerfAllInOne 基线采集全局
+`ftrace/print`；这比 `sched` 档开销和输出体积更大。把最终文件拖入
 [Perfetto UI](https://ui.perfetto.dev/) 后，发包时间点位于实际执行线程轨道，线程
 Running/Runnable/Sleeping 状态来自系统 sched 数据。
 
