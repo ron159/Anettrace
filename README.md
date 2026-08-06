@@ -20,8 +20,8 @@ Anettrace 是面向 Linux 与已 root Android 设备的 eBPF 网络诊断工具�
   本地时间或原始单调时间戳。
 - **线程流量视图**：`--traffic` 按 PID/TID、协议和本地/远端端点累计 TCP/UDP
   应用层收发字节。
-- **Perfetto 联合时间线**：记录 socket 创建/状态、TCP 发包路径的逐点时间戳和结束点，
-  与 Perfetto 的线程调度状态合并；不保存报文 payload。
+- **Perfetto 联合时间线**：记录 socket 创建/状态、TCP 双向与 UDP DNS/53 双向路径、应用
+  `recvmsg` 耗时/字节数，并与 Perfetto 线程调度状态合并；不保存报文 payload。
 
 常用示例：
 
@@ -151,7 +151,10 @@ trace 追加 Anettrace 网络 TrackEvent。它包含全部应用的 atrace tag�
 - `sched_switch`、`sched_waking`、进程信息和 suspend/resume 等线程状态基础事件；
 - socket allocation/lifetime/state；
 - `tcp_sendmsg_locked` 到 TCP/IP、设备队列、NIC driver 和释放/drop 的逐阶段事件；
-- 原始 TID/TGID/UID、CPU、网卡、端点和匿名 packet/socket ID。
+- TCP IPv4/IPv6 的 NAPI/L2、IP、transport RX 阶段，以及应用 `tcp_recvmsg` 读取区间；
+- UDP 仅采集明文 DNS（源或目标端口 53）的 TX/RX 和 `udp_recvmsg`/`udpv6_recvmsg` 读取区间；
+- 真实执行上下文 TID/TGID/UID、socket owner TID/TGID/UID、方向、CPU、网卡、端点和匿名
+  packet/socket ID。
 
 Anettrace 会直接写原生 Perfetto TrackEvent protobuf，保留 BPF `CLOCK_MONOTONIC` 时间戳，再与
 Android 系统 Perfetto trace 合并；设备端不需要 Python。临时 system/network/config 文件在成功
@@ -179,7 +182,11 @@ python tools/capture_android_trace.py \
 设备端 `full` 直采为了保留线程下的 atrace tag，会按 PerfAllInOne 基线采集全局
 `ftrace/print`；这比 `sched` 档开销和输出体积更大。把最终文件拖入
 [Perfetto UI](https://ui.perfetto.dev/) 后，发包时间点位于实际执行线程轨道，线程
-Running/Runnable/Sleeping 状态来自系统 sched 数据。
+Running/Runnable/Sleeping 状态来自系统 sched 数据。联合采集期间网络阶段仍会同步打印到当前终端；
+RX 内核事件保留 NAPI/softirq 的真实线程轨道，应用线程只显示 `recvmsg` duration slice，避免把所有
+收包箭头伪装到 reader 线程下。
+
+当前 UDP 范围刻意限制为传统 DNS/53；QUIC/HTTP3（通常为 UDP/443）不在本阶段采集范围内。
 
 编排器吸收了 PerfAllInOne 中仍适合当前链路的抓取能力，但不依赖它附带的 Python 2、exe 或
 私有转换器：
@@ -240,7 +247,8 @@ python tools/capture_android_trace.py \
 
 如果设备没有系统 `perfetto` 命令，先单独使用 `--perfetto-events` 生成 JSONL 后离线转换；
 该结果仅包含 Anettrace 网络轨道，不能提供 Running/Runnable/Sleeping 等调度状态。
-首个版本聚焦 TCP TX；UDP TX、socket cookie 归属和 Android netId/VPN/Fwmark 关联留待后续。
+当前覆盖 TCP TX/RX 和 UDP 明文 DNS/53 TX/RX；QUIC/HTTP3、稳定 socket cookie、Android
+netId/VPN/Fwmark 解释留待后续。
 
 已有其他工具生成系统 `.pftrace` 时，可直接把它和 Anettrace JSONL 严格合并：
 

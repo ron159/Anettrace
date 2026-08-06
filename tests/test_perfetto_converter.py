@@ -34,6 +34,8 @@ class PerfettoConverterTest(unittest.TestCase):
         self.assertIn("tcp_sendmsg_locked", names)
         self.assertIn("__tcp_transmit_skb", names)
         self.assertIn("consume_skb", names)
+        self.assertIn("tcp_rcv_established", names)
+        self.assertIn("tcp_recvmsg", names)
         self.assertIn("tcp_close", names)
         self.assertIn("ESTABLISHED → CLOSE", names)
 
@@ -45,6 +47,43 @@ class PerfettoConverterTest(unittest.TestCase):
         self.assertEqual(len(packets), 1)
         self.assertEqual(packets[0].type, TrackEvent.TYPE_INSTANT)
         self.assertEqual(list(packets[0].terminating_flow_ids), [0x3001])
+
+        rx_packets = [
+            packet.track_event
+            for packet in trace.packet
+            if packet.HasField("track_event")
+            and packet.track_event.name == "tcp_rcv_established"
+        ]
+        self.assertEqual(len(rx_packets), 1)
+        rx_annotations = {
+            annotation.name: annotation
+            for annotation in rx_packets[0].debug_annotations
+        }
+        self.assertEqual(rx_annotations["direction"].string_value, "rx")
+        self.assertEqual(rx_annotations["owner_uid"].uint_value, 10000)
+
+        recv_begins = [
+            packet.track_event
+            for packet in trace.packet
+            if packet.HasField("track_event")
+            and packet.track_event.name == "tcp_recvmsg"
+        ]
+        self.assertEqual(len(recv_begins), 1)
+        recv_track = recv_begins[0].track_uuid
+        recv_ends = [
+            packet.track_event
+            for packet in trace.packet
+            if packet.HasField("track_event")
+            and packet.track_event.track_uuid == recv_track
+            and packet.timestamp == 1_053_000_000
+            and packet.track_event.type == TrackEvent.TYPE_SLICE_END
+        ]
+        self.assertEqual(len(recv_ends), 1)
+        recv_annotations = {
+            annotation.name: annotation
+            for annotation in recv_ends[0].debug_annotations
+        }
+        self.assertEqual(recv_annotations["bytes"].uint_value, 512)
 
         lifetime_begins = [
             packet.track_event

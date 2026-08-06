@@ -423,12 +423,51 @@ static void trace_check_sock_skb()
 
 static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 {
+	static trace_t *perfetto_rx_traces[] = {
+		&trace_napi_gro_receive_entry, &trace___netif_receive_skb_core,
+		&trace_ip_rcv, &trace_ip_rcv_core, &trace_ip_rcv_finish,
+		&trace_ip_local_deliver, &trace_ip_local_deliver_finish,
+		&trace_ipv6_rcv, &trace_ip6_rcv_core, &trace_ip6_rcv_finish,
+		&trace_ip6_input, &trace_ip6_input_finish,
+		&trace_tcp_v4_rcv, &trace_tcp_v6_rcv,
+		&trace_tcp_v4_do_rcv, &trace_tcp_v6_do_rcv,
+		&trace_tcp_rcv_established, &trace_tcp_recvmsg,
+		&trace_udp_rcv, &trace___udp4_lib_rcv, &trace_udpv6_rcv,
+		&trace___udp6_lib_rcv, &trace_udp_unicast_rcv_skb,
+		&trace_udp6_unicast_rcv_skb, &trace_udp_queue_rcv_skb,
+		&trace_udpv6_queue_rcv_skb, &trace___udp_queue_rcv_skb,
+		&trace___udp_enqueue_schedule_skb, &trace_udp_recvmsg,
+		&trace_udpv6_recvmsg,
+	};
+	static trace_t *perfetto_tx_traces[] = {
+		&trace_tcp_sendmsg_locked, &trace_tcp_skb_entail,
+		&trace_skb_entail, &trace___tcp_transmit_skb,
+		&trace_udp_send_skb, &trace_udp_v6_send_skb,
+		&trace___ip_queue_xmit, &trace___ip_local_out,
+		&trace_ip_output, &trace_ip_finish_output,
+		&trace_ip6_local_out, &trace_ip6_output,
+		&trace_ip6_finish_output, &trace___dev_queue_xmit,
+		&trace_dev_hard_start_xmit,
+	};
 	static char perfetto_traces[] =
 		"sk_alloc,inet_sock_set_state,inet_listen,tcp_sendmsg_locked,"
-		"tcp_close,tcp_skb_entail,skb_entail,__tcp_transmit_skb,"
+		"tcp_recvmsg,tcp_close,tcp_v4_destroy_sock,tcp_skb_entail,"
+		"skb_entail,"
+		"__tcp_transmit_skb,udp_send_skb,udp_v6_send_skb,"
 		"__ip_queue_xmit,__ip_local_out,ip_output,ip_finish_output,"
+		"ip6_local_out,ip6_output,ip6_finish_output,"
 		"__dev_queue_xmit,dev_hard_start_xmit,consume_skb,kfree_skb,"
-		"__kfree_skb";
+		"__kfree_skb,napi_gro_receive_entry,__netif_receive_skb_core,"
+		"ip_rcv,ip_rcv_core,ip_rcv_finish,ip_local_deliver,"
+		"ip_local_deliver_finish,ipv6_rcv,ip6_rcv_core,"
+		"ip6_rcv_finish,ip6_input,ip6_input_finish,tcp_v4_rcv,"
+		"tcp_v6_rcv,tcp_v4_do_rcv,tcp_v6_do_rcv,"
+		"tcp_rcv_established,udp_rcv,__udp4_lib_rcv,udpv6_rcv,"
+		"__udp6_lib_rcv,udp_unicast_rcv_skb,udp6_unicast_rcv_skb,"
+		"udp_queue_rcv_skb,udpv6_queue_rcv_skb,"
+		"__udp_queue_rcv_skb,__udp_enqueue_schedule_skb,"
+		"udp_recvmsg,udpv6_recvmsg";
+	size_t i;
 
 	if (args->perfetto_events || args->capture_trace) {
 		bpf_args->perfetto = true;
@@ -436,6 +475,15 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		if (!args->traces)
 			args->traces = perfetto_traces;
 		trace_set_ret(&trace_sk_alloc);
+		trace_set_ret(&trace_tcp_recvmsg);
+		trace_set_ret(&trace_udp_recvmsg);
+		trace_set_ret(&trace_udpv6_recvmsg);
+		for (i = 0; i < ARRAY_SIZE(perfetto_rx_traces); i++)
+			trace_set_status(perfetto_rx_traces[i]->index,
+					 FUNC_STATUS_RX);
+		for (i = 0; i < ARRAY_SIZE(perfetto_tx_traces); i++)
+			trace_set_status(perfetto_tx_traces[i]->index,
+					 FUNC_STATUS_TX);
 	}
 	if (args->rtt_detail) {
 		args->traces = "tcp_ack_update_rtt";
@@ -898,10 +946,10 @@ static int trace_bpf_load()
 
 static void capture_poll_handler(void *ctx, int cpu, void *data, u32 size)
 {
-	(void)ctx;
-	(void)cpu;
-	(void)data;
-	(void)size;
+	/* Keep the normal terminal analysis active while the same events are
+	 * encoded into the joint Perfetto trace by poll_handler_wrap().
+	 */
+	perfetto_poll_handler(ctx, cpu, data, size);
 }
 
 static void trace_prepare_ops()

@@ -259,17 +259,29 @@ children:
     desc: ip layer of packet in
     visual: true
     children:
-    - ip_rcv:0
-    - ip_rcv_core:0
-    - ip_rcv_finish:2
-    - ip_local_deliver:0
-    - ip_local_deliver_finish:2
+    - name: ip_rcv:0
+      monitor: 1
+    - name: ip_rcv_core:0
+      monitor: 1
+    - name: ip_rcv_finish:2
+      monitor: 1
+    - name: ip_local_deliver:0
+      monitor: 1
+    - name: ip_local_deliver_finish:2
+      monitor: 1
     - ip_forward:0
     - ip_forward_finish:0
     - ip6_forward:0
-    - ip6_rcv_finish:2
-    - ip6_rcv_core:0
-    - ipv6_rcv:0
+    - name: ip6_rcv_finish:2
+      monitor: 1
+    - name: ip6_rcv_core:0
+      monitor: 1
+    - name: ipv6_rcv:0
+      monitor: 1
+    - name: ip6_input:0
+      monitor: 1
+    - name: ip6_input_finish:2
+      monitor: 1
   - name: ip-out
     desc: ip layer of packet out
     visual: true
@@ -334,8 +346,10 @@ children:
     desc: tcp layer of packet in
     visual: true
     children:
-    - tcp_v4_rcv:0
-    - tcp_v6_rcv:0
+    - name: tcp_v4_rcv:0
+      monitor: 1
+    - name: tcp_v6_rcv:0
+      monitor: 1
     - tcp_filter:1
     - tcp_child_process:2
     - name: tcp_v4_send_reset:1/0
@@ -352,9 +366,14 @@ children:
       - exp: any
         level: error
         msg: connection reset initiated by transport layer (TCP stack, skb)
-    - tcp_v4_do_rcv:1
-    - tcp_v6_do_rcv:1
-    - tcp_rcv_established:1/0
+    - name: tcp_v4_do_rcv/0:1
+      monitor: 1
+    - name: tcp_v6_do_rcv/0:1
+      monitor: 1
+    - name: tcp_rcv_established:1/0
+      monitor: 1
+    - name: tcp_recvmsg/0
+      monitor: 1
     - &tcp_rcv_state_process
       name: tcp_rcv_state_process:1/0
       rules:
@@ -417,13 +436,40 @@ children:
     desc: udp layer of packet in
     visual: true
     children:
-    - udp_rcv:0
-    - udp_unicast_rcv_skb:1
-    - udp_queue_rcv_skb:1
+    - name: udp_rcv:0
+      monitor: 1
+    - name: __udp4_lib_rcv:0
+      monitor: 1
+    - name: udpv6_rcv:0
+      monitor: 1
+    - name: __udp6_lib_rcv:0
+      monitor: 1
+    - name: udp_unicast_rcv_skb/0:1
+      monitor: 1
+    - name: udp6_unicast_rcv_skb/0:1
+      monitor: 1
+    - name: udp_queue_rcv_skb/0:1
+      monitor: 1
+    - name: udpv6_queue_rcv_skb/0:1
+      monitor: 1
     - xfrm4_udp_encap_rcv:1
     - xfrm4_rcv_encap:0
-    - __udp_queue_rcv_skb:1
-    - __udp_enqueue_schedule_skb:1
+    - name: __udp_queue_rcv_skb/0:1
+      monitor: 1
+    - name: __udp_enqueue_schedule_skb/0:1
+      monitor: 1
+    - name: udp_recvmsg/0
+      monitor: 1
+    - name: udpv6_recvmsg/0
+      monitor: 1
+  - name: udp-out
+    desc: DNS UDP packets sent by the application
+    visual: true
+    children:
+    - name: udp_send_skb:0
+      monitor: 1
+    - name: udp_v6_send_skb:0
+      monitor: 1
 - name: icmp
   desc: icmp(ping) protocol layer (L4) of the network stack
   children:

@@ -48,10 +48,22 @@ require_text 'LADDR:PORT' src/traffic.c
 require_text 'traffic_print_snapshot' src/traffic.c
 require_text '.lname = "perfetto-events"' src/anettrace.c
 require_text 'bool perfetto;' src/progs/shared.h
+require_text 'owner_socket_key' src/progs/shared.h
+require_text 'PACKET_DIRECTION_RX' src/progs/shared.h
+require_text 'FUNC_STATUS_RX' src/progs/shared.h
+require_text 'FUNC_STATUS_TX' src/progs/shared.h
+require_text 'm_perfetto_socket_owner' src/progs/core.c
+require_text 'm_perfetto_flow_owner' src/progs/core.c
+require_text 'm_perfetto_scratch' src/progs/core.c
+require_text 'pkt->l4.min.sport == bpf_htons(53)' src/progs/core.c
+require_text 'pkt->l4.min.dport == bpf_htons(53)' src/progs/core.c
 require_text 'SEC("kprobe/sk_alloc")' src/progs/core.c
 require_text 'DEFINE_TP_SK(inet_sock_set_state' src/progs/core.c
 require_text 'perfetto_export_event(data, cpu, size);' src/trace.c
 require_text '\"type\":\"packet_event\"' src/perfetto_export.c
+require_text '\"type\":\"rx_read_start\"' src/perfetto_export.c
+require_text '\"type\":\"rx_read_end\"' src/perfetto_export.c
+require_text '"anettrace.rx.read"' src/perfetto_export.c
 require_text '\"skb_id\":' src/perfetto_export.c
 require_text 'CLOCK_SNAPSHOT_INTERVAL_NS' src/perfetto_export.c
 require_text 'perfetto_export_tick();' src/trace.c
@@ -70,6 +82,12 @@ require_text 'atrace_categories: \"ftrace_print\"' src/trace_capture.c
 require_text 'ftrace_events: \"ftrace/print\"' src/trace_capture.c
 require_text 'android.surfaceflinger.frametimeline' src/trace_capture.c
 require_text 'android.statsd' src/trace_capture.c
+require_text 'tcp_rcv_established' src/trace.c
+require_text 'udp_recvmsg,udpv6_recvmsg' src/trace.c
+require_text 'udp_send_skb:0' src/trace.yaml
+require_text 'udp_v6_send_skb:0' src/trace.yaml
+require_text 'perfetto_poll_handler(ctx, cpu, data, size);' src/trace.c
+require_text 'trace && trace_using_sk(trace)' src/analysis.c
 require_text 'packet.timestamp_clock_id = CLOCK_MONOTONIC' \
 	tools/anettrace_to_perfetto.py
 require_text '--uid 0 is too broad for Perfetto capture' src/trace.c

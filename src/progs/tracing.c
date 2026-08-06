@@ -34,6 +34,7 @@
 			.ctx = ctx,				\
 			.args = (void *)CONFIG(),		\
 			.retval = __retval,			\
+			.is_return = 1,			\
 			info_init				\
 		};						\
 		if (pre_handle_entry(&info, INDEX_##name))	\

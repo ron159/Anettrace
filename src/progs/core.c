@@ -43,6 +43,67 @@ struct {
 	__uint(value_size, sizeof(match_val_t));
 } m_matched SEC(".maps");
 
+typedef struct {
+	u32 tid;
+	u32 tgid;
+	u32 uid;
+	u32 socket_key;
+	u8 dns;
+	u8 pad[3];
+} perfetto_owner_t;
+
+typedef struct {
+	u32 saddr[4];
+	u32 daddr[4];
+	u16 sport;
+	u16 dport;
+	u16 proto_l3;
+	u8 proto_l4;
+	u8 pad;
+} perfetto_flow_key_t;
+
+typedef struct {
+	perfetto_owner_t owner;
+	u8 direction;
+	u8 pad[3];
+} perfetto_flow_owner_t;
+
+typedef struct {
+	perfetto_owner_t owner;
+	perfetto_flow_key_t flow_key;
+	perfetto_flow_owner_t flow_value;
+} perfetto_scratch_t;
+
+struct {
+#ifdef BPF_MAP_TYPE_LRU_HASH
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+#else
+	__uint(type, BPF_MAP_TYPE_HASH);
+#endif
+	__uint(key_size, sizeof(u64));
+	__uint(value_size, sizeof(perfetto_owner_t));
+	__uint(max_entries, 16384);
+} m_perfetto_socket_owner SEC(".maps");
+
+struct {
+#ifdef BPF_MAP_TYPE_LRU_HASH
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+#else
+	__uint(type, BPF_MAP_TYPE_HASH);
+#endif
+	__uint(key_size, sizeof(perfetto_flow_key_t));
+	__uint(value_size, sizeof(perfetto_flow_owner_t));
+	__uint(max_entries, 32768);
+} m_perfetto_flow_owner SEC(".maps");
+
+/* Keep the owner/flow working set off the 512-byte BPF stack. */
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(key_size, sizeof(u32));
+	__uint(value_size, sizeof(perfetto_scratch_t));
+	__uint(max_entries, 1);
+} m_perfetto_scratch SEC(".maps");
+
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(key_size, sizeof(int));
@@ -139,6 +200,249 @@ static inline bool func_is_free(u8 status)
 static inline bool func_is_cfree(u8 status)
 {
 	return status & FUNC_STATUS_CFREE;
+}
+
+static __always_inline u8 perfetto_status_direction(u8 status)
+{
+	if (status & FUNC_STATUS_RX)
+		return PACKET_DIRECTION_RX;
+	if (status & FUNC_STATUS_TX)
+		return PACKET_DIRECTION_TX;
+	return PACKET_DIRECTION_UNKNOWN;
+}
+
+static __always_inline bool perfetto_current_matches(bpf_args_t *args,
+						      u32 tid, u32 uid)
+{
+	return !args_check(args, pid, tid) &&
+	       (!args->uid_enabled || args->uid == uid);
+}
+
+static __always_inline bool perfetto_owner_matches(bpf_args_t *args,
+						    perfetto_owner_t *owner)
+{
+	if (args->pid && args->pid != owner->tid)
+		return false;
+	if (args->uid_enabled && args->uid != owner->uid)
+		return false;
+	return true;
+}
+
+static __always_inline bool perfetto_packet_supported(packet_t *pkt)
+{
+	if (pkt->proto_l4 == IPPROTO_TCP)
+		return true;
+	if (pkt->proto_l4 != IPPROTO_UDP)
+		return false;
+	return pkt->l4.min.sport == bpf_htons(53) ||
+	       pkt->l4.min.dport == bpf_htons(53);
+}
+
+static __always_inline bool perfetto_packet_is_dns(packet_t *pkt)
+{
+	return pkt->proto_l4 == IPPROTO_UDP &&
+	       (pkt->l4.min.sport == bpf_htons(53) ||
+		pkt->l4.min.dport == bpf_htons(53));
+}
+
+static __always_inline bool perfetto_socket_supported(sock_t *sock)
+{
+	if (sock->proto_l4 == IPPROTO_TCP)
+		return true;
+	if (sock->proto_l4 != IPPROTO_UDP)
+		return false;
+	return sock->l4.min.sport == bpf_htons(53) ||
+	       sock->l4.min.dport == bpf_htons(53);
+}
+
+static __always_inline void perfetto_flow_key(packet_t *pkt,
+					       perfetto_flow_key_t *key)
+{
+	key->proto_l3 = pkt->proto_l3;
+	key->proto_l4 = pkt->proto_l4;
+	key->sport = pkt->l4.min.sport;
+	key->dport = pkt->l4.min.dport;
+	if (pkt->proto_l3 == ETH_P_IPV6) {
+#ifndef NT_DISABLE_IPV6
+		__builtin_memcpy(key->saddr, pkt->l3.ipv6.saddr, 16);
+		__builtin_memcpy(key->daddr, pkt->l3.ipv6.daddr, 16);
+#endif
+	} else {
+		key->saddr[0] = pkt->l3.ipv4.saddr;
+		key->daddr[0] = pkt->l3.ipv4.daddr;
+	}
+}
+
+static __always_inline perfetto_flow_owner_t *perfetto_lookup_flow(
+	packet_t *pkt, perfetto_flow_key_t *key)
+{
+	if (!perfetto_packet_supported(pkt))
+		return NULL;
+	__builtin_memset(key, 0, sizeof(*key));
+	perfetto_flow_key(pkt, key);
+	return bpf_map_lookup_elem(&m_perfetto_flow_owner, key);
+}
+
+static __always_inline void perfetto_store_flow(packet_t *pkt,
+							 perfetto_owner_t *owner,
+							 u8 direction,
+							 perfetto_flow_key_t *key,
+							 perfetto_flow_owner_t *value)
+{
+	u32 address;
+	u16 port;
+	int i;
+
+	if (!direction || !perfetto_packet_supported(pkt))
+		return;
+	__builtin_memset(key, 0, sizeof(*key));
+	value->owner = *owner;
+	value->direction = direction;
+	perfetto_flow_key(pkt, key);
+	bpf_map_update_elem(&m_perfetto_flow_owner, key, value, BPF_ANY);
+
+#pragma clang loop unroll(full)
+	for (i = 0; i < 4; i++) {
+		address = key->saddr[i];
+		key->saddr[i] = key->daddr[i];
+		key->daddr[i] = address;
+	}
+	port = key->sport;
+	key->sport = key->dport;
+	key->dport = port;
+	value->direction = direction == PACKET_DIRECTION_TX ?
+				   PACKET_DIRECTION_RX : PACKET_DIRECTION_TX;
+	bpf_map_update_elem(&m_perfetto_flow_owner, key, value, BPF_ANY);
+}
+
+static __always_inline void perfetto_store_socket_owner(struct sock *sk,
+							 perfetto_owner_t *owner)
+{
+	u64 key = (u64)(void *)sk;
+
+	if (sk)
+		bpf_map_update_elem(&m_perfetto_socket_owner, &key, owner,
+				    BPF_ANY);
+}
+
+static __always_inline bool perfetto_resolve_socket_owner(
+	struct sock *sk, bool trust_current, perfetto_owner_t *owner,
+	u32 tid, u32 tgid, u32 uid)
+{
+	perfetto_owner_t *cached;
+	u64 key;
+	u32 sk_uid;
+
+	if (!sk)
+		return false;
+	key = (u64)(void *)sk;
+	sk_uid = _C(sk, sk_uid.val);
+	cached = bpf_map_lookup_elem(&m_perfetto_socket_owner, &key);
+	if (cached && cached->uid == sk_uid) {
+		*owner = *cached;
+		if (trust_current && uid == sk_uid && !owner->tid) {
+			owner->tid = tid;
+			owner->tgid = tgid;
+			perfetto_store_socket_owner(sk, owner);
+		}
+		return true;
+	}
+
+	owner->socket_key = (u32)key;
+	owner->uid = sk_uid;
+	if (trust_current && uid == sk_uid) {
+		owner->tid = tid;
+		owner->tgid = tgid;
+		perfetto_store_socket_owner(sk, owner);
+	}
+	return true;
+}
+
+static __attribute__((noinline)) int perfetto_handle_owner(
+	context_info_t *info, struct sock *sk, detail_event_t *detail, bool filter)
+{
+	bpf_args_t *args = info->args;
+	event_t *event = info->e;
+	struct sk_buff *skb = info->skb;
+	perfetto_scratch_t *scratch;
+	perfetto_owner_t *owner;
+	perfetto_flow_owner_t *flow_owner;
+	u64 pid_tgid = bpf_get_current_pid_tgid();
+	u32 tid = (u32)pid_tgid;
+	u32 tgid = (u32)(pid_tgid >> 32);
+	u32 uid = (u32)bpf_get_current_uid_gid();
+	u8 direction = perfetto_status_direction(info->func_status);
+	bool current_matches = perfetto_current_matches(args, tid, uid);
+	bool owner_valid;
+	u32 scratch_key = 0;
+
+	scratch = bpf_map_lookup_elem(&m_perfetto_scratch, &scratch_key);
+	if (!scratch)
+		return -1;
+	owner = &scratch->owner;
+	__builtin_memset(owner, 0, sizeof(*owner));
+
+	if (!sk && skb)
+		sk = _C(skb, sk);
+	owner_valid = perfetto_resolve_socket_owner(
+		sk, direction == PACKET_DIRECTION_TX ||
+		    (info->func_status & FUNC_STATUS_RET), owner,
+		tid, tgid, uid);
+
+	if (skb) {
+		if (!perfetto_packet_supported(&event->pkt))
+			return -1;
+		flow_owner = perfetto_lookup_flow(&event->pkt,
+						  &scratch->flow_key);
+		if (flow_owner) {
+			if (!owner_valid ||
+			    (!owner->tid && owner->uid == flow_owner->owner.uid))
+				*owner = flow_owner->owner;
+			owner_valid = true;
+			if (!direction)
+				direction = flow_owner->direction;
+		}
+	} else if (!perfetto_socket_supported(&event->ske) &&
+		   !(owner_valid && owner->dns)) {
+		return -1;
+	}
+
+	if (filter && (args->pid || args->uid_enabled) && !current_matches &&
+	    (!owner_valid || !perfetto_owner_matches(args, owner)))
+		return -1;
+
+	if (!owner_valid && current_matches) {
+		*owner = (perfetto_owner_t) {
+			.tid = tid,
+			.tgid = tgid,
+			.uid = uid,
+			.socket_key = (u32)(u64)(void *)sk,
+		};
+		owner_valid = true;
+		if (sk && (direction == PACKET_DIRECTION_TX ||
+			   (info->func_status & FUNC_STATUS_RET)))
+			perfetto_store_socket_owner(sk, owner);
+	}
+
+	if (owner_valid && skb) {
+		if (perfetto_packet_is_dns(&event->pkt)) {
+			owner->dns = 1;
+			if (sk)
+				perfetto_store_socket_owner(sk, owner);
+		}
+		perfetto_store_flow(&event->pkt, owner, direction,
+				    &scratch->flow_key, &scratch->flow_value);
+	}
+
+	detail->direction = direction;
+	detail->owner_valid = owner_valid;
+	if (owner_valid) {
+		detail->owner_tid = owner->tid;
+		detail->owner_tgid = owner->tgid;
+		detail->owner_uid = owner->uid;
+		detail->owner_socket_key = owner->socket_key;
+	}
+	return 0;
 }
 
 static inline void consume_map_ctx(bpf_args_t *args, void *key)
@@ -351,12 +655,14 @@ static int auto_inline handle_entry(context_info_t *info)
 {
 	bpf_args_t *args = (void *)info->args;
 	struct sk_buff *skb = info->skb;
+	struct sock *sk = info->sk;
 	struct net_device *dev;
 	detail_event_t *detail;
 	event_t *e = info->e;
 	pkt_args_t *pkt_args;
 	bool mode_ctx, filter;
 	packet_t *pkt;
+	u8 direction;
 	u32 tid;
 	int err;
 
@@ -368,13 +674,14 @@ static int auto_inline handle_entry(context_info_t *info)
 
 	mode_ctx = mode_has_context(args) && skb;
 	filter = !info->matched;
+	direction = args->perfetto ? perfetto_status_direction(info->func_status) :
+				       PACKET_DIRECTION_UNKNOWN;
 	pkt_args = &args->pkt;
 	pkt = &e->pkt;
 
-	if (filter && args_check(args, pid, tid))
-		goto err;
-
-	if (filter && args->uid_enabled && args->uid != uid)
+	if (filter && !args->perfetto &&
+	    (args_check(args, pid, tid) ||
+	     (args->uid_enabled && args->uid != uid)))
 		goto err;
 
 	/* why we call probe_parse_skb double times? because in the inline
@@ -382,14 +689,18 @@ static int auto_inline handle_entry(context_info_t *info)
 	 */
 	if (!filter) {
 		if (!skb) {
-			pr_bpf_debug("no skb available, func=%d", info->func);
-			goto err;
+			if (!(info->func_status & FUNC_STATUS_SK)) {
+				pr_bpf_debug("no skb available, func=%d", info->func);
+				goto err;
+			}
+			if (probe_parse_sk(sk, &e->ske, NULL))
+				goto err;
+		} else {
+			probe_parse_skb(skb,
+				args->perfetto && direction == PACKET_DIRECTION_RX ?
+				NULL : sk, pkt, NULL);
 		}
-		probe_parse_skb(skb, info->sk, pkt, NULL);
-		goto no_filter;
-	}
-
-	if (info->func_status & FUNC_STATUS_SK) {
+	} else if (info->func_status & FUNC_STATUS_SK) {
 		if (!info->sk) {
 			pr_bpf_debug("no sock available, func=%d", info->func);
 			goto err;
@@ -400,13 +711,17 @@ static int auto_inline handle_entry(context_info_t *info)
 			pr_bpf_debug("no skb available, func=%d", info->func);
 			goto err;
 		}
-		err = probe_parse_skb(skb, info->sk, pkt, pkt_args);
+		err = probe_parse_skb(skb,
+			args->perfetto && direction == PACKET_DIRECTION_RX ?
+			NULL : info->sk, pkt, pkt_args);
 	}
 
-	if (err)
+	if (filter && err)
 		goto err;
 
-no_filter:
+	if (args->perfetto && perfetto_handle_owner(info, sk, (void *)e, filter))
+		goto err;
+
 	if (filter_by_netns(info) && filter)
 		goto err;
 
@@ -441,6 +756,7 @@ out:
 	e->key = skb ? (u64)(void *)skb : (u64)(void *)info->sk;
 #endif
 	e->func = info->func;
+	e->meta = info->is_return ? FUNC_TYPE_TRACING_RET : FUNC_TYPE_FUNC;
 	e->tid = tid;
 	e->tgid = tgid;
 	e->uid = uid;
@@ -450,8 +766,16 @@ out:
 #ifdef __PROG_TYPE_TRACING
 	e->retval = info->retval;
 #endif
+	if (args->perfetto && sk &&
+	    (info->func == INDEX_tcp_close ||
+	     info->func == INDEX_tcp_v4_destroy_sock)) {
+		u64 socket_key = (u64)(void *)sk;
 
-	if (mode_ctx)
+		bpf_map_delete_elem(&m_perfetto_socket_owner, &socket_key);
+	}
+
+	if (mode_ctx || (args->perfetto &&
+			 (info->func_status & FUNC_STATUS_RET)))
 		get_ret(info);
 	return 0;
 err:
@@ -819,6 +1143,7 @@ int TRACE_RET_NAME(sk_alloc)(struct pt_regs *ctx)
 {
 	bpf_args_t *args = (void *)CONFIG();
 	detail_socket_create_event_t event = {};
+	perfetto_owner_t owner = {};
 	u64 pid_tgid = bpf_get_current_pid_tgid();
 	u64 *start_ts;
 	struct sock *sk;
@@ -839,6 +1164,16 @@ int TRACE_RET_NAME(sk_alloc)(struct pt_regs *ctx)
 	event.event.tid = (u32)pid_tgid;
 	event.event.tgid = (u32)(pid_tgid >> 32);
 	event.event.uid = (u32)bpf_get_current_uid_gid();
+	owner.tid = event.event.tid;
+	owner.tgid = event.event.tgid;
+	owner.uid = event.event.uid;
+	owner.socket_key = (u32)(u64)(void *)sk;
+	perfetto_store_socket_owner(sk, &owner);
+	event.event.owner_tid = owner.tid;
+	event.event.owner_tgid = owner.tgid;
+	event.event.owner_uid = owner.uid;
+	event.event.owner_socket_key = owner.socket_key;
+	event.event.owner_valid = 1;
 	bpf_get_current_comm(event.event.task, sizeof(event.event.task));
 	event.start_ts = *start_ts;
 	EVENT_OUTPUT(ctx, event);

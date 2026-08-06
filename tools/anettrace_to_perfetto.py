@@ -65,6 +65,7 @@ class PerfettoExporter:
         self.socket_tracks: dict[str, int] = {}
         self.socket_lifetimes: set[str] = set()
         self.closed_sockets: set[str] = set()
+        self.pending_reads: dict[tuple[str, int], int] = {}
         self.global_track = stable_uuid("anettrace", "global")
         self.capture_start_monotonic_ns = 0
         self.clock_monotonic_ns: list[int] = []
@@ -332,6 +333,12 @@ class PerfettoExporter:
                     "dport",
                     "cpu",
                     "uid",
+                    "direction",
+                    "owner_valid",
+                    "owner_tid",
+                    "owner_tgid",
+                    "owner_uid",
+                    "owner_socket_id",
                 ),
             ),
         )
@@ -370,6 +377,12 @@ class PerfettoExporter:
                     "dropped",
                     "cpu",
                     "uid",
+                    "direction",
+                    "owner_valid",
+                    "owner_tid",
+                    "owner_tgid",
+                    "owner_uid",
+                    "owner_socket_id",
                     "ifname",
                     "ifindex",
                     "netns",
@@ -385,6 +398,51 @@ class PerfettoExporter:
                     "tcp_flags",
                 ),
             ),
+        )
+
+    def export_rx_read_start(self, record: dict[str, Any]) -> None:
+        key = (str(record["stage"]), int(record["tid"]))
+        track = self.thread_track(record)
+        if key in self.pending_reads:
+            self.event(
+                int(record["ts_ns"]),
+                self.pending_reads[key],
+                TrackEvent.TYPE_SLICE_END,
+                category="anettrace.rx.read",
+            )
+        self.event(
+            int(record["ts_ns"]),
+            track,
+            TrackEvent.TYPE_SLICE_BEGIN,
+            str(record["stage"]),
+            "anettrace.rx.read",
+            annotations=(
+                record,
+                (
+                    "socket_id",
+                    "flow_id",
+                    "protocol",
+                    "cpu",
+                    "uid",
+                    "owner_tid",
+                    "owner_tgid",
+                    "owner_uid",
+                ),
+            ),
+        )
+        self.pending_reads[key] = track
+
+    def export_rx_read_end(self, record: dict[str, Any]) -> None:
+        key = (str(record["stage"]), int(record["tid"]))
+        track = self.pending_reads.pop(key, None)
+        if track is None:
+            return
+        self.event(
+            int(record["ts_ns"]),
+            track,
+            TrackEvent.TYPE_SLICE_END,
+            category="anettrace.rx.read",
+            annotations=(record, ("result", "bytes", "error", "incomplete")),
         )
 
     def export_meta_event(self, record: dict[str, Any]) -> None:
@@ -421,6 +479,10 @@ class PerfettoExporter:
                 self.export_socket_event(record)
             elif record_type == "packet_event":
                 self.export_packet_event(record)
+            elif record_type == "rx_read_start":
+                self.export_rx_read_start(record)
+            elif record_type == "rx_read_end":
+                self.export_rx_read_end(record)
             elif record_type in ("lost_events", "trace_end"):
                 if record_type == "trace_end" and record.get("ts_ns"):
                     for socket_id in tuple(self.socket_lifetimes):
@@ -433,6 +495,14 @@ class PerfettoExporter:
                             terminating_flow=True,
                         )
                         self.socket_lifetimes.remove(socket_id)
+                    for track in tuple(self.pending_reads.values()):
+                        self.event(
+                            int(record["ts_ns"]),
+                            track,
+                            TrackEvent.TYPE_SLICE_END,
+                            category="anettrace.rx.read",
+                        )
+                    self.pending_reads.clear()
                 self.export_meta_event(record)
         return self.builder.serialize()
 

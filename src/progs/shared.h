@@ -91,6 +91,16 @@ typedef struct {
 	char		ifname[16];
 	u32		ifindex;
 	u32		netns;
+	/* The execution context above remains the real kernel/app context.
+	 * These fields associate RX softirq/NAPI work with the owning socket.
+	 */
+	u32		owner_tid;
+	u32		owner_tgid;
+	u32		owner_uid;
+	u32		owner_socket_key;
+	u8		direction;
+	u8		owner_valid;
+	u16		owner_pad;
 	int		__event_filed[0];
 } detail_event_t;
 
@@ -105,13 +115,21 @@ enum {
 	FUNC_TYPE_MAX,
 };
 
+enum {
+	PACKET_DIRECTION_UNKNOWN,
+	PACKET_DIRECTION_TX,
+	PACKET_DIRECTION_RX,
+};
+
 
 #define FUNC_STATUS_FREE	(1 << 0)
 #define FUNC_STATUS_SK		(1 << 1)
+#define FUNC_STATUS_RX		(1 << 2)
 #define FUNC_STATUS_MATCHER	(1 << 3)
 #define FUNC_STATUS_STACK	(1 << 4)
 #define FUNC_STATUS_RET		(1 << 5)
 #define FUNC_STATUS_CFREE	(1 << 6) /* custom skb free function */
+#define FUNC_STATUS_TX		(1 << 7)
 
 #undef DEFINE_EVENT
 #define DEFINE_EVENT(name, fields...)		\

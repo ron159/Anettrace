@@ -114,6 +114,11 @@ static void tracing_load_rules()
 			rule->op[i] = local_rule->type;
 			i++;
 		}
+		/* A requested fexit without analyzer rules still needs to emit.
+		 * Perfetto uses this to pair recvmsg entry/return boundaries.
+		 */
+		if (!i)
+			rule->op[0] = RULE_RETURN_ANY;
 	}
 }
 

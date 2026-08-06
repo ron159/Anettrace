@@ -605,9 +605,20 @@ void ctx_poll_handler(void *raw_ctx, int cpu, void *data, u32 size)
 void perfetto_poll_handler(void *ctx, int cpu, void *data, u32 size)
 {
 	event_t *event = data;
+	retevent_t *ret = data;
 	trace_t *trace;
 
-	if (size < sizeof(event_t) || event->meta == FUNC_TYPE_RET) {
+	if (size >= sizeof(*ret) && ret->meta == FUNC_TYPE_RET) {
+		trace = get_trace(ret->func);
+		/* Socket read return events are paired by the Perfetto exporter.
+		 * They intentionally have no packet-analysis entry.
+		 */
+		if (trace && trace_using_sk(trace))
+			return;
+		ctx_poll_handler(ctx, cpu, data, size);
+		return;
+	}
+	if (size < sizeof(event_t)) {
 		ctx_poll_handler(ctx, cpu, data, size);
 		return;
 	}
