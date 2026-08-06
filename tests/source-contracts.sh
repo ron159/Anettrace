@@ -54,10 +54,14 @@ require_text 'perfetto_export_event(data, cpu, size);' src/trace.c
 require_text '\"type\":\"packet_event\"' src/perfetto_export.c
 require_text '\"skb_id\":' src/perfetto_export.c
 require_text '--uid 0 is too broad for Perfetto capture' src/trace.c
-require_text '--uid 0 is too broad for this helper; use --pid' \
-	tools/capture_android_perfetto.sh
-require_text 'sched/sched_switch' tools/capture_android_perfetto.sh
-require_text 'sched/sched_waking' tools/capture_android_perfetto.sh
+require_text '--uid 0 alone is too broad; add --pid' \
+	tools/capture_android_trace.py
+require_text 'sched/sched_switch' tools/capture_android_trace.py
+require_text 'sched/sched_waking' tools/capture_android_trace.py
+require_text 'android.surfaceflinger.frametimeline' tools/capture_android_trace.py
+require_text 'simpleperf' tools/capture_android_trace.py
+require_text 'session-manifest.json' tools/capture_android_trace.py
+require_text 'capture_android_trace.py' tools/capture_android_perfetto.sh
 require_text 'perfetto==0.57.2' tools/requirements-perfetto.txt
 require_text 'anettrace-0.4.0-android-arm64-dual.tar.bz2' \
 	.github/workflows/build-android-arm64.yml

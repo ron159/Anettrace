@@ -50,6 +50,8 @@ jobs:
             tests/timezone_offset_test.c utils/time_utils.c \
             -o /tmp/timezone-offset-test
           /tmp/timezone-offset-test
+      - name: Run capture orchestrator tests
+        run: python3 -m unittest tests/test_capture_android_trace.py
       - name: Run Perfetto conversion contract
         run: |
           python3 -m venv /tmp/perfetto-venv

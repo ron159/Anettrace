@@ -106,22 +106,63 @@ buffer 生命周期。socket lifetime 在 `tcp_close` 或采集结束时闭合�
 为避免无边界的全机追踪，必须指定 `--uid`、`--pid`、地址/端口/协议过滤之一，或显式使用
 `--force`。单独 `--uid 0` 仍然过宽，必须再加 `--pid`/包过滤，或明确使用 `--force`。
 
-在已 root Android 设备上一键联合采集：
+在已 root Android 设备上一键联合采集（Windows、Linux、macOS 均使用同一 Python 入口）：
 
 ```shell
-tools/capture_android_perfetto.sh \
+python tools/capture_android_trace.py \
   --uid 10000 \
   --duration 10 \
   --anettrace src/anettrace \
   --out output/perfetto-demo
 ```
 
-脚本同时用系统 Perfetto 采集 `sched_switch`、`sched_waking` 和进程信息，再生成
-`anettrace-combined.pftrace`。把该文件拖入 [Perfetto UI](https://ui.perfetto.dev/) 后，
-发包时间点位于实际执行线程轨道，线程 Running/Runnable/Sleeping 状态来自系统 sched 数据。
+`tools/capture_android_perfetto.sh` 保留为 Linux 兼容入口，内部调用同一个 Python 编排器。
+默认 `sched` 档同时采集 `sched_switch`、`sched_waking`、进程信息、suspend/resume 和同步
+marker，再生成 `anettrace-combined.pftrace`。把该文件拖入
+[Perfetto UI](https://ui.perfetto.dev/) 后，发包时间点位于实际执行线程轨道，线程
+Running/Runnable/Sleeping 状态来自系统 sched 数据。
 
-整合方式是：设备端的 `perfetto` 负责产生系统级调度轨迹，Anettrace 只输出网络事件 JSONL；
-脚本以同一采集窗口将二者转换、合并为一个 trace 文件。因而可在同一时间轴上从
+编排器吸收了 PerfAllInOne 中仍适合当前链路的抓取能力，但不依赖它附带的 Python 2、exe 或
+私有转换器：
+
+| `--profile` | 用途 | 默认时长 |
+| --- | --- | ---: |
+| `sched` | 低开销调度、进程和 suspend 对齐，默认档 | 10 秒 |
+| `light` | PerfAllInOne 风格的 atrace 类别集合 | 10 秒 |
+| `full` | 增加频率、内存、GPU 和 FrameTimeline 等系统数据 | 20 秒 |
+| `long` | 长时 ring buffer、周期落盘和系统统计 | 600 秒 |
+| `none` | 不启动系统 Perfetto，只抓 Anettrace 或联动外部工具 | 10 秒 |
+
+例如同时抓完整系统 trace 与目标应用的 simpleperf：
+
+```shell
+python tools/capture_android_trace.py \
+  --uid 10123 \
+  --profile full \
+  --simpleperf-app com.example.app \
+  --out output/full-with-cpu
+```
+
+也可以把任意主机侧工具放到同一生命周期中；`--external-command` 必须是最后一个选项，后面的
+参数会按参数数组直接执行，不经过 shell：
+
+```shell
+python tools/capture_android_trace.py \
+  --uid 10123 \
+  --profile none \
+  --out output/external-session \
+  --external-command python /path/to/tool.py --capture
+```
+
+工具统一转发中断、先停止 Anettrace 以确保 `trace_end` 落盘，再停止 companion，并拒绝空文件、
+缺失 `clock_snapshot`/`trace_end` 或外部工具提前退出。每次成功或失败都会生成
+`session-manifest.json`，记录设备、boot ID、过滤条件、命令、同步 marker、耗时以及各产物的
+大小和 SHA-256。输出目录必须是新目录或空目录，避免覆盖历史抓取。
+外部命令产生的文件会进入 manifest，但不会被猜测格式或自动拼接；只有编排器自身生成的两份
+未压缩原生 Perfetto trace 才使用已验证的 raw TracePacket 拼接。
+
+整合方式是：设备端的 `perfetto` 负责产生系统级轨迹，Anettrace 只输出网络事件 JSONL；
+编排器以同一采集窗口将二者转换、合并为一个 trace 文件。因而可在同一时间轴上从
 `tcp_sendmsg_locked` 等网络阶段跳到对应 TID 的调度切换，判断延迟来自线程未被调度、内核网络
 路径，还是网卡发送之后。它不会替代系统 Perfetto，也不会向系统 trace 写入报文 payload。
 
