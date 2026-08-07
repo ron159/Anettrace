@@ -32,27 +32,56 @@ class PerfettoConverterTest(unittest.TestCase):
         self.assertIn("socket allocation", names)
         self.assertIn("socket lifetime", names)
         self.assertIn("tcp_sendmsg_locked", names)
-        self.assertIn("__tcp_transmit_skb", names)
-        self.assertIn("consume_skb", names)
-        self.assertIn("tcp_rcv_established", names)
         self.assertIn("tcp_recvmsg", names)
         self.assertIn("tcp_close", names)
         self.assertIn("ESTABLISHED → CLOSE", names)
 
-        packets = [
+        packet_events = [
             packet.track_event
             for packet in trace.packet
-            if packet.HasField("track_event") and packet.track_event.name == "consume_skb"
+            if packet.HasField("track_event")
+            and any(
+                category.startswith("anettrace.packet")
+                for category in packet.track_event.categories
+            )
+        ]
+        self.assertEqual(len(packet_events), 3)
+        self.assertEqual({event.name for event in packet_events}, {"F-00002001"})
+        self.assertEqual(
+            {event.correlation_id for event in packet_events}, {0x2001}
+        )
+        packet_annotations = [
+            {annotation.name: annotation for annotation in event.debug_annotations}
+            for event in packet_events
+        ]
+        self.assertEqual(
+            {annotations["stage"].string_value for annotations in packet_annotations},
+            {"__tcp_transmit_skb", "consume_skb", "tcp_rcv_established"},
+        )
+        self.assertTrue(
+            all(
+                annotations["flow_tag"].string_value == "F-00002001"
+                for annotations in packet_annotations
+            )
+        )
+        self.assertNotEqual(
+            MODULE.flow_tag(MODULE.id_value("0000000000002001")),
+            MODULE.flow_tag(MODULE.id_value("0000000000002002")),
+        )
+
+        packets = [
+            event
+            for event, annotations in zip(packet_events, packet_annotations)
+            if annotations["stage"].string_value == "consume_skb"
         ]
         self.assertEqual(len(packets), 1)
         self.assertEqual(packets[0].type, TrackEvent.TYPE_INSTANT)
         self.assertEqual(list(packets[0].terminating_flow_ids), [0x3001])
 
         rx_packets = [
-            packet.track_event
-            for packet in trace.packet
-            if packet.HasField("track_event")
-            and packet.track_event.name == "tcp_rcv_established"
+            event
+            for event, annotations in zip(packet_events, packet_annotations)
+            if annotations["stage"].string_value == "tcp_rcv_established"
         ]
         self.assertEqual(len(rx_packets), 1)
         rx_annotations = {

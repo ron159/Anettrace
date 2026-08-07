@@ -422,6 +422,11 @@ static u64 packet_flow_id(const packet_t *pkt)
 	return forward < reverse ? forward : reverse;
 }
 
+static void format_flow_tag(u64 flow_id, char *tag, size_t size)
+{
+	snprintf(tag, size, "F-%08llX", flow_id & 0xffffffffULL);
+}
+
 static u64 packet_id(const packet_t *pkt, u32 key)
 {
 	u64 hash;
@@ -556,6 +561,13 @@ static void native_event_flow(struct proto_buffer *event, u64 flow_id,
 	if (!flow_id)
 		return;
 	proto_fixed64(event, terminating ? 48 : 47, flow_id);
+}
+
+static void native_event_correlation(struct proto_buffer *event,
+				     u64 correlation_id)
+{
+	if (correlation_id)
+		proto_uint(event, 52, correlation_id);
 }
 
 static void native_annotation_string(struct proto_buffer *event,
@@ -889,9 +901,11 @@ static void native_export_packet_event(const detail_event_t *detail,
 	const event_t *event = (const void *)detail;
 	const packet_t *pkt = &event->pkt;
 	u64 id = packet_id(pkt, event->key);
+	u64 flow_id = packet_flow_id(pkt);
 	struct native_track *thread;
 	struct proto_buffer track_event = {};
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
+	char flow_tag[16];
 	bool dropped = TRACE_HAS_ANALYZER(trace, drop);
 	bool terminal = dropped || TRACE_HAS_ANALYZER(trace, free) ||
 			(trace->status & TRACE_CFREE);
@@ -900,14 +914,17 @@ static void native_export_packet_event(const detail_event_t *detail,
 	if (!thread)
 		return;
 	packet_addresses(pkt, source, sizeof(source), dest, sizeof(dest));
-	native_event_start(&track_event, 3, thread->uuid, trace->name,
+	format_flow_tag(flow_id, flow_tag, sizeof(flow_tag));
+	native_event_start(&track_event, 3, thread->uuid, flow_tag,
 			   dropped ? "anettrace.packet.drop" :
 			   "anettrace.packet");
 	native_event_flow(&track_event, id, terminal);
+	native_event_correlation(&track_event, flow_id);
+	native_annotation_string(&track_event, "stage", trace->name);
 	native_annotation_id(&track_event, "packet_id", id);
 	native_annotation_id(&track_event, "skb_id",
 			     object_id("skb", event->key));
-	native_annotation_id(&track_event, "flow_id", packet_flow_id(pkt));
+	native_annotation_id(&track_event, "flow_id", flow_id);
 	native_annotation_bool(&track_event, "terminal", terminal);
 	native_annotation_bool(&track_event, "dropped", dropped);
 	native_annotation_uint(&track_event, "cpu", cpu);
@@ -1198,10 +1215,11 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 {
 	const event_t *event = (const void *)detail;
 	const packet_t *pkt = &event->pkt;
+	u64 flow_id = packet_flow_id(pkt);
 	u64 owner_socket_id = detail->owner_socket_key ?
 		object_id("socket", detail->owner_socket_key) : 0;
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
-	char task[64], ifname[64];
+	char task[64], ifname[64], flow_tag[16];
 	bool dropped = TRACE_HAS_ANALYZER(trace, drop);
 	bool terminal = dropped || TRACE_HAS_ANALYZER(trace, free) ||
 			(trace->status & TRACE_CFREE);
@@ -1209,11 +1227,13 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 	packet_addresses(pkt, source, sizeof(source), dest, sizeof(dest));
 	json_escape(detail->task, task, sizeof(task));
 	json_escape(detail->ifname, ifname, sizeof(ifname));
+	format_flow_tag(flow_id, flow_tag, sizeof(flow_tag));
 	fprintf(export_file,
 		"{\"schema\":\"%s\",\"type\":\"packet_event\","
 		"\"ts_ns\":%llu,\"packet_id\":\"%016llx\","
 		"\"skb_id\":\"%016llx\","
-		"\"flow_id\":\"%016llx\",\"stage\":\"%s\","
+		"\"flow_id\":\"%016llx\",\"flow_tag\":\"%s\","
+		"\"stage\":\"%s\","
 		"\"terminal\":%s,\"dropped\":%s,\"cpu\":%d,"
 		"\"tid\":%u,\"tgid\":%u,\"uid\":%u,"
 		"\"task\":\"%s\",\"ifname\":\"%s\","
@@ -1225,7 +1245,7 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 		"\"daddr\":\"%s\",\"dport\":%u,\"mark\":%u,"
 		"\"tcp_seq\":%u,\"tcp_ack\":%u,\"tcp_flags\":%u}\n",
 		PERFETTO_SCHEMA, pkt->ts, packet_id(pkt, event->key),
-		object_id("skb", event->key), packet_flow_id(pkt), trace->name,
+		object_id("skb", event->key), flow_id, flow_tag, trace->name,
 		terminal ? "true" : "false",
 		dropped ? "true" : "false", cpu, event->tid, event->tgid,
 		event->uid, task, ifname, direction_name(detail->direction),

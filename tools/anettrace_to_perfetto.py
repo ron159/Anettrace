@@ -37,6 +37,10 @@ def id_value(value: str) -> int:
     return int(value, 16) or 1
 
 
+def flow_tag(flow_id: int) -> str:
+    return f"F-{flow_id & 0xFFFFFFFF:08X}"
+
+
 def read_records(path: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     with path.open(encoding="utf-8") as source:
@@ -183,6 +187,7 @@ class PerfettoExporter:
         category: str = "anettrace",
         flow_id: int | None = None,
         terminating_flow: bool = False,
+        correlation_id: int | None = None,
         annotations: tuple[dict[str, Any], Iterable[str]] | None = None,
     ) -> None:
         packet = self.sequence_packet()
@@ -199,6 +204,8 @@ class PerfettoExporter:
                 track_event.terminating_flow_ids.append(flow_id)
             else:
                 track_event.flow_ids.append(flow_id)
+        if correlation_id is not None:
+            track_event.correlation_id = correlation_id
         if annotations:
             self.add_annotations(track_event, annotations[0], annotations[1])
 
@@ -357,22 +364,27 @@ class PerfettoExporter:
 
     def export_packet_event(self, record: dict[str, Any]) -> None:
         packet_id = str(record["packet_id"])
+        packet_record = dict(record)
+        packet_record["flow_tag"] = flow_tag(id_value(str(record["flow_id"])))
         self.event(
             int(record["ts_ns"]),
             self.thread_track(record),
             TrackEvent.TYPE_INSTANT,
-            str(record["stage"]),
+            packet_record["flow_tag"],
             "anettrace.packet.drop"
             if record.get("dropped")
             else "anettrace.packet",
             id_value(packet_id),
             bool(record.get("terminal")),
+            correlation_id=id_value(str(record["flow_id"])),
             annotations=(
-                record,
+                packet_record,
                 (
+                    "stage",
                     "packet_id",
                     "skb_id",
                     "flow_id",
+                    "flow_tag",
                     "terminal",
                     "dropped",
                     "cpu",

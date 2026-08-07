@@ -186,6 +186,10 @@ Running/Runnable/Sleeping 状态来自系统 sched 数据。联合采集期间�
 RX 内核事件保留 NAPI/softirq 的真实线程轨道，应用线程只显示 `recvmsg` duration slice，避免把所有
 收包箭头伪装到 reader 线程下。
 
+每个 packet instant event 使用规范化双向五元组生成的 `F-XXXXXXXX` 标记作为事件名，并把完整
+64 位 `flow_id` 写入 Perfetto `correlation_id`。同一条流的 TX/RX 和不同内核阶段因此显示为
+相同标记并使用同一颜色；原内核函数名保留在 `stage` 属性中，完整五元组仍可精确检索。
+
 当前 UDP 范围刻意限制为传统 DNS/53；QUIC/HTTP3（通常为 UDP/443）不在本阶段采集范围内。
 
 编排器吸收了 PerfAllInOne 中仍适合当前链路的抓取能力，但不依赖它附带的 Python 2、exe 或

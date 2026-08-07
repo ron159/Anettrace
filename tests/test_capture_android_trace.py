@@ -70,9 +70,9 @@ class CliContractTest(unittest.TestCase):
 class OutputValidationTest(unittest.TestCase):
     def test_fixture_has_required_clock_and_trace_end(self) -> None:
         summary = MODULE.validate_event_stream(ROOT / "tests" / "fixtures" / "perfetto-events.jsonl")
-        self.assertEqual(summary["records"], 9)
+        self.assertEqual(summary["records"], 12)
         self.assertEqual(summary["lost_events"], 0)
-        self.assertEqual(summary["event_types"]["packet_event"], 2)
+        self.assertEqual(summary["event_types"]["packet_event"], 3)
 
     def test_missing_trace_end_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
