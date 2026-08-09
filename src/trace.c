@@ -440,8 +440,10 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		&trace_udpv6_recvmsg,
 	};
 	static trace_t *perfetto_tx_traces[] = {
-		&trace_tcp_sendmsg_locked, &trace_tcp_skb_entail,
+		&trace_tcp_sendmsg, &trace_tcp_sendmsg_locked,
+		&trace_tcp_skb_entail,
 		&trace_skb_entail, &trace___tcp_transmit_skb,
+		&trace_udp_sendmsg, &trace_udpv6_sendmsg,
 		&trace_udp_send_skb, &trace_udp_v6_send_skb,
 		&trace___ip_queue_xmit, &trace___ip_local_out,
 		&trace_ip_output, &trace_ip_finish_output,
@@ -450,10 +452,12 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		&trace_dev_hard_start_xmit,
 	};
 	static char perfetto_traces[] =
-		"sk_alloc,inet_sock_set_state,inet_listen,tcp_sendmsg_locked,"
+		"sk_alloc,inet_sock_set_state,inet_listen,tcp_sendmsg,"
+		"tcp_sendmsg_locked,"
 		"tcp_recvmsg,tcp_close,tcp_v4_destroy_sock,tcp_skb_entail,"
 		"skb_entail,"
-		"__tcp_transmit_skb,udp_send_skb,udp_v6_send_skb,"
+		"__tcp_transmit_skb,udp_sendmsg,udpv6_sendmsg,"
+		"udp_send_skb,udp_v6_send_skb,"
 		"__ip_queue_xmit,__ip_local_out,ip_output,ip_finish_output,"
 		"ip6_local_out,ip6_output,ip6_finish_output,"
 		"__dev_queue_xmit,dev_hard_start_xmit,consume_skb,kfree_skb,"
@@ -475,7 +479,10 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		if (!args->traces)
 			args->traces = perfetto_traces;
 		trace_set_ret(&trace_sk_alloc);
+		trace_set_ret(&trace_tcp_sendmsg);
 		trace_set_ret(&trace_tcp_recvmsg);
+		trace_set_ret(&trace_udp_sendmsg);
+		trace_set_ret(&trace_udpv6_sendmsg);
 		trace_set_ret(&trace_udp_recvmsg);
 		trace_set_ret(&trace_udpv6_recvmsg);
 		for (i = 0; i < ARRAY_SIZE(perfetto_rx_traces); i++)

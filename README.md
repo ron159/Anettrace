@@ -88,6 +88,8 @@ perf event / map 快照 -> 用户态聚合、规则匹配、格式化输出
 
 `--traffic` 是独立统计通路：它在 TCP/UDP send/recv 的入口保存调用上下文，
 在返回点按真实返回值累计字节，因此显示的是可归属到线程的应用层流量，不包含纯内核转发流量。
+联合采集不需要也不会启动这套独立通路；`--capture-trace` 自身会在
+`tcp/udp/udpv6 sendmsg/recvmsg` 返回点统计实际字节，并写入对应的五元组 flow。
 
 ### Perfetto 联合时间线
 
@@ -95,7 +97,8 @@ perf event / map 快照 -> 用户态聚合、规则匹配、格式化输出
 
 - `sk_alloc` 的 socket 分配开始/结束；
 - `sock:inet_sock_set_state`、`tcp_close` 等 TCP 生命周期事件；
-- `tcp_sendmsg_locked` 到 TCP/IP、qdisc/NIC 发送点，以及 `consume_skb`/`kfree_skb`
+- `tcp_sendmsg`/`tcp_sendmsg_locked` 到 TCP/IP、qdisc/NIC 发送点，以及
+  `consume_skb`/`kfree_skb`
   结束点；
 - 每个事件的单调时钟时间、TID/TGID/UID、CPU、网卡和协议元数据。
 
@@ -150,9 +153,10 @@ trace 追加 Anettrace 网络 TrackEvent。它包含全部应用的 atrace tag�
 - `full` 默认档的线程 Running 下 atrace tag、Binder/AIDL 调用关系及完整系统性能信息；
 - `sched_switch`、`sched_waking`、进程信息和 suspend/resume 等线程状态基础事件；
 - socket allocation/lifetime/state；
-- `tcp_sendmsg_locked` 到 TCP/IP、设备队列、NIC driver 和释放/drop 的逐阶段事件；
+- `tcp_sendmsg` 返回字节以及 TCP/IP、设备队列、NIC driver 和释放/drop 的逐阶段事件；
 - TCP IPv4/IPv6 的 NAPI/L2、IP、transport RX 阶段，以及应用 `tcp_recvmsg` 读取区间；
-- UDP 仅采集明文 DNS（源或目标端口 53）的 TX/RX 和 `udp_recvmsg`/`udpv6_recvmsg` 读取区间；
+- UDP 仅采集明文 DNS（源或目标端口 53）的 TX/RX、`udp/udpv6 sendmsg/recvmsg`
+  调用区间及实际返回字节；
 - 真实执行上下文 TID/TGID/UID、socket owner TID/TGID/UID、方向、CPU、网卡、端点和匿名
   packet/socket ID。
 
@@ -189,6 +193,12 @@ RX 内核事件保留 NAPI/softirq 的真实线程轨道，应用线程只显示
 每个 packet instant event 使用规范化双向五元组生成的 `F-XXXXXXXX` 标记作为事件名，并把完整
 64 位 `flow_id` 写入 Perfetto `correlation_id`。同一条流的 TX/RX 和不同内核阶段因此显示为
 相同标记并使用同一颜色；原内核函数名保留在 `stage` 属性中，完整五元组仍可精确检索。
+
+每条五元组还会生成独立的 `anettrace.flow` duration track，而不是把并发请求都堆在公共网络
+线程上。slice 结束点包含 `duration_ns`、TX/RX 字节、TX/RX 包数、owner、两端地址端口、
+`end_reason` 和 `incomplete`：TCP 在 `tcp_close` 结束，DNS/UDP 在 5 秒空闲后结束，采集窗口内
+未自然结束的流在 `trace_end` 截断。同一线程交替处理多条 TCP/DNS 流时，可直接按
+`F-XXXXXXXX` 名称、颜色和独立 flow track 区分。
 
 当前 UDP 范围刻意限制为传统 DNS/53；QUIC/HTTP3（通常为 UDP/443）不在本阶段采集范围内。
 

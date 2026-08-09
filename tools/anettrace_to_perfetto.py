@@ -69,7 +69,9 @@ class PerfettoExporter:
         self.socket_tracks: dict[str, int] = {}
         self.socket_lifetimes: set[str] = set()
         self.closed_sockets: set[str] = set()
-        self.pending_reads: dict[tuple[str, int], int] = {}
+        self.flow_tracks: dict[str, int] = {}
+        self.active_flows: set[str] = set()
+        self.pending_io: dict[tuple[str, str, int], int] = {}
         self.global_track = stable_uuid("anettrace", "global")
         self.capture_start_monotonic_ns = 0
         self.clock_monotonic_ns: list[int] = []
@@ -152,6 +154,24 @@ class PerfettoExporter:
         uuid = stable_uuid("socket", socket_id)
         self.descriptor(uuid, f"socket {socket_id[-8:]}", parent_uuid)
         self.socket_tracks[socket_id] = uuid
+        return uuid
+
+    def flow_track(self, flow_id: str, record: dict[str, Any]) -> int:
+        uuid = self.flow_tracks.get(flow_id)
+        if uuid is not None:
+            return uuid
+        owner_tgid = int(record.get("owner_tgid", record.get("tgid", 0)))
+        task = str(record.get("task", ""))
+        parent_uuid = self.process_track(owner_tgid, task)
+        uuid = stable_uuid("flow", flow_id)
+        name = (
+            f"{record.get('flow_tag', flow_tag(id_value(flow_id)))} "
+            f"{record.get('protocol', 'tcp')} "
+            f"{record.get('local_addr', '')}:{record.get('local_port', 0)} -> "
+            f"{record.get('remote_addr', '')}:{record.get('remote_port', 0)}"
+        )
+        self.descriptor(uuid, name, parent_uuid)
+        self.flow_tracks[flow_id] = uuid
         return uuid
 
     def timestamp(self, monotonic_ns: int) -> int:
@@ -412,22 +432,93 @@ class PerfettoExporter:
             ),
         )
 
-    def export_rx_read_start(self, record: dict[str, Any]) -> None:
-        key = (str(record["stage"]), int(record["tid"]))
+    def export_flow_start(self, record: dict[str, Any]) -> None:
+        flow_id = str(record["flow_id"])
+        self.event(
+            int(record["ts_ns"]),
+            self.flow_track(flow_id, record),
+            TrackEvent.TYPE_SLICE_BEGIN,
+            str(record.get("flow_tag", flow_tag(id_value(flow_id)))),
+            "anettrace.flow",
+            correlation_id=id_value(flow_id),
+            annotations=(
+                record,
+                (
+                    "flow_id",
+                    "flow_tag",
+                    "protocol",
+                    "socket_id",
+                    "owner_tid",
+                    "owner_tgid",
+                    "owner_uid",
+                    "local_addr",
+                    "local_port",
+                    "remote_addr",
+                    "remote_port",
+                ),
+            ),
+        )
+        self.active_flows.add(flow_id)
+
+    def export_flow_end(self, record: dict[str, Any]) -> None:
+        flow_id = str(record["flow_id"])
+        track = self.flow_tracks.get(flow_id)
+        if track is None:
+            track = self.flow_track(flow_id, record)
+            self.event(
+                int(record.get("first_ts_ns", record["ts_ns"])),
+                track,
+                TrackEvent.TYPE_SLICE_BEGIN,
+                str(record.get("flow_tag", flow_tag(id_value(flow_id)))),
+                "anettrace.flow",
+                correlation_id=id_value(flow_id),
+            )
+        self.event(
+            int(record["ts_ns"]),
+            track,
+            TrackEvent.TYPE_SLICE_END,
+            category="anettrace.flow",
+            correlation_id=id_value(flow_id),
+            annotations=(
+                record,
+                (
+                    "flow_id",
+                    "duration_ns",
+                    "tx_bytes",
+                    "rx_bytes",
+                    "tx_packets",
+                    "rx_packets",
+                    "owner_tid",
+                    "owner_tgid",
+                    "owner_uid",
+                    "local_addr",
+                    "local_port",
+                    "remote_addr",
+                    "remote_port",
+                    "end_reason",
+                    "incomplete",
+                ),
+            ),
+        )
+        self.active_flows.discard(flow_id)
+
+    def export_io_start(self, record: dict[str, Any], direction: str) -> None:
+        key = (direction, str(record["stage"]), int(record["tid"]))
         track = self.thread_track(record)
-        if key in self.pending_reads:
+        category = f"anettrace.{direction}.{'write' if direction == 'tx' else 'read'}"
+        if key in self.pending_io:
             self.event(
                 int(record["ts_ns"]),
-                self.pending_reads[key],
+                self.pending_io[key],
                 TrackEvent.TYPE_SLICE_END,
-                category="anettrace.rx.read",
+                category=category,
             )
         self.event(
             int(record["ts_ns"]),
             track,
             TrackEvent.TYPE_SLICE_BEGIN,
             str(record["stage"]),
-            "anettrace.rx.read",
+            category,
             annotations=(
                 record,
                 (
@@ -442,19 +533,30 @@ class PerfettoExporter:
                 ),
             ),
         )
-        self.pending_reads[key] = track
+        self.pending_io[key] = track
 
-    def export_rx_read_end(self, record: dict[str, Any]) -> None:
-        key = (str(record["stage"]), int(record["tid"]))
-        track = self.pending_reads.pop(key, None)
+    def export_io_end(self, record: dict[str, Any], direction: str) -> None:
+        key = (direction, str(record["stage"]), int(record["tid"]))
+        track = self.pending_io.pop(key, None)
         if track is None:
             return
+        category = f"anettrace.{direction}.{'write' if direction == 'tx' else 'read'}"
         self.event(
             int(record["ts_ns"]),
             track,
             TrackEvent.TYPE_SLICE_END,
-            category="anettrace.rx.read",
-            annotations=(record, ("result", "bytes", "error", "incomplete")),
+            category=category,
+            annotations=(
+                record,
+                (
+                    "socket_id",
+                    "flow_id",
+                    "result",
+                    "bytes",
+                    "error",
+                    "incomplete",
+                ),
+            ),
         )
 
     def export_meta_event(self, record: dict[str, Any]) -> None:
@@ -491,10 +593,18 @@ class PerfettoExporter:
                 self.export_socket_event(record)
             elif record_type == "packet_event":
                 self.export_packet_event(record)
+            elif record_type == "flow_start":
+                self.export_flow_start(record)
+            elif record_type == "flow_end":
+                self.export_flow_end(record)
             elif record_type == "rx_read_start":
-                self.export_rx_read_start(record)
+                self.export_io_start(record, "rx")
             elif record_type == "rx_read_end":
-                self.export_rx_read_end(record)
+                self.export_io_end(record, "rx")
+            elif record_type == "tx_write_start":
+                self.export_io_start(record, "tx")
+            elif record_type == "tx_write_end":
+                self.export_io_end(record, "tx")
             elif record_type in ("lost_events", "trace_end"):
                 if record_type == "trace_end" and record.get("ts_ns"):
                     for socket_id in tuple(self.socket_lifetimes):
@@ -507,14 +617,14 @@ class PerfettoExporter:
                             terminating_flow=True,
                         )
                         self.socket_lifetimes.remove(socket_id)
-                    for track in tuple(self.pending_reads.values()):
+                    for track in tuple(self.pending_io.values()):
                         self.event(
                             int(record["ts_ns"]),
                             track,
                             TrackEvent.TYPE_SLICE_END,
-                            category="anettrace.rx.read",
+                            category="anettrace.io",
                         )
-                    self.pending_reads.clear()
+                    self.pending_io.clear()
                 self.export_meta_event(record)
         return self.builder.serialize()
 

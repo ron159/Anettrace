@@ -31,6 +31,8 @@ class PerfettoConverterTest(unittest.TestCase):
         names = [packet.track_event.name for packet in trace.packet if packet.HasField("track_event")]
         self.assertIn("socket allocation", names)
         self.assertIn("socket lifetime", names)
+        self.assertIn("F-00002001", names)
+        self.assertIn("tcp_sendmsg", names)
         self.assertIn("tcp_sendmsg_locked", names)
         self.assertIn("tcp_recvmsg", names)
         self.assertIn("tcp_close", names)
@@ -114,6 +116,34 @@ class PerfettoConverterTest(unittest.TestCase):
         }
         self.assertEqual(recv_annotations["bytes"].uint_value, 512)
 
+        flow_begins = [
+            packet.track_event
+            for packet in trace.packet
+            if packet.HasField("track_event")
+            and packet.track_event.name == "F-00002001"
+            and "anettrace.flow" in packet.track_event.categories
+        ]
+        self.assertEqual(len(flow_begins), 1)
+        flow_track = flow_begins[0].track_uuid
+        flow_ends = [
+            packet.track_event
+            for packet in trace.packet
+            if packet.HasField("track_event")
+            and packet.track_event.track_uuid == flow_track
+            and packet.track_event.type == TrackEvent.TYPE_SLICE_END
+        ]
+        self.assertEqual(len(flow_ends), 1)
+        flow_annotations = {
+            annotation.name: annotation
+            for annotation in flow_ends[0].debug_annotations
+        }
+        self.assertEqual(flow_annotations["tx_bytes"].uint_value, 128)
+        self.assertEqual(flow_annotations["rx_bytes"].uint_value, 512)
+        self.assertEqual(flow_annotations["tx_packets"].uint_value, 1)
+        self.assertEqual(flow_annotations["rx_packets"].uint_value, 1)
+        self.assertEqual(flow_annotations["end_reason"].string_value, "tcp_close")
+        self.assertFalse(flow_annotations["incomplete"].bool_value)
+
         lifetime_begins = [
             packet.track_event
             for packet in trace.packet
@@ -157,6 +187,92 @@ class PerfettoConverterTest(unittest.TestCase):
                 for packet in event_packets
             )
         )
+
+    def test_interleaved_thread_flows_use_distinct_tracks(self) -> None:
+        records = [
+            {
+                "schema": MODULE.SCHEMA,
+                "type": "clock_snapshot",
+                "monotonic_ns": 1_000_000_000,
+                "boottime_ns": 1_100_000_000,
+                "realtime_ns": 1_800_000_000_000_000_000,
+            }
+        ]
+        for flow_id, protocol, remote_port, tx_bytes, reason in (
+            ("0000000000002001", "tcp", 443, 128, "tcp_close"),
+            ("0000000000002002", "udp-dns", 53, 64, "idle_timeout"),
+        ):
+            tag = MODULE.flow_tag(MODULE.id_value(flow_id))
+            records.extend(
+                [
+                    {
+                        "schema": MODULE.SCHEMA,
+                        "type": "flow_start",
+                        "ts_ns": 1_010_000_000,
+                        "flow_id": flow_id,
+                        "flow_tag": tag,
+                        "protocol": protocol,
+                        "socket_id": f"000000000000{remote_port:04x}",
+                        "owner_tid": 101,
+                        "owner_tgid": 100,
+                        "owner_uid": 10000,
+                        "task": "net-worker",
+                        "local_addr": "10.0.0.2",
+                        "local_port": 40000,
+                        "remote_addr": "10.0.0.1",
+                        "remote_port": remote_port,
+                    },
+                    {
+                        "schema": MODULE.SCHEMA,
+                        "type": "flow_end",
+                        "ts_ns": 1_020_000_000,
+                        "first_ts_ns": 1_010_000_000,
+                        "last_ts_ns": 1_015_000_000,
+                        "duration_ns": 10_000_000,
+                        "flow_id": flow_id,
+                        "flow_tag": tag,
+                        "protocol": protocol,
+                        "socket_id": f"000000000000{remote_port:04x}",
+                        "tx_bytes": tx_bytes,
+                        "rx_bytes": tx_bytes * 2,
+                        "tx_packets": 1,
+                        "rx_packets": 1,
+                        "owner_tid": 101,
+                        "owner_tgid": 100,
+                        "owner_uid": 10000,
+                        "task": "net-worker",
+                        "local_addr": "10.0.0.2",
+                        "local_port": 40000,
+                        "remote_addr": "10.0.0.1",
+                        "remote_port": remote_port,
+                        "end_reason": reason,
+                        "incomplete": False,
+                    },
+                ]
+            )
+        records.append(
+            {
+                "schema": MODULE.SCHEMA,
+                "type": "trace_end",
+                "ts_ns": 1_030_000_000,
+                "event_count": 0,
+                "exported_events": 0,
+                "lost_events": 0,
+            }
+        )
+
+        trace = Trace()
+        trace.ParseFromString(MODULE.PerfettoExporter(records).serialize())
+        begins = [
+            packet.track_event
+            for packet in trace.packet
+            if packet.HasField("track_event")
+            and packet.track_event.type == TrackEvent.TYPE_SLICE_BEGIN
+            and "anettrace.flow" in packet.track_event.categories
+        ]
+        self.assertEqual(len(begins), 2)
+        self.assertEqual(len({event.track_uuid for event in begins}), 2)
+        self.assertEqual({event.name for event in begins}, {"F-00002001", "F-00002002"})
 
     def test_multiple_clock_snapshots_cover_suspend_offset_changes(self) -> None:
         fixture = ROOT / "tests" / "fixtures" / "perfetto-events.jsonl"

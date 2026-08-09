@@ -67,9 +67,15 @@ require_text 'native_annotation_string(&track_event, "stage", trace->name);' \
 	src/perfetto_export.c
 require_text 'native_event_correlation(&track_event, flow_id);' \
 	src/perfetto_export.c
-require_text '\"type\":\"rx_read_start\"' src/perfetto_export.c
-require_text '\"type\":\"rx_read_end\"' src/perfetto_export.c
+require_text '"rx_read_start"' src/perfetto_export.c
+require_text '"rx_read_end"' src/perfetto_export.c
+require_text '"tx_write_start"' src/perfetto_export.c
+require_text '"tx_write_end"' src/perfetto_export.c
 require_text '"anettrace.rx.read"' src/perfetto_export.c
+require_text '"anettrace.flow"' src/perfetto_export.c
+require_text '"idle_timeout"' src/perfetto_export.c
+require_text 'flow->tx_bytes += bytes;' src/perfetto_export.c
+require_text 'flow->rx_bytes += bytes;' src/perfetto_export.c
 require_text '\"skb_id\":' src/perfetto_export.c
 require_text 'CLOCK_SNAPSHOT_INTERVAL_NS' src/perfetto_export.c
 require_text 'perfetto_export_tick();' src/trace.c
@@ -92,6 +98,9 @@ require_text 'tcp_rcv_established' src/trace.c
 require_text 'udp_recvmsg,udpv6_recvmsg' src/trace.c
 require_text 'udp_send_skb:0' src/trace.yaml
 require_text 'udp_v6_send_skb:0' src/trace.yaml
+require_text 'tcp_sendmsg/0' src/trace.yaml
+require_text 'udp_sendmsg/0' src/trace.yaml
+require_text 'udpv6_sendmsg/0' src/trace.yaml
 require_text 'perfetto_poll_handler(ctx, cpu, data, size);' src/trace.c
 require_text 'trace && trace_using_sk(trace)' src/analysis.c
 require_text 'packet.timestamp_clock_id = CLOCK_MONOTONIC' \

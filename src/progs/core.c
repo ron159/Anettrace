@@ -255,6 +255,13 @@ static __always_inline bool perfetto_socket_supported(sock_t *sock)
 	       sock->l4.min.dport == bpf_htons(53);
 }
 
+static __always_inline bool perfetto_socket_io(u16 func)
+{
+	return func == INDEX_tcp_sendmsg || func == INDEX_tcp_recvmsg ||
+	       func == INDEX_udp_sendmsg || func == INDEX_udpv6_sendmsg ||
+	       func == INDEX_udp_recvmsg || func == INDEX_udpv6_recvmsg;
+}
+
 static __always_inline void perfetto_flow_key(packet_t *pkt,
 					       perfetto_flow_key_t *key)
 {
@@ -403,6 +410,7 @@ static __attribute__((noinline)) int perfetto_handle_owner(
 				direction = flow_owner->direction;
 		}
 	} else if (!perfetto_socket_supported(&event->ske) &&
+		   !perfetto_socket_io(info->func) &&
 		   !(owner_valid && owner->dns)) {
 		return -1;
 	}

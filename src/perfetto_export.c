@@ -24,6 +24,7 @@
 
 #define PERFETTO_SCHEMA "anettrace.perfetto.v1"
 #define CLOCK_SNAPSHOT_INTERVAL_NS (5ULL * 1000 * 1000 * 1000)
+#define DNS_FLOW_IDLE_NS (5ULL * 1000 * 1000 * 1000)
 #define NATIVE_PACKET_SEQUENCE_ID 0xa11e7001U
 
 static FILE *export_file;
@@ -40,6 +41,7 @@ enum native_track_kind {
 	NATIVE_TRACK_PROCESS,
 	NATIVE_TRACK_THREAD,
 	NATIVE_TRACK_SOCKET,
+	NATIVE_TRACK_FLOW,
 	NATIVE_TRACK_GLOBAL,
 };
 
@@ -50,10 +52,44 @@ struct native_track {
 	bool active;
 };
 
-struct pending_read {
+struct pending_io {
 	u16 func;
 	u32 tid;
+	u32 tgid;
+	u32 uid;
+	u64 start_ts;
+	u64 socket_id;
+	u64 flow_id;
 	u64 native_track_uuid;
+	u32 owner_tid;
+	u32 owner_tgid;
+	u32 owner_uid;
+	int cpu;
+	char task[16];
+	bool tx;
+	bool visible;
+	bool active;
+};
+
+struct flow_state {
+	u64 id;
+	u64 first_ts;
+	u64 last_ts;
+	u64 tx_bytes;
+	u64 rx_bytes;
+	u64 tx_packets;
+	u64 rx_packets;
+	u64 socket_id;
+	u64 native_track_uuid;
+	u32 owner_tid;
+	u32 owner_tgid;
+	u32 owner_uid;
+	u16 local_port;
+	u16 remote_port;
+	u8 protocol;
+	char local_addr[INET6_ADDRSTRLEN];
+	char remote_addr[INET6_ADDRSTRLEN];
+	char task[16];
 	bool active;
 };
 
@@ -67,9 +103,12 @@ struct proto_buffer {
 static struct native_track *native_tracks;
 static size_t native_track_count;
 static size_t native_track_capacity;
-static struct pending_read *pending_reads;
-static size_t pending_read_count;
-static size_t pending_read_capacity;
+static struct pending_io *pending_ios;
+static size_t pending_io_count;
+static size_t pending_io_capacity;
+static struct flow_state *flows;
+static size_t flow_count;
+static size_t flow_capacity;
 
 static u64 hash_bytes(u64 hash, const void *data, size_t size);
 
@@ -643,34 +682,380 @@ static bool trace_is_rx_read(const trace_t *trace)
 			 !strcmp(trace->name, "udpv6_recvmsg"));
 }
 
-static struct pending_read *pending_read_find(u16 func, u32 tid)
+static bool trace_is_tx_write(const trace_t *trace)
+{
+	return trace && (!strcmp(trace->name, "tcp_sendmsg") ||
+			 !strcmp(trace->name, "udp_sendmsg") ||
+			 !strcmp(trace->name, "udpv6_sendmsg"));
+}
+
+static bool trace_is_io(const trace_t *trace)
+{
+	return trace_is_rx_read(trace) || trace_is_tx_write(trace);
+}
+
+static struct flow_state *flow_find(u64 id)
 {
 	size_t i;
 
-	for (i = 0; i < pending_read_count; i++)
-		if (pending_reads[i].active && pending_reads[i].func == func &&
-		    pending_reads[i].tid == tid)
-			return &pending_reads[i];
+	for (i = 0; i < flow_count; i++)
+		if (flows[i].active && flows[i].id == id)
+			return &flows[i];
 	return NULL;
 }
 
-static struct pending_read *pending_read_add(u16 func, u32 tid)
+static struct flow_state *flow_find_by_socket(u64 socket_id, u8 protocol)
 {
-	struct pending_read *pending;
+	struct flow_state *latest = NULL;
+	size_t i;
+
+	if (!socket_id)
+		return NULL;
+	for (i = 0; i < flow_count; i++) {
+		if (!flows[i].active || flows[i].socket_id != socket_id ||
+		    (protocol && flows[i].protocol != protocol))
+			continue;
+		if (!latest || flows[i].last_ts > latest->last_ts)
+			latest = &flows[i];
+	}
+	return latest;
+}
+
+static struct flow_state *flow_add(u64 id)
+{
+	struct flow_state *flow;
 	size_t capacity;
 
-	pending = pending_read_find(func, tid);
+	for (capacity = 0; capacity < flow_count; capacity++) {
+		if (!flows[capacity].active && flows[capacity].id == id) {
+			flow = &flows[capacity];
+			memset(flow, 0, sizeof(*flow));
+			flow->id = id;
+			flow->active = true;
+			return flow;
+		}
+	}
+	if (flow_count == flow_capacity) {
+		capacity = flow_capacity ? flow_capacity * 2 : 32;
+		flow = realloc(flows, capacity * sizeof(*flows));
+		if (!flow)
+			return NULL;
+		flows = flow;
+		flow_capacity = capacity;
+	}
+	flow = &flows[flow_count++];
+	memset(flow, 0, sizeof(*flow));
+	flow->id = id;
+	flow->active = true;
+	return flow;
+}
+
+static const char *flow_protocol_name(const struct flow_state *flow)
+{
+	return flow->protocol == IPPROTO_UDP ? "udp-dns" : "tcp";
+}
+
+static struct native_track *native_flow_track(struct flow_state *flow)
+{
+	struct native_track *track, *process;
+	char tag[16], name[160];
+	u64 uuid;
+
+	uuid = native_uuid("flow", flow->id, 0);
+	track = native_find_track(uuid);
+	if (track)
+		return track;
+	process = native_process_track(flow->owner_tgid, flow->task);
+	if (!process)
+		return NULL;
+	format_flow_tag(flow->id, tag, sizeof(tag));
+	snprintf(name, sizeof(name), "%s %s %s:%u -> %s:%u", tag,
+		 flow_protocol_name(flow), flow->local_addr, flow->local_port,
+		 flow->remote_addr, flow->remote_port);
+	track = native_add_track(uuid, flow->id, NATIVE_TRACK_FLOW);
+	if (track)
+		native_descriptor(uuid, name, process->uuid, NATIVE_TRACK_FLOW,
+				  flow->owner_tgid, 0);
+	return track;
+}
+
+static void flow_emit_start(struct flow_state *flow)
+{
+	struct native_track *track;
+	struct proto_buffer event = {};
+	char tag[16], task[64];
+
+	format_flow_tag(flow->id, tag, sizeof(tag));
+	json_escape(flow->task, task, sizeof(task));
+	if (export_file)
+		fprintf(export_file,
+			"{\"schema\":\"%s\",\"type\":\"flow_start\","
+			"\"ts_ns\":%llu,\"flow_id\":\"%016llx\","
+			"\"flow_tag\":\"%s\",\"protocol\":\"%s\","
+			"\"socket_id\":\"%016llx\",\"owner_tid\":%u,"
+			"\"owner_tgid\":%u,\"owner_uid\":%u,\"task\":\"%s\","
+			"\"local_addr\":\"%s\",\"local_port\":%u,"
+			"\"remote_addr\":\"%s\",\"remote_port\":%u}\n",
+			PERFETTO_SCHEMA, flow->first_ts, flow->id, tag,
+			flow_protocol_name(flow), flow->socket_id, flow->owner_tid,
+			flow->owner_tgid, flow->owner_uid, task, flow->local_addr,
+			flow->local_port, flow->remote_addr, flow->remote_port);
+	if (!native_file)
+		return;
+	track = native_flow_track(flow);
+	if (!track)
+		return;
+	flow->native_track_uuid = track->uuid;
+	native_event_start(&event, 1, track->uuid, tag, "anettrace.flow");
+	native_event_correlation(&event, flow->id);
+	native_annotation_id(&event, "flow_id", flow->id);
+	native_annotation_string(&event, "protocol", flow_protocol_name(flow));
+	native_annotation_id(&event, "socket_id", flow->socket_id);
+	native_annotation_uint(&event, "owner_tid", flow->owner_tid);
+	native_annotation_uint(&event, "owner_tgid", flow->owner_tgid);
+	native_annotation_uint(&event, "owner_uid", flow->owner_uid);
+	native_annotation_string(&event, "local_addr", flow->local_addr);
+	native_annotation_uint(&event, "local_port", flow->local_port);
+	native_annotation_string(&event, "remote_addr", flow->remote_addr);
+	native_annotation_uint(&event, "remote_port", flow->remote_port);
+	native_event_write(flow->first_ts, &event);
+	proto_free(&event);
+}
+
+static void flow_finish(struct flow_state *flow, u64 end_ts,
+			const char *reason, bool incomplete)
+{
+	struct proto_buffer event = {};
+	u64 duration;
+	char tag[16], task[64];
+
+	if (!flow || !flow->active)
+		return;
+	if (end_ts < flow->last_ts)
+		end_ts = flow->last_ts;
+	if (end_ts < flow->first_ts)
+		end_ts = flow->first_ts;
+	duration = end_ts - flow->first_ts;
+	format_flow_tag(flow->id, tag, sizeof(tag));
+	json_escape(flow->task, task, sizeof(task));
+	if (export_file)
+		fprintf(export_file,
+			"{\"schema\":\"%s\",\"type\":\"flow_end\","
+			"\"ts_ns\":%llu,\"first_ts_ns\":%llu,"
+			"\"last_ts_ns\":%llu,\"duration_ns\":%llu,"
+			"\"flow_id\":\"%016llx\",\"flow_tag\":\"%s\","
+			"\"protocol\":\"%s\",\"socket_id\":\"%016llx\","
+			"\"tx_bytes\":%llu,\"rx_bytes\":%llu,"
+			"\"tx_packets\":%llu,\"rx_packets\":%llu,"
+			"\"owner_tid\":%u,\"owner_tgid\":%u,"
+			"\"owner_uid\":%u,\"task\":\"%s\","
+			"\"local_addr\":\"%s\",\"local_port\":%u,"
+			"\"remote_addr\":\"%s\",\"remote_port\":%u,"
+			"\"end_reason\":\"%s\",\"incomplete\":%s}\n",
+			PERFETTO_SCHEMA, end_ts, flow->first_ts, flow->last_ts,
+			duration, flow->id, tag, flow_protocol_name(flow),
+			flow->socket_id, flow->tx_bytes, flow->rx_bytes,
+			flow->tx_packets, flow->rx_packets, flow->owner_tid,
+			flow->owner_tgid, flow->owner_uid, task, flow->local_addr,
+			flow->local_port, flow->remote_addr, flow->remote_port,
+			reason, incomplete ? "true" : "false");
+	if (native_file && flow->native_track_uuid) {
+		native_event_start(&event, 2, flow->native_track_uuid, NULL,
+				   "anettrace.flow");
+		native_event_correlation(&event, flow->id);
+		native_annotation_id(&event, "flow_id", flow->id);
+		native_annotation_string(&event, "protocol",
+					 flow_protocol_name(flow));
+		native_annotation_id(&event, "socket_id", flow->socket_id);
+		native_annotation_uint(&event, "duration_ns", duration);
+		native_annotation_uint(&event, "tx_bytes", flow->tx_bytes);
+		native_annotation_uint(&event, "rx_bytes", flow->rx_bytes);
+		native_annotation_uint(&event, "tx_packets", flow->tx_packets);
+		native_annotation_uint(&event, "rx_packets", flow->rx_packets);
+		native_annotation_uint(&event, "owner_tid", flow->owner_tid);
+		native_annotation_uint(&event, "owner_tgid", flow->owner_tgid);
+		native_annotation_uint(&event, "owner_uid", flow->owner_uid);
+		native_annotation_string(&event, "local_addr", flow->local_addr);
+		native_annotation_uint(&event, "local_port", flow->local_port);
+		native_annotation_string(&event, "remote_addr", flow->remote_addr);
+		native_annotation_uint(&event, "remote_port", flow->remote_port);
+		native_annotation_string(&event, "end_reason", reason);
+		native_annotation_bool(&event, "incomplete", incomplete);
+		native_event_write(end_ts, &event);
+		proto_free(&event);
+	}
+	flow->active = false;
+}
+
+static void flow_set_owner(struct flow_state *flow,
+			   const detail_event_t *detail, const event_t *event,
+			   u64 socket_id)
+{
+	if (socket_id)
+		flow->socket_id = socket_id;
+	if (detail->owner_valid) {
+		flow->owner_tid = detail->owner_tid;
+		flow->owner_tgid = detail->owner_tgid;
+		flow->owner_uid = detail->owner_uid;
+	} else if (!flow->owner_tgid) {
+		flow->owner_tid = event->tid;
+		flow->owner_tgid = event->tgid;
+		flow->owner_uid = event->uid;
+	}
+	if (!flow->task[0] &&
+	    (!flow->owner_tgid || flow->owner_tgid == event->tgid))
+		strncpy(flow->task, detail->task, sizeof(flow->task) - 1);
+}
+
+static bool flow_socket_supported(const sock_t *sock)
+{
+	if (!sock->l4.min.sport || !sock->l4.min.dport)
+		return false;
+	if (sock->proto_l4 == IPPROTO_TCP)
+		return true;
+	return sock->proto_l4 == IPPROTO_UDP &&
+	       (ntohs(sock->l4.min.sport) == 53 ||
+		ntohs(sock->l4.min.dport) == 53);
+}
+
+static struct flow_state *flow_from_socket(const detail_event_t *detail,
+					   u64 timestamp_ns)
+{
+	const event_t *event = (const void *)detail;
+	u64 socket_id = object_id("socket", detail->owner_socket_key ?:
+					    event->key);
+	struct flow_state *flow;
+	u64 id;
+
+	if (!flow_socket_supported(&event->ske))
+		return flow_find_by_socket(socket_id, event->ske.proto_l4);
+	id = socket_flow_id(&event->ske);
+	flow = flow_find(id);
+	if (!flow) {
+		flow = flow_add(id);
+		if (!flow)
+			return NULL;
+		flow->first_ts = timestamp_ns;
+		flow->last_ts = timestamp_ns;
+		flow->protocol = event->ske.proto_l4;
+		socket_addresses(&event->ske, flow->local_addr,
+				 sizeof(flow->local_addr), flow->remote_addr,
+				 sizeof(flow->remote_addr));
+		flow->local_port = ntohs(event->ske.l4.min.sport);
+		flow->remote_port = ntohs(event->ske.l4.min.dport);
+		flow_set_owner(flow, detail, event, socket_id);
+		flow_emit_start(flow);
+	} else {
+		if (timestamp_ns > flow->last_ts)
+			flow->last_ts = timestamp_ns;
+		flow_set_owner(flow, detail, event, socket_id);
+	}
+	return flow;
+}
+
+static bool flow_packet_anchor(const trace_t *trace, u8 protocol, u8 direction)
+{
+	if (direction == PACKET_DIRECTION_TX) {
+		if (protocol == IPPROTO_TCP)
+			return !strcmp(trace->name, "__tcp_transmit_skb");
+		return !strcmp(trace->name, "udp_send_skb") ||
+		       !strcmp(trace->name, "udp_v6_send_skb");
+	}
+	if (direction == PACKET_DIRECTION_RX) {
+		if (protocol == IPPROTO_TCP)
+			return !strcmp(trace->name, "tcp_v4_rcv") ||
+			       !strcmp(trace->name, "tcp_v6_rcv");
+		return !strcmp(trace->name, "udp_rcv") ||
+		       !strcmp(trace->name, "udpv6_rcv");
+	}
+	return false;
+}
+
+static struct flow_state *flow_from_packet(const detail_event_t *detail,
+					   trace_t *trace)
+{
+	const event_t *event = (const void *)detail;
+	const packet_t *pkt = &event->pkt;
+	u64 socket_id = detail->owner_socket_key ?
+		object_id("socket", detail->owner_socket_key) : 0;
+	struct flow_state *flow;
+	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
+	u64 id;
+
+	if (pkt->proto_l4 != IPPROTO_TCP &&
+	    (pkt->proto_l4 != IPPROTO_UDP ||
+	     (ntohs(pkt->l4.min.sport) != 53 &&
+	      ntohs(pkt->l4.min.dport) != 53)))
+		return NULL;
+	id = packet_flow_id(pkt);
+	flow = flow_find(id);
+	if (!flow) {
+		flow = flow_add(id);
+		if (!flow)
+			return NULL;
+		flow->first_ts = pkt->ts;
+		flow->last_ts = pkt->ts;
+		flow->protocol = pkt->proto_l4;
+		packet_addresses(pkt, source, sizeof(source), dest, sizeof(dest));
+		if (detail->direction == PACKET_DIRECTION_RX) {
+			strncpy(flow->local_addr, dest,
+				sizeof(flow->local_addr) - 1);
+			strncpy(flow->remote_addr, source,
+				sizeof(flow->remote_addr) - 1);
+			flow->local_port = ntohs(pkt->l4.min.dport);
+			flow->remote_port = ntohs(pkt->l4.min.sport);
+		} else {
+			strncpy(flow->local_addr, source,
+				sizeof(flow->local_addr) - 1);
+			strncpy(flow->remote_addr, dest,
+				sizeof(flow->remote_addr) - 1);
+			flow->local_port = ntohs(pkt->l4.min.sport);
+			flow->remote_port = ntohs(pkt->l4.min.dport);
+		}
+		flow_set_owner(flow, detail, event, socket_id);
+		flow_emit_start(flow);
+	} else {
+		if (pkt->ts > flow->last_ts)
+			flow->last_ts = pkt->ts;
+		flow_set_owner(flow, detail, event, socket_id);
+	}
+	if (flow_packet_anchor(trace, pkt->proto_l4, detail->direction)) {
+		if (detail->direction == PACKET_DIRECTION_TX)
+			flow->tx_packets++;
+		else if (detail->direction == PACKET_DIRECTION_RX)
+			flow->rx_packets++;
+	}
+	return flow;
+}
+
+static struct pending_io *pending_io_find(u16 func, u32 tid)
+{
+	size_t i;
+
+	for (i = 0; i < pending_io_count; i++)
+		if (pending_ios[i].active && pending_ios[i].func == func &&
+		    pending_ios[i].tid == tid)
+			return &pending_ios[i];
+	return NULL;
+}
+
+static struct pending_io *pending_io_add(u16 func, u32 tid)
+{
+	struct pending_io *pending;
+	size_t capacity;
+
+	pending = pending_io_find(func, tid);
 	if (pending)
 		return pending;
-	if (pending_read_count == pending_read_capacity) {
-		capacity = pending_read_capacity ? pending_read_capacity * 2 : 32;
-		pending = realloc(pending_reads, capacity * sizeof(*pending_reads));
+	if (pending_io_count == pending_io_capacity) {
+		capacity = pending_io_capacity ? pending_io_capacity * 2 : 32;
+		pending = realloc(pending_ios, capacity * sizeof(*pending_ios));
 		if (!pending)
 			return NULL;
-		pending_reads = pending;
-		pending_read_capacity = capacity;
+		pending_ios = pending;
+		pending_io_capacity = capacity;
 	}
-	pending = &pending_reads[pending_read_count++];
+	pending = &pending_ios[pending_io_count++];
 	memset(pending, 0, sizeof(*pending));
 	pending->func = func;
 	pending->tid = tid;
@@ -678,87 +1063,147 @@ static struct pending_read *pending_read_add(u16 func, u32 tid)
 	return pending;
 }
 
-static void pending_read_finish(struct pending_read *pending, u64 timestamp_ns,
-				s64 result, bool incomplete)
+static void pending_io_emit_start(struct pending_io *pending,
+				  trace_t *trace, struct flow_state *flow)
 {
-	trace_t *trace;
 	struct proto_buffer event = {};
-	u64 bytes = result > 0 ? (u64)result : 0;
-	u64 error = result < 0 ? (u64)-result : 0;
-
-	if (!pending || !pending->active)
-		return;
-	trace = get_trace(pending->func);
-	if (export_file)
-		fprintf(export_file,
-			"{\"schema\":\"%s\",\"type\":\"rx_read_end\","
-			"\"ts_ns\":%llu,\"stage\":\"%s\",\"tid\":%u,"
-			"\"result\":%lld,\"bytes\":%llu,\"error\":%llu,"
-			"\"incomplete\":%s}\n",
-			PERFETTO_SCHEMA, timestamp_ns,
-			trace ? trace->name : "recvmsg", pending->tid, result,
-			bytes, error, incomplete ? "true" : "false");
-	if (native_file && pending->native_track_uuid) {
-		native_event_start(&event, 2, pending->native_track_uuid, NULL,
-				   "anettrace.rx.read");
-		native_annotation_uint(&event, "bytes", bytes);
-		native_annotation_uint(&event, "error", error);
-		native_annotation_bool(&event, "incomplete", incomplete);
-		native_event_write(timestamp_ns, &event);
-		proto_free(&event);
-	}
-	pending->active = false;
-}
-
-static void pending_read_start(const detail_event_t *detail, trace_t *trace,
-			       int cpu)
-{
-	const event_t *event = (const void *)detail;
-	struct native_track *thread;
-	struct pending_read *pending;
-	struct proto_buffer begin = {};
-	u64 socket_id = object_id("socket", detail->owner_socket_key ?:
-					    event->key);
-	u64 flow_id = socket_flow_id(&event->ske);
+	const char *type = pending->tx ? "tx_write_start" : "rx_read_start";
+	const char *category = pending->tx ?
+			       "anettrace.tx.write" : "anettrace.rx.read";
 	char task[64];
-	const char *protocol = event->ske.proto_l4 == IPPROTO_UDP ?
-			       "udp-dns" : "tcp";
 
-	pending = pending_read_find(event->func, event->tid);
-	if (pending)
-		pending_read_finish(pending, event->ske.ts, 0, true);
-	pending = pending_read_add(event->func, event->tid);
-	if (!pending)
+	if (!pending || pending->visible || !flow)
 		return;
-
-	json_escape(detail->task, task, sizeof(task));
+	pending->flow_id = flow->id;
+	json_escape(pending->task, task, sizeof(task));
 	if (export_file)
 		fprintf(export_file,
-			"{\"schema\":\"%s\",\"type\":\"rx_read_start\","
+			"{\"schema\":\"%s\",\"type\":\"%s\","
 			"\"ts_ns\":%llu,\"stage\":\"%s\","
 			"\"socket_id\":\"%016llx\",\"flow_id\":\"%016llx\","
 			"\"protocol\":\"%s\",\"cpu\":%d,\"tid\":%u,"
 			"\"tgid\":%u,\"uid\":%u,\"task\":\"%s\","
 			"\"owner_tid\":%u,\"owner_tgid\":%u,"
 			"\"owner_uid\":%u}\n",
-			PERFETTO_SCHEMA, event->ske.ts, trace->name, socket_id,
-			flow_id, protocol, cpu, event->tid, event->tgid,
-			event->uid, task, detail->owner_tid,
-			detail->owner_tgid, detail->owner_uid);
+			PERFETTO_SCHEMA, type, pending->start_ts, trace->name,
+			pending->socket_id, flow->id, flow_protocol_name(flow),
+			pending->cpu, pending->tid, pending->tgid, pending->uid,
+			task, pending->owner_tid, pending->owner_tgid,
+			pending->owner_uid);
+	if (native_file && pending->native_track_uuid) {
+		native_event_start(&event, 1, pending->native_track_uuid,
+				   trace->name, category);
+		native_annotation_id(&event, "socket_id", pending->socket_id);
+		native_annotation_id(&event, "flow_id", flow->id);
+		native_annotation_string(&event, "protocol",
+					 flow_protocol_name(flow));
+		native_annotation_uint(&event, "cpu", pending->cpu);
+		native_annotation_uint(&event, "owner_uid", pending->owner_uid);
+		native_event_write(pending->start_ts, &event);
+		proto_free(&event);
+	}
+	pending->visible = true;
+}
 
-	thread = native_thread_track(event->tgid, event->tid, detail->task);
-	if (!native_file || !thread)
+static void pending_io_finish(struct pending_io *pending, u64 timestamp_ns,
+			      s64 result, bool incomplete)
+{
+	struct flow_state *flow = NULL;
+	struct proto_buffer event = {};
+	trace_t *trace;
+	u64 bytes = result > 0 ? (u64)result : 0;
+	u64 error = result < 0 ? (u64)-result : 0;
+	const char *type, *category;
+	u8 protocol;
+
+	if (!pending || !pending->active)
 		return;
-	pending->native_track_uuid = thread->uuid;
-	native_event_start(&begin, 1, thread->uuid, trace->name,
-			   "anettrace.rx.read");
-	native_annotation_id(&begin, "socket_id", socket_id);
-	native_annotation_id(&begin, "flow_id", flow_id);
-	native_annotation_string(&begin, "protocol", protocol);
-	native_annotation_uint(&begin, "cpu", cpu);
-	native_annotation_uint(&begin, "owner_uid", detail->owner_uid);
-	native_event_write(event->ske.ts, &begin);
-	proto_free(&begin);
+	trace = get_trace(pending->func);
+	protocol = trace && !strncmp(trace->name, "tcp_", 4) ?
+		   IPPROTO_TCP : IPPROTO_UDP;
+	if (pending->flow_id)
+		flow = flow_find(pending->flow_id);
+	if (!flow)
+		flow = flow_find_by_socket(pending->socket_id, protocol);
+	if (flow) {
+		pending_io_emit_start(pending, trace, flow);
+		if (timestamp_ns > flow->last_ts)
+			flow->last_ts = timestamp_ns;
+		if (bytes) {
+			if (pending->tx)
+				flow->tx_bytes += bytes;
+			else
+				flow->rx_bytes += bytes;
+		}
+	}
+	if (!pending->visible)
+		goto out;
+	type = pending->tx ? "tx_write_end" : "rx_read_end";
+	category = pending->tx ? "anettrace.tx.write" : "anettrace.rx.read";
+	if (export_file)
+		fprintf(export_file,
+			"{\"schema\":\"%s\",\"type\":\"%s\","
+			"\"ts_ns\":%llu,\"stage\":\"%s\",\"tid\":%u,"
+			"\"socket_id\":\"%016llx\",\"flow_id\":\"%016llx\","
+			"\"result\":%lld,\"bytes\":%llu,\"error\":%llu,"
+			"\"incomplete\":%s}\n",
+			PERFETTO_SCHEMA, type, timestamp_ns,
+			trace ? trace->name : "msg", pending->tid,
+			pending->socket_id, pending->flow_id, result, bytes, error,
+			incomplete ? "true" : "false");
+	if (native_file && pending->native_track_uuid) {
+		native_event_start(&event, 2, pending->native_track_uuid, NULL,
+				   category);
+		native_annotation_id(&event, "flow_id", pending->flow_id);
+		native_annotation_uint(&event, "bytes", bytes);
+		native_annotation_uint(&event, "error", error);
+		native_annotation_bool(&event, "incomplete", incomplete);
+		native_event_write(timestamp_ns, &event);
+		proto_free(&event);
+	}
+out:
+	pending->active = false;
+}
+
+static void pending_io_start(const detail_event_t *detail, trace_t *trace,
+			     int cpu)
+{
+	const event_t *event = (const void *)detail;
+	struct native_track *thread;
+	struct pending_io *pending;
+	struct flow_state *flow;
+	u64 socket_id = object_id("socket", detail->owner_socket_key ?:
+					    event->key);
+
+	pending = pending_io_find(event->func, event->tid);
+	if (pending)
+		pending_io_finish(pending, event->ske.ts, 0, true);
+	pending = pending_io_add(event->func, event->tid);
+	if (!pending)
+		return;
+	pending->start_ts = event->ske.ts;
+	pending->socket_id = socket_id;
+	pending->tx = trace_is_tx_write(trace);
+	pending->tgid = event->tgid;
+	pending->uid = event->uid;
+	pending->cpu = cpu;
+	pending->owner_tid = detail->owner_tid;
+	pending->owner_tgid = detail->owner_tgid;
+	pending->owner_uid = detail->owner_uid;
+	strncpy(pending->task, detail->task, sizeof(pending->task) - 1);
+	thread = native_thread_track(event->tgid, event->tid, detail->task);
+	if (thread)
+		pending->native_track_uuid = thread->uuid;
+	/* An unconnected UDP socket has no peer at sendmsg entry. Wait for the
+	 * DNS packet event so alternating destinations are charged correctly.
+	 */
+	if (pending->tx && event->ske.proto_l4 == IPPROTO_UDP &&
+	    !flow_socket_supported(&event->ske))
+		flow = NULL;
+	else
+		flow = flow_from_socket(detail, event->ske.ts);
+	if (flow)
+		pending_io_emit_start(pending, trace, flow);
 }
 
 static void native_close_socket(struct native_track *track, u64 timestamp_ns)
@@ -1058,10 +1503,14 @@ static void export_state_start(void)
 	native_tracks = NULL;
 	native_track_count = 0;
 	native_track_capacity = 0;
-	free(pending_reads);
-	pending_reads = NULL;
-	pending_read_count = 0;
-	pending_read_capacity = 0;
+	free(pending_ios);
+	pending_ios = NULL;
+	pending_io_count = 0;
+	pending_io_capacity = 0;
+	free(flows);
+	flows = NULL;
+	flow_count = 0;
+	flow_capacity = 0;
 	if (getrandom(&export_salt, sizeof(export_salt), 0) !=
 	    sizeof(export_salt)) {
 		clock_gettime(CLOCK_MONOTONIC, &now);
@@ -1273,12 +1722,12 @@ void perfetto_export_event(const void *data, int cpu, u32 size)
 		if (size < sizeof(*ret))
 			return;
 		trace = get_trace(ret->func);
-		if (!trace_is_rx_read(trace))
+		if (!trace_is_io(trace))
 			return;
 		pthread_mutex_lock(&export_lock);
 		write_clock_snapshot_if_due();
-		pending_read_finish(pending_read_find(ret->func, ret->tid),
-				    ret->ts, (s64)ret->val, false);
+		pending_io_finish(pending_io_find(ret->func, ret->tid),
+				  ret->ts, (s32)ret->val, false);
 		exported_events++;
 		pthread_mutex_unlock(&export_lock);
 		return;
@@ -1287,12 +1736,12 @@ void perfetto_export_event(const void *data, int cpu, u32 size)
 		return;
 	trace = get_trace(event->func);
 	if (meta == FUNC_TYPE_TRACING_RET) {
-		if (!trace_is_rx_read(trace) || size < sizeof(detail_event_t))
+		if (!trace_is_io(trace) || size < sizeof(detail_event_t))
 			return;
 		pthread_mutex_lock(&export_lock);
 		write_clock_snapshot_if_due();
-		pending_read_finish(pending_read_find(event->func, event->tid),
-				    event->ske.ts, (s64)event->retval, false);
+		pending_io_finish(pending_io_find(event->func, event->tid),
+				  event->ske.ts, (s32)event->retval, false);
 		exported_events++;
 		pthread_mutex_unlock(&export_lock);
 		return;
@@ -1304,8 +1753,8 @@ void perfetto_export_event(const void *data, int cpu, u32 size)
 
 	pthread_mutex_lock(&export_lock);
 	write_clock_snapshot_if_due();
-	if (trace_is_rx_read(trace)) {
-		pending_read_start(detail, trace, cpu);
+	if (trace_is_io(trace)) {
+		pending_io_start(detail, trace, cpu);
 	} else if (!strcmp(trace->name, "sk_alloc") &&
 	    size >= sizeof(detail_socket_create_event_t)) {
 		const detail_socket_create_event_t *create = data;
@@ -1325,11 +1774,28 @@ void perfetto_export_event(const void *data, int cpu, u32 size)
 			native_export_socket_state(detail, state->oldstate,
 						   state->newstate, cpu);
 	} else if (trace_using_sk(trace)) {
+		struct flow_state *flow = NULL;
+
+		if (!strcmp(trace->name, "tcp_close")) {
+			u64 socket_id = object_id("socket",
+				detail->owner_socket_key ?: event->key);
+
+			if (flow_socket_supported(&event->ske))
+				flow = flow_find(socket_flow_id(&event->ske));
+			if (!flow)
+				flow = flow_find_by_socket(socket_id, IPPROTO_TCP);
+			if (flow && event->ske.ts > flow->last_ts)
+				flow->last_ts = event->ske.ts;
+			flow_finish(flow, event->ske.ts, "tcp_close", false);
+		} else if (strcmp(trace->name, "tcp_v4_destroy_sock")) {
+			flow_from_socket(detail, event->ske.ts);
+		}
 		if (export_file)
 			export_socket_event(detail, trace, cpu);
 		if (native_file)
 			native_export_socket_event(detail, trace, cpu);
 	} else {
+		flow_from_packet(detail, trace);
 		if (export_file)
 			export_packet_event(detail, trace, cpu);
 		if (native_file)
@@ -1364,11 +1830,26 @@ void perfetto_export_lost(int cpu, u64 count)
 
 void perfetto_export_tick(void)
 {
+	struct timespec monotonic;
+	u64 now = 0;
+	size_t i;
+
 	if (!export_file && !native_file)
 		return;
+	if (!clock_gettime(CLOCK_MONOTONIC, &monotonic))
+		now = timespec_to_ns(&monotonic);
 	pthread_mutex_lock(&export_lock);
 	if (export_file || native_file)
 		write_clock_snapshot_if_due();
+	if (now) {
+		for (i = 0; i < flow_count; i++)
+			if (flows[i].active &&
+			    flows[i].protocol == IPPROTO_UDP &&
+			    now >= flows[i].last_ts + DNS_FLOW_IDLE_NS)
+				flow_finish(&flows[i],
+					    flows[i].last_ts + DNS_FLOW_IDLE_NS,
+					    "idle_timeout", false);
+	}
 	pthread_mutex_unlock(&export_lock);
 }
 
@@ -1386,8 +1867,10 @@ void perfetto_export_close(u64 event_count)
 	{
 		size_t i;
 
-		for (i = 0; i < pending_read_count; i++)
-			pending_read_finish(&pending_reads[i], end_ts, 0, true);
+		for (i = 0; i < pending_io_count; i++)
+			pending_io_finish(&pending_ios[i], end_ts, 0, true);
+		for (i = 0; i < flow_count; i++)
+			flow_finish(&flows[i], end_ts, "trace_end", true);
 	}
 	if (native_file) {
 		size_t i;
@@ -1422,10 +1905,14 @@ void perfetto_export_close(u64 event_count)
 	native_tracks = NULL;
 	native_track_count = 0;
 	native_track_capacity = 0;
-	free(pending_reads);
-	pending_reads = NULL;
-	pending_read_count = 0;
-	pending_read_capacity = 0;
+	free(pending_ios);
+	pending_ios = NULL;
+	pending_io_count = 0;
+	pending_io_capacity = 0;
+	free(flows);
+	flows = NULL;
+	flow_count = 0;
+	flow_capacity = 0;
 	pthread_mutex_unlock(&export_lock);
 }
 

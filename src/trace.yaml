@@ -418,6 +418,8 @@ children:
     desc: tcp layer of packet out
     visiual: true
     children:
+    - name: tcp_sendmsg/0
+      monitor: 1
     - tcp_sendmsg_locked/0
     - name: tcp_skb_entail/0:1
     - name: skb_entail/0:1
@@ -466,6 +468,10 @@ children:
     desc: DNS UDP packets sent by the application
     visual: true
     children:
+    - name: udp_sendmsg/0
+      monitor: 1
+    - name: udpv6_sendmsg/0
+      monitor: 1
     - name: udp_send_skb:0
       monitor: 1
     - name: udp_v6_send_skb:0
