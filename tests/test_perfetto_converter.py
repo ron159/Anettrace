@@ -8,9 +8,10 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from perfetto.protos.perfetto.trace.perfetto_trace_pb2 import Trace, TrackEvent
-
+from perfetto.trace_processor import TraceProcessor
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tools" / "anettrace_to_perfetto.py"
@@ -28,7 +29,11 @@ class PerfettoConverterTest(unittest.TestCase):
         trace = Trace()
         trace.ParseFromString(encoded)
 
-        names = [packet.track_event.name for packet in trace.packet if packet.HasField("track_event")]
+        names = [
+            packet.track_event.name
+            for packet in trace.packet
+            if packet.HasField("track_event")
+        ]
         self.assertIn("socket allocation", names)
         self.assertIn("socket lifetime", names)
         self.assertIn("F-00002001", names)
@@ -49,9 +54,7 @@ class PerfettoConverterTest(unittest.TestCase):
         ]
         self.assertEqual(len(packet_events), 3)
         self.assertEqual({event.name for event in packet_events}, {"F-00002001"})
-        self.assertEqual(
-            {event.correlation_id for event in packet_events}, {0x2001}
-        )
+        self.assertEqual({event.correlation_id for event in packet_events}, {0x2001})
         packet_annotations = [
             {annotation.name: annotation for annotation in event.debug_annotations}
             for event in packet_events
@@ -111,8 +114,7 @@ class PerfettoConverterTest(unittest.TestCase):
         ]
         self.assertEqual(len(recv_ends), 1)
         recv_annotations = {
-            annotation.name: annotation
-            for annotation in recv_ends[0].debug_annotations
+            annotation.name: annotation for annotation in recv_ends[0].debug_annotations
         }
         self.assertEqual(recv_annotations["bytes"].uint_value, 512)
 
@@ -134,8 +136,7 @@ class PerfettoConverterTest(unittest.TestCase):
         ]
         self.assertEqual(len(flow_ends), 1)
         flow_annotations = {
-            annotation.name: annotation
-            for annotation in flow_ends[0].debug_annotations
+            annotation.name: annotation for annotation in flow_ends[0].debug_annotations
         }
         self.assertEqual(flow_annotations["tx_bytes"].uint_value, 128)
         self.assertEqual(flow_annotations["rx_bytes"].uint_value, 512)
@@ -167,7 +168,9 @@ class PerfettoConverterTest(unittest.TestCase):
             if packet.HasField("track_descriptor")
             and packet.track_descriptor.HasField("thread")
         ]
-        self.assertTrue(any(descriptor.thread.tid == 101 for descriptor in thread_descriptors))
+        self.assertTrue(
+            any(descriptor.thread.tid == 101 for descriptor in thread_descriptors)
+        )
 
         snapshots = [
             packet.clock_snapshot
@@ -188,7 +191,83 @@ class PerfettoConverterTest(unittest.TestCase):
             )
         )
 
-    def test_interleaved_thread_flows_use_distinct_tracks(self) -> None:
+    def test_interleaved_thread_flows_keep_visuals_and_stats_distinct(self) -> None:
+        owner = {
+            "owner_tid": 101,
+            "owner_tgid": 100,
+            "owner_uid": 10000,
+            "task": "net-worker",
+        }
+        flows = (
+            {
+                "flow_id": "0000000000002001",
+                "protocol": "tcp",
+                "socket_id": "000000000000a001",
+                "local_port": 40001,
+                "remote_addr": "203.0.113.1",
+                "remote_port": 443,
+                "start_ts": 1_010_000_000,
+                "last_ts": 1_030_000_000,
+                "end_ts": 1_080_000_000,
+                "tx_bytes": 128,
+                "rx_bytes": 512,
+                "tx_packets": 2,
+                "rx_packets": 3,
+                "end_reason": "tcp_close",
+                "incomplete": False,
+            },
+            {
+                "flow_id": "0000000000002002",
+                "protocol": "tcp",
+                "socket_id": "000000000000a002",
+                "local_port": 40002,
+                "remote_addr": "203.0.113.2",
+                "remote_port": 8443,
+                "start_ts": 1_011_000_000,
+                "last_ts": 1_032_000_000,
+                "end_ts": 6_040_000_000,
+                "tx_bytes": 256,
+                "rx_bytes": 1024,
+                "tx_packets": 3,
+                "rx_packets": 4,
+                "end_reason": "trace_end",
+                "incomplete": True,
+            },
+            {
+                "flow_id": "0000000000003001",
+                "protocol": "udp-dns",
+                "socket_id": "000000000000b001",
+                "local_port": 40003,
+                "remote_addr": "192.0.2.53",
+                "remote_port": 53,
+                "start_ts": 1_012_000_000,
+                "last_ts": 1_031_000_000,
+                "end_ts": 6_031_000_000,
+                "tx_bytes": 64,
+                "rx_bytes": 96,
+                "tx_packets": 1,
+                "rx_packets": 1,
+                "end_reason": "idle_timeout",
+                "incomplete": False,
+            },
+            {
+                "flow_id": "0000000000003002",
+                "protocol": "udp-dns",
+                "socket_id": "000000000000b002",
+                "local_port": 40004,
+                "remote_addr": "192.0.2.54",
+                "remote_port": 53,
+                "start_ts": 1_013_000_000,
+                "last_ts": 1_033_000_000,
+                "end_ts": 6_040_000_000,
+                "tx_bytes": 80,
+                "rx_bytes": 120,
+                "tx_packets": 2,
+                "rx_packets": 2,
+                "end_reason": "trace_end",
+                "incomplete": True,
+            },
+        )
         records = [
             {
                 "schema": MODULE.SCHEMA,
@@ -198,81 +277,262 @@ class PerfettoConverterTest(unittest.TestCase):
                 "realtime_ns": 1_800_000_000_000_000_000,
             }
         ]
-        for flow_id, protocol, remote_port, tx_bytes, reason in (
-            ("0000000000002001", "tcp", 443, 128, "tcp_close"),
-            ("0000000000002002", "udp-dns", 53, 64, "idle_timeout"),
-        ):
-            tag = MODULE.flow_tag(MODULE.id_value(flow_id))
-            records.extend(
-                [
-                    {
-                        "schema": MODULE.SCHEMA,
-                        "type": "flow_start",
-                        "ts_ns": 1_010_000_000,
-                        "flow_id": flow_id,
-                        "flow_tag": tag,
-                        "protocol": protocol,
-                        "socket_id": f"000000000000{remote_port:04x}",
-                        "owner_tid": 101,
-                        "owner_tgid": 100,
-                        "owner_uid": 10000,
-                        "task": "net-worker",
-                        "local_addr": "10.0.0.2",
-                        "local_port": 40000,
-                        "remote_addr": "10.0.0.1",
-                        "remote_port": remote_port,
+        for flow in flows:
+            records.append(
+                {
+                    "schema": MODULE.SCHEMA,
+                    "type": "flow_start",
+                    "ts_ns": flow["start_ts"],
+                    "flow_tag": MODULE.flow_tag(MODULE.id_value(flow["flow_id"])),
+                    "local_addr": "10.0.0.2",
+                    **owner,
+                    **{
+                        key: flow[key]
+                        for key in (
+                            "flow_id",
+                            "protocol",
+                            "socket_id",
+                            "local_port",
+                            "remote_addr",
+                            "remote_port",
+                        )
                     },
-                    {
-                        "schema": MODULE.SCHEMA,
-                        "type": "flow_end",
-                        "ts_ns": 1_020_000_000,
-                        "first_ts_ns": 1_010_000_000,
-                        "last_ts_ns": 1_015_000_000,
-                        "duration_ns": 10_000_000,
-                        "flow_id": flow_id,
-                        "flow_tag": tag,
-                        "protocol": protocol,
-                        "socket_id": f"000000000000{remote_port:04x}",
-                        "tx_bytes": tx_bytes,
-                        "rx_bytes": tx_bytes * 2,
-                        "tx_packets": 1,
-                        "rx_packets": 1,
-                        "owner_tid": 101,
-                        "owner_tgid": 100,
-                        "owner_uid": 10000,
-                        "task": "net-worker",
-                        "local_addr": "10.0.0.2",
-                        "local_port": 40000,
-                        "remote_addr": "10.0.0.1",
-                        "remote_port": remote_port,
-                        "end_reason": reason,
-                        "incomplete": False,
+                }
+            )
+
+        interleaved = (
+            (1_020_000_000, flows[0], "tx"),
+            (1_021_000_000, flows[2], "tx"),
+            (1_022_000_000, flows[1], "tx"),
+            (1_023_000_000, flows[3], "tx"),
+            (1_030_000_000, flows[0], "rx"),
+            (1_031_000_000, flows[2], "rx"),
+            (1_032_000_000, flows[1], "rx"),
+            (1_033_000_000, flows[3], "rx"),
+        )
+        for index, (ts_ns, flow, direction) in enumerate(interleaved, 1):
+            records.append(
+                {
+                    "schema": MODULE.SCHEMA,
+                    "type": "packet_event",
+                    "ts_ns": ts_ns,
+                    "packet_id": f"{0x4000 + index:016x}",
+                    "flow_id": flow["flow_id"],
+                    "stage": "test_tx" if direction == "tx" else "test_rx",
+                    "terminal": False,
+                    "dropped": False,
+                    "cpu": 0,
+                    "tid": owner["owner_tid"],
+                    "tgid": owner["owner_tgid"],
+                    "uid": owner["owner_uid"],
+                    "task": owner["task"],
+                    "direction": direction,
+                }
+            )
+
+        for flow in sorted(flows, key=lambda item: item["end_ts"]):
+            records.append(
+                {
+                    "schema": MODULE.SCHEMA,
+                    "type": "flow_end",
+                    "ts_ns": flow["end_ts"],
+                    "first_ts_ns": flow["start_ts"],
+                    "last_ts_ns": flow["last_ts"],
+                    "duration_ns": flow["end_ts"] - flow["start_ts"],
+                    "flow_tag": MODULE.flow_tag(MODULE.id_value(flow["flow_id"])),
+                    "local_addr": "10.0.0.2",
+                    **owner,
+                    **{
+                        key: flow[key]
+                        for key in (
+                            "flow_id",
+                            "protocol",
+                            "socket_id",
+                            "tx_bytes",
+                            "rx_bytes",
+                            "tx_packets",
+                            "rx_packets",
+                            "local_port",
+                            "remote_addr",
+                            "remote_port",
+                            "end_reason",
+                            "incomplete",
+                        )
                     },
-                ]
+                }
             )
         records.append(
             {
                 "schema": MODULE.SCHEMA,
                 "type": "trace_end",
-                "ts_ns": 1_030_000_000,
+                "ts_ns": 6_040_000_000,
                 "event_count": 0,
                 "exported_events": 0,
                 "lost_events": 0,
             }
         )
 
+        encoded = MODULE.PerfettoExporter(records).serialize()
         trace = Trace()
-        trace.ParseFromString(MODULE.PerfettoExporter(records).serialize())
+        trace.ParseFromString(encoded)
         begins = [
-            packet.track_event
+            packet
             for packet in trace.packet
             if packet.HasField("track_event")
             and packet.track_event.type == TrackEvent.TYPE_SLICE_BEGIN
             and "anettrace.flow" in packet.track_event.categories
         ]
-        self.assertEqual(len(begins), 2)
-        self.assertEqual(len({event.track_uuid for event in begins}), 2)
-        self.assertEqual({event.name for event in begins}, {"F-00002001", "F-00002002"})
+        self.assertEqual(len(begins), 4)
+        self.assertEqual(len({packet.track_event.track_uuid for packet in begins}), 4)
+
+        expected_by_id = {MODULE.id_value(flow["flow_id"]): flow for flow in flows}
+        begin_by_id = {packet.track_event.correlation_id: packet for packet in begins}
+        self.assertEqual(set(begin_by_id), set(expected_by_id))
+
+        packet_events = [
+            packet.track_event
+            for packet in trace.packet
+            if packet.HasField("track_event")
+            and "anettrace.packet" in packet.track_event.categories
+        ]
+        expected_visual_order = [
+            MODULE.flow_tag(MODULE.id_value(flow["flow_id"]))
+            for _, flow, _ in interleaved
+        ]
+        self.assertEqual([event.name for event in packet_events], expected_visual_order)
+        self.assertEqual(len({event.track_uuid for event in packet_events}), 1)
+        for event in packet_events:
+            self.assertEqual(
+                event.name,
+                MODULE.flow_tag(event.correlation_id),
+                "one flow must keep one visual tag across interleaved packets",
+            )
+        self.assertEqual(len(set(expected_visual_order)), 4)
+
+        descriptors = {
+            packet.track_descriptor.uuid: packet.track_descriptor
+            for packet in trace.packet
+            if packet.HasField("track_descriptor")
+        }
+        end_by_track = {
+            packet.track_event.track_uuid: packet
+            for packet in trace.packet
+            if packet.HasField("track_event")
+            and packet.track_event.type == TrackEvent.TYPE_SLICE_END
+            and "anettrace.flow" in packet.track_event.categories
+        }
+        self.assertEqual(len(end_by_track), 4)
+        self.assertEqual(
+            len(
+                {
+                    descriptors[packet.track_event.track_uuid].parent_uuid
+                    for packet in begins
+                }
+            ),
+            1,
+        )
+
+        for flow_id, flow in expected_by_id.items():
+            begin = begin_by_id[flow_id]
+            track_uuid = begin.track_event.track_uuid
+            end = end_by_track[track_uuid]
+            tag = MODULE.flow_tag(flow_id)
+            descriptor_name = descriptors[track_uuid].name
+            self.assertEqual(begin.track_event.name, tag)
+            self.assertIn(tag, descriptor_name)
+            self.assertIn(flow["remote_addr"], descriptor_name)
+            self.assertEqual(
+                end.timestamp - begin.timestamp, flow["end_ts"] - flow["start_ts"]
+            )
+
+            annotations = {
+                annotation.name: annotation
+                for annotation in end.track_event.debug_annotations
+            }
+            for key in (
+                "duration_ns",
+                "tx_bytes",
+                "rx_bytes",
+                "tx_packets",
+                "rx_packets",
+            ):
+                expected = (
+                    flow["end_ts"] - flow["start_ts"]
+                    if key == "duration_ns"
+                    else flow[key]
+                )
+                self.assertEqual(annotations[key].uint_value, expected)
+            self.assertEqual(annotations["owner_tid"].uint_value, owner["owner_tid"])
+            self.assertEqual(annotations["owner_tgid"].uint_value, owner["owner_tgid"])
+            self.assertEqual(annotations["owner_uid"].uint_value, owner["owner_uid"])
+            self.assertEqual(annotations["local_addr"].string_value, "10.0.0.2")
+            self.assertEqual(annotations["local_port"].uint_value, flow["local_port"])
+            self.assertEqual(
+                annotations["remote_addr"].string_value, flow["remote_addr"]
+            )
+            self.assertEqual(annotations["remote_port"].uint_value, flow["remote_port"])
+            self.assertEqual(annotations["end_reason"].string_value, flow["end_reason"])
+            self.assertEqual(annotations["incomplete"].bool_value, flow["incomplete"])
+
+        with TemporaryDirectory(prefix="anettrace-flow-") as directory:
+            trace_path = Path(directory) / "interleaved-flows.pftrace"
+            trace_path.write_bytes(encoded)
+            with TraceProcessor(trace=str(trace_path)) as processor:
+                flow_rows = list(
+                    processor.query(
+                        """
+                        SELECT
+                          name,
+                          dur,
+                          track_id,
+                          extract_arg(arg_set_id, 'debug.tx_bytes') AS tx_bytes,
+                          extract_arg(arg_set_id, 'debug.rx_bytes') AS rx_bytes,
+                          extract_arg(arg_set_id, 'debug.tx_packets') AS tx_packets,
+                          extract_arg(arg_set_id, 'debug.rx_packets') AS rx_packets,
+                          extract_arg(arg_set_id, 'debug.owner_tid') AS owner_tid,
+                          extract_arg(arg_set_id, 'debug.local_addr') AS local_addr,
+                          extract_arg(arg_set_id, 'debug.local_port') AS local_port,
+                          extract_arg(arg_set_id, 'debug.remote_addr') AS remote_addr,
+                          extract_arg(arg_set_id, 'debug.remote_port') AS remote_port,
+                          extract_arg(arg_set_id, 'debug.end_reason') AS end_reason,
+                          extract_arg(arg_set_id, 'debug.incomplete') AS incomplete
+                        FROM slice
+                        WHERE category = 'anettrace.flow'
+                        ORDER BY name
+                        """
+                    )
+                )
+                packet_rows = list(
+                    processor.query(
+                        """
+                        SELECT name, track_id
+                        FROM slice
+                        WHERE category = 'anettrace.packet'
+                        ORDER BY ts
+                        """
+                    )
+                )
+
+        expected_by_tag = {
+            MODULE.flow_tag(MODULE.id_value(flow["flow_id"])): flow for flow in flows
+        }
+        self.assertEqual(len(flow_rows), 4)
+        self.assertEqual(len({row.track_id for row in flow_rows}), 4)
+        for row in flow_rows:
+            flow = expected_by_tag[row.name]
+            self.assertEqual(row.dur, flow["end_ts"] - flow["start_ts"])
+            for key in ("tx_bytes", "rx_bytes", "tx_packets", "rx_packets"):
+                self.assertEqual(getattr(row, key), flow[key])
+            self.assertEqual(row.owner_tid, owner["owner_tid"])
+            self.assertEqual(row.local_addr, "10.0.0.2")
+            self.assertEqual(row.local_port, flow["local_port"])
+            self.assertEqual(row.remote_addr, flow["remote_addr"])
+            self.assertEqual(row.remote_port, flow["remote_port"])
+            self.assertEqual(row.end_reason, flow["end_reason"])
+            self.assertEqual(bool(row.incomplete), flow["incomplete"])
+
+        self.assertEqual([row.name for row in packet_rows], expected_visual_order)
+        self.assertEqual(len({row.track_id for row in packet_rows}), 1)
 
     def test_multiple_clock_snapshots_cover_suspend_offset_changes(self) -> None:
         fixture = ROOT / "tests" / "fixtures" / "perfetto-events.jsonl"
