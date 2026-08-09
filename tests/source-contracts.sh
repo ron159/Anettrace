@@ -25,6 +25,9 @@ require_text '.tid = (u32)bpf_get_current_pid_tgid()' src/progs/kprobe.c
 require_text 'e->event.tid' src/trace_probe.c
 require_text 'ANETTRACE_ANDROID_TARGET=1' common.mk
 require_text 'packet mark must remain the final field' src/progs/skb_shared.h
+require_text $'\t\t} ipv4;\n#ifndef NT_DISABLE_IPV6\n\t\tstruct {' \
+	src/progs/skb_shared.h
+require_text $'\t\t} ipv4;\n#if 0\n\t\tstruct {' src/progs/skb_shared.h
 require_text 'pkt->mark = _C(skb, mark);' src/progs/skb_parse.h
 require_text 'pkt->l3.ipv4.id = bpf_ntohs(_C(ipv4, id));' src/progs/skb_parse.h
 require_text '--date and --timestamp cannot be used together' src/anettrace.c
