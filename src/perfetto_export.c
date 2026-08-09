@@ -421,29 +421,49 @@ static u64 object_id(const char *kind, u32 key)
 	return hash_bytes(hash, &key, sizeof(key));
 }
 
+#ifndef NT_DISABLE_IPV6
+static bool ipv6_is_v4_mapped(const u8 address[16])
+{
+	static const u8 prefix[12] = {
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff,
+	};
+
+	return !memcmp(address, prefix, sizeof(prefix));
+}
+#endif
+
 static u64 packet_flow_hash(const packet_t *pkt, bool reverse)
 {
 	u64 hash = 1469598103934665603ULL ^ export_salt;
+	u16 proto_l3 = pkt->proto_l3;
+	const void *source;
+	const void *dest;
+	size_t address_size;
 
-	hash = hash_bytes(hash, &pkt->proto_l3, sizeof(pkt->proto_l3));
-	hash = hash_bytes(hash, &pkt->proto_l4, sizeof(pkt->proto_l4));
 	if (pkt->proto_l3 == ETH_P_IPV6) {
 #ifndef NT_DISABLE_IPV6
-		hash = hash_bytes(hash, reverse ? pkt->l3.ipv6.daddr :
-				  pkt->l3.ipv6.saddr,
-				  sizeof(pkt->l3.ipv6.saddr));
-		hash = hash_bytes(hash, reverse ? pkt->l3.ipv6.saddr :
-				  pkt->l3.ipv6.daddr,
-				  sizeof(pkt->l3.ipv6.daddr));
+		source = pkt->l3.ipv6.saddr;
+		dest = pkt->l3.ipv6.daddr;
+		address_size = sizeof(pkt->l3.ipv6.saddr);
+		if (ipv6_is_v4_mapped(source) && ipv6_is_v4_mapped(dest)) {
+			proto_l3 = ETH_P_IP;
+			source = (const u8 *)source + 12;
+			dest = (const u8 *)dest + 12;
+			address_size = sizeof(pkt->l3.ipv4.saddr);
+		}
+#else
+		return hash;
 #endif
 	} else {
-		hash = hash_bytes(hash, reverse ? &pkt->l3.ipv4.daddr :
-				  &pkt->l3.ipv4.saddr,
-				  sizeof(pkt->l3.ipv4.saddr));
-		hash = hash_bytes(hash, reverse ? &pkt->l3.ipv4.saddr :
-				  &pkt->l3.ipv4.daddr,
-				  sizeof(pkt->l3.ipv4.daddr));
+		source = &pkt->l3.ipv4.saddr;
+		dest = &pkt->l3.ipv4.daddr;
+		address_size = sizeof(pkt->l3.ipv4.saddr);
 	}
+
+	hash = hash_bytes(hash, &proto_l3, sizeof(proto_l3));
+	hash = hash_bytes(hash, &pkt->proto_l4, sizeof(pkt->proto_l4));
+	hash = hash_bytes(hash, reverse ? dest : source, address_size);
+	hash = hash_bytes(hash, reverse ? source : dest, address_size);
 	hash = hash_bytes(hash, reverse ? &pkt->l4.min.dport :
 				  &pkt->l4.min.sport,
 			  sizeof(pkt->l4.min.sport));
@@ -489,15 +509,35 @@ static u64 packet_id(const packet_t *pkt, u32 key)
 static u64 socket_flow_hash(const sock_t *sock, bool reverse)
 {
 	u64 hash = 1469598103934665603ULL ^ export_salt;
+	u16 proto_l3 = sock->proto_l3;
+	const void *source;
+	const void *dest;
+	size_t address_size;
 
-	hash = hash_bytes(hash, &sock->proto_l3, sizeof(sock->proto_l3));
+	if (sock->proto_l3 == ETH_P_IPV6) {
+#ifndef NT_DISABLE_IPV6
+		source = sock->l3.ipv6.saddr;
+		dest = sock->l3.ipv6.daddr;
+		address_size = sizeof(sock->l3.ipv6.saddr);
+		if (ipv6_is_v4_mapped(source) && ipv6_is_v4_mapped(dest)) {
+			proto_l3 = ETH_P_IP;
+			source = (const u8 *)source + 12;
+			dest = (const u8 *)dest + 12;
+			address_size = sizeof(sock->l3.ipv4.saddr);
+		}
+#else
+		return hash;
+#endif
+	} else {
+		source = &sock->l3.ipv4.saddr;
+		dest = &sock->l3.ipv4.daddr;
+		address_size = sizeof(sock->l3.ipv4.saddr);
+	}
+
+	hash = hash_bytes(hash, &proto_l3, sizeof(proto_l3));
 	hash = hash_bytes(hash, &sock->proto_l4, sizeof(sock->proto_l4));
-	hash = hash_bytes(hash, reverse ? &sock->l3.ipv4.daddr :
-				  &sock->l3.ipv4.saddr,
-			  sizeof(sock->l3.ipv4.saddr));
-	hash = hash_bytes(hash, reverse ? &sock->l3.ipv4.saddr :
-				  &sock->l3.ipv4.daddr,
-			  sizeof(sock->l3.ipv4.daddr));
+	hash = hash_bytes(hash, reverse ? dest : source, address_size);
+	hash = hash_bytes(hash, reverse ? source : dest, address_size);
 	hash = hash_bytes(hash, reverse ? &sock->l4.min.dport :
 				  &sock->l4.min.sport,
 			  sizeof(sock->l4.min.sport));
@@ -544,8 +584,16 @@ static void packet_addresses(const packet_t *pkt, char *source,
 		inet_ntop(AF_INET, &pkt->l3.ipv4.daddr, dest, dest_size);
 	} else if (pkt->proto_l3 == ETH_P_IPV6) {
 #ifndef NT_DISABLE_IPV6
-		inet_ntop(AF_INET6, pkt->l3.ipv6.saddr, source, source_size);
-		inet_ntop(AF_INET6, pkt->l3.ipv6.daddr, dest, dest_size);
+		if (ipv6_is_v4_mapped(pkt->l3.ipv6.saddr))
+			inet_ntop(AF_INET, pkt->l3.ipv6.saddr + 12, source,
+				  source_size);
+		else
+			inet_ntop(AF_INET6, pkt->l3.ipv6.saddr, source,
+				  source_size);
+		if (ipv6_is_v4_mapped(pkt->l3.ipv6.daddr))
+			inet_ntop(AF_INET, pkt->l3.ipv6.daddr + 12, dest, dest_size);
+		else
+			inet_ntop(AF_INET6, pkt->l3.ipv6.daddr, dest, dest_size);
 #endif
 	}
 }
@@ -558,6 +606,19 @@ static void socket_addresses(const sock_t *sock, char *source,
 	if (sock->proto_l3 == ETH_P_IP) {
 		inet_ntop(AF_INET, &sock->l3.ipv4.saddr, source, source_size);
 		inet_ntop(AF_INET, &sock->l3.ipv4.daddr, dest, dest_size);
+	} else if (sock->proto_l3 == ETH_P_IPV6) {
+#ifndef NT_DISABLE_IPV6
+		if (ipv6_is_v4_mapped(sock->l3.ipv6.saddr))
+			inet_ntop(AF_INET, sock->l3.ipv6.saddr + 12, source,
+				  source_size);
+		else
+			inet_ntop(AF_INET6, sock->l3.ipv6.saddr, source,
+				  source_size);
+		if (ipv6_is_v4_mapped(sock->l3.ipv6.daddr))
+			inet_ntop(AF_INET, sock->l3.ipv6.daddr + 12, dest, dest_size);
+		else
+			inet_ntop(AF_INET6, sock->l3.ipv6.daddr, dest, dest_size);
+#endif
 	}
 }
 
@@ -958,8 +1019,8 @@ static bool flow_packet_anchor(const trace_t *trace, u8 protocol, u8 direction)
 	if (direction == PACKET_DIRECTION_TX) {
 		if (protocol == IPPROTO_TCP)
 			return !strcmp(trace->name, "__tcp_transmit_skb");
-		return !strcmp(trace->name, "udp_send_skb") ||
-		       !strcmp(trace->name, "udp_v6_send_skb");
+		return !strcmp(trace->name, "ip_output") ||
+		       !strcmp(trace->name, "ip6_output");
 	}
 	if (direction == PACKET_DIRECTION_RX) {
 		if (protocol == IPPROTO_TCP)
@@ -1035,6 +1096,19 @@ static struct pending_io *pending_io_find(u16 func, u32 tid)
 	for (i = 0; i < pending_io_count; i++)
 		if (pending_ios[i].active && pending_ios[i].func == func &&
 		    pending_ios[i].tid == tid)
+			return &pending_ios[i];
+	return NULL;
+}
+
+static struct pending_io *pending_io_find_logical(u32 tid, u64 socket_id,
+						   bool tx)
+{
+	size_t i;
+
+	for (i = 0; i < pending_io_count; i++)
+		if (pending_ios[i].active && pending_ios[i].tid == tid &&
+		    pending_ios[i].socket_id == socket_id &&
+		    pending_ios[i].tx == tx)
 			return &pending_ios[i];
 	return NULL;
 }
@@ -1174,16 +1248,20 @@ static void pending_io_start(const detail_event_t *detail, trace_t *trace,
 	struct flow_state *flow;
 	u64 socket_id = object_id("socket", detail->owner_socket_key ?:
 					    event->key);
+	bool tx = trace_is_tx_write(trace);
 
 	pending = pending_io_find(event->func, event->tid);
 	if (pending)
 		pending_io_finish(pending, event->ske.ts, 0, true);
+	pending = pending_io_find_logical(event->tid, socket_id, tx);
+	if (pending)
+		return;
 	pending = pending_io_add(event->func, event->tid);
 	if (!pending)
 		return;
 	pending->start_ts = event->ske.ts;
 	pending->socket_id = socket_id;
-	pending->tx = trace_is_tx_write(trace);
+	pending->tx = tx;
 	pending->tgid = event->tgid;
 	pending->uid = event->uid;
 	pending->cpu = cpu;

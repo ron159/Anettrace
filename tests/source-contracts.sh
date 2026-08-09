@@ -76,6 +76,12 @@ require_text '"anettrace.flow"' src/perfetto_export.c
 require_text '"idle_timeout"' src/perfetto_export.c
 require_text 'flow->tx_bytes += bytes;' src/perfetto_export.c
 require_text 'flow->rx_bytes += bytes;' src/perfetto_export.c
+require_text 'ipv6_is_v4_mapped' src/perfetto_export.c
+require_text 'pending_io_find_logical' src/perfetto_export.c
+require_text '!strcmp(trace->name, "ip_output")' src/perfetto_export.c
+require_text '__builtin_memcpy(ske->l3.ipv6.saddr' src/progs/skb_parse.h
+require_text 'if ((args->pid || args->uid_enabled) && !current_matches' \
+	src/progs/core.c
 require_text '\"skb_id\":' src/perfetto_export.c
 require_text 'CLOCK_SNAPSHOT_INTERVAL_NS' src/perfetto_export.c
 require_text 'perfetto_export_tick();' src/trace.c

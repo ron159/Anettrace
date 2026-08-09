@@ -415,7 +415,7 @@ static __attribute__((noinline)) int perfetto_handle_owner(
 		return -1;
 	}
 
-	if (filter && (args->pid || args->uid_enabled) && !current_matches &&
+	if ((args->pid || args->uid_enabled) && !current_matches &&
 	    (!owner_valid || !perfetto_owner_matches(args, owner)))
 		return -1;
 
