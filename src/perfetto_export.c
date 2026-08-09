@@ -509,35 +509,15 @@ static u64 packet_id(const packet_t *pkt, u32 key)
 static u64 socket_flow_hash(const sock_t *sock, bool reverse)
 {
 	u64 hash = 1469598103934665603ULL ^ export_salt;
-	u16 proto_l3 = sock->proto_l3;
-	const void *source;
-	const void *dest;
-	size_t address_size;
 
-	if (sock->proto_l3 == ETH_P_IPV6) {
-#ifndef NT_DISABLE_IPV6
-		source = sock->l3.ipv6.saddr;
-		dest = sock->l3.ipv6.daddr;
-		address_size = sizeof(sock->l3.ipv6.saddr);
-		if (ipv6_is_v4_mapped(source) && ipv6_is_v4_mapped(dest)) {
-			proto_l3 = ETH_P_IP;
-			source = (const u8 *)source + 12;
-			dest = (const u8 *)dest + 12;
-			address_size = sizeof(sock->l3.ipv4.saddr);
-		}
-#else
-		return hash;
-#endif
-	} else {
-		source = &sock->l3.ipv4.saddr;
-		dest = &sock->l3.ipv4.daddr;
-		address_size = sizeof(sock->l3.ipv4.saddr);
-	}
-
-	hash = hash_bytes(hash, &proto_l3, sizeof(proto_l3));
+	hash = hash_bytes(hash, &sock->proto_l3, sizeof(sock->proto_l3));
 	hash = hash_bytes(hash, &sock->proto_l4, sizeof(sock->proto_l4));
-	hash = hash_bytes(hash, reverse ? dest : source, address_size);
-	hash = hash_bytes(hash, reverse ? source : dest, address_size);
+	hash = hash_bytes(hash, reverse ? &sock->l3.ipv4.daddr :
+				  &sock->l3.ipv4.saddr,
+			  sizeof(sock->l3.ipv4.saddr));
+	hash = hash_bytes(hash, reverse ? &sock->l3.ipv4.saddr :
+				  &sock->l3.ipv4.daddr,
+			  sizeof(sock->l3.ipv4.daddr));
 	hash = hash_bytes(hash, reverse ? &sock->l4.min.dport :
 				  &sock->l4.min.sport,
 			  sizeof(sock->l4.min.sport));
@@ -606,19 +586,6 @@ static void socket_addresses(const sock_t *sock, char *source,
 	if (sock->proto_l3 == ETH_P_IP) {
 		inet_ntop(AF_INET, &sock->l3.ipv4.saddr, source, source_size);
 		inet_ntop(AF_INET, &sock->l3.ipv4.daddr, dest, dest_size);
-	} else if (sock->proto_l3 == ETH_P_IPV6) {
-#ifndef NT_DISABLE_IPV6
-		if (ipv6_is_v4_mapped(sock->l3.ipv6.saddr))
-			inet_ntop(AF_INET, sock->l3.ipv6.saddr + 12, source,
-				  source_size);
-		else
-			inet_ntop(AF_INET6, sock->l3.ipv6.saddr, source,
-				  source_size);
-		if (ipv6_is_v4_mapped(sock->l3.ipv6.daddr))
-			inet_ntop(AF_INET, sock->l3.ipv6.daddr + 12, dest, dest_size);
-		else
-			inet_ntop(AF_INET6, sock->l3.ipv6.daddr, dest, dest_size);
-#endif
 	}
 }
 
@@ -970,6 +937,8 @@ static void flow_set_owner(struct flow_state *flow,
 
 static bool flow_socket_supported(const sock_t *sock)
 {
+	if (sock->proto_l3 != ETH_P_IP)
+		return false;
 	if (!sock->l4.min.sport || !sock->l4.min.dport)
 		return false;
 	if (sock->proto_l4 == IPPROTO_TCP)
