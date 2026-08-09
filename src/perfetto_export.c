@@ -91,6 +91,7 @@ struct flow_state {
 	char remote_addr[INET6_ADDRSTRLEN];
 	char task[16];
 	bool active;
+	bool closed;
 };
 
 struct proto_buffer {
@@ -756,6 +757,8 @@ static struct flow_state *flow_add(u64 id)
 
 	for (capacity = 0; capacity < flow_count; capacity++) {
 		if (!flows[capacity].active && flows[capacity].id == id) {
+			if (flows[capacity].closed)
+				return NULL;
 			flow = &flows[capacity];
 			memset(flow, 0, sizeof(*flow));
 			flow->id = id;
@@ -913,6 +916,7 @@ static void flow_finish(struct flow_state *flow, u64 end_ts,
 		proto_free(&event);
 	}
 	flow->active = false;
+	flow->closed = !strcmp(reason, "tcp_close");
 }
 
 static void flow_set_owner(struct flow_state *flow,

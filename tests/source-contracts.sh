@@ -79,6 +79,9 @@ require_text '"anettrace.flow"' src/perfetto_export.c
 require_text '"idle_timeout"' src/perfetto_export.c
 require_text 'flow->tx_bytes += bytes;' src/perfetto_export.c
 require_text 'flow->rx_bytes += bytes;' src/perfetto_export.c
+require_text 'if (flows[capacity].closed)' src/perfetto_export.c
+require_text 'flow->closed = !strcmp(reason, "tcp_close");' \
+	src/perfetto_export.c
 require_text 'ipv6_is_v4_mapped' src/perfetto_export.c
 require_text 'pending_io_find_logical' src/perfetto_export.c
 require_text '!strcmp(trace->name, "ip_output")' src/perfetto_export.c
