@@ -37,8 +37,20 @@ def id_value(value: str) -> int:
     return int(value, 16) or 1
 
 
-def flow_tag(flow_id: int) -> str:
-    return f"F-{flow_id & 0xFFFFFFFF:08X}"
+def flow_prefix(record: dict[str, Any]) -> str:
+    protocol = str(record.get("protocol", "")).lower()
+    proto_l4 = int(record.get("proto_l4", 0) or 0)
+    ports = {
+        int(record.get(key, 0) or 0)
+        for key in ("sport", "dport", "local_port", "remote_port")
+    }
+    if protocol in ("dns", "udp-dns"):
+        return "dns"
+    if protocol == "tcp" or proto_l4 == 6:
+        return "tcp"
+    if protocol == "udp" or proto_l4 == 17:
+        return "dns" if 53 in ports else "udp"
+    return "flow"
 
 
 def read_records(path: Path) -> list[dict[str, Any]]:
@@ -70,6 +82,8 @@ class PerfettoExporter:
         self.socket_lifetimes: set[str] = set()
         self.closed_sockets: set[str] = set()
         self.flow_tracks: dict[str, int] = {}
+        self.flow_labels: dict[str, str] = {}
+        self.flow_label_counts = {"tcp": 0, "udp": 0, "dns": 0, "flow": 0}
         self.active_flows: set[str] = set()
         self.pending_io: dict[tuple[str, str, int], int] = {}
         self.global_track = stable_uuid("anettrace", "global")
@@ -165,7 +179,7 @@ class PerfettoExporter:
         parent_uuid = self.process_track(owner_tgid, task)
         uuid = stable_uuid("flow", flow_id)
         name = (
-            f"{record.get('flow_tag', flow_tag(id_value(flow_id)))} "
+            f"{self.flow_label(flow_id, record)} "
             f"{record.get('protocol', 'tcp')} "
             f"{record.get('local_addr', '')}:{record.get('local_port', 0)} -> "
             f"{record.get('remote_addr', '')}:{record.get('remote_port', 0)}"
@@ -173,6 +187,16 @@ class PerfettoExporter:
         self.descriptor(uuid, name, parent_uuid)
         self.flow_tracks[flow_id] = uuid
         return uuid
+
+    def flow_label(self, flow_id: str, record: dict[str, Any]) -> str:
+        label = self.flow_labels.get(flow_id)
+        if label is not None:
+            return label
+        prefix = flow_prefix(record)
+        self.flow_label_counts[prefix] += 1
+        label = f"{prefix}-{self.flow_label_counts[prefix]}"
+        self.flow_labels[flow_id] = label
+        return label
 
     def timestamp(self, monotonic_ns: int) -> int:
         if not self.clock_monotonic_ns:
@@ -385,7 +409,9 @@ class PerfettoExporter:
     def export_packet_event(self, record: dict[str, Any]) -> None:
         packet_id = str(record["packet_id"])
         packet_record = dict(record)
-        packet_record["flow_tag"] = flow_tag(id_value(str(record["flow_id"])))
+        packet_record["flow_tag"] = self.flow_label(
+            str(record["flow_id"]), record
+        )
         self.event(
             int(record["ts_ns"]),
             self.thread_track(record),
@@ -434,15 +460,17 @@ class PerfettoExporter:
 
     def export_flow_start(self, record: dict[str, Any]) -> None:
         flow_id = str(record["flow_id"])
+        flow_record = dict(record)
+        flow_record["flow_tag"] = self.flow_label(flow_id, record)
         self.event(
             int(record["ts_ns"]),
-            self.flow_track(flow_id, record),
+            self.flow_track(flow_id, flow_record),
             TrackEvent.TYPE_SLICE_BEGIN,
-            str(record.get("flow_tag", flow_tag(id_value(flow_id)))),
+            flow_record["flow_tag"],
             "anettrace.flow",
             correlation_id=id_value(flow_id),
             annotations=(
-                record,
+                flow_record,
                 (
                     "flow_id",
                     "flow_tag",
@@ -462,14 +490,16 @@ class PerfettoExporter:
 
     def export_flow_end(self, record: dict[str, Any]) -> None:
         flow_id = str(record["flow_id"])
+        flow_record = dict(record)
+        flow_record["flow_tag"] = self.flow_label(flow_id, record)
         track = self.flow_tracks.get(flow_id)
         if track is None:
-            track = self.flow_track(flow_id, record)
+            track = self.flow_track(flow_id, flow_record)
             self.event(
                 int(record.get("first_ts_ns", record["ts_ns"])),
                 track,
                 TrackEvent.TYPE_SLICE_BEGIN,
-                str(record.get("flow_tag", flow_tag(id_value(flow_id)))),
+                flow_record["flow_tag"],
                 "anettrace.flow",
                 correlation_id=id_value(flow_id),
             )
@@ -480,7 +510,7 @@ class PerfettoExporter:
             category="anettrace.flow",
             correlation_id=id_value(flow_id),
             annotations=(
-                record,
+                flow_record,
                 (
                     "flow_id",
                     "duration_ns",

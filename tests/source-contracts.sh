@@ -64,8 +64,11 @@ require_text 'SEC("kprobe/sk_alloc")' src/progs/core.c
 require_text 'DEFINE_TP_SK(inet_sock_set_state' src/progs/core.c
 require_text 'perfetto_export_event(data, cpu, size);' src/trace.c
 require_text '\"type\":\"packet_event\"' src/perfetto_export.c
-require_text 'format_flow_tag(flow_id, flow_tag, sizeof(flow_tag));' \
+require_text 'format_packet_flow_label(flow_id, pkt, flow_tag, sizeof(flow_tag));' \
 	src/perfetto_export.c
+require_text 'flow->display_index = ++tcp_flow_count;' src/perfetto_export.c
+require_text 'flow->display_index = ++dns_flow_count;' src/perfetto_export.c
+require_text 'flow->display_index = ++udp_flow_count;' src/perfetto_export.c
 require_text 'native_annotation_string(&track_event, "stage", trace->name);' \
 	src/perfetto_export.c
 require_text 'native_event_correlation(&track_event, flow_id);' \
@@ -117,7 +120,7 @@ require_text 'perfetto_poll_handler(ctx, cpu, data, size);' src/trace.c
 require_text 'trace && trace_using_sk(trace)' src/analysis.c
 require_text 'packet.timestamp_clock_id = CLOCK_MONOTONIC' \
 	tools/anettrace_to_perfetto.py
-require_text 'packet_record["flow_tag"] = flow_tag' \
+require_text 'packet_record["flow_tag"] = self.flow_label' \
 	tools/anettrace_to_perfetto.py
 require_text 'track_event.correlation_id = correlation_id' \
 	tools/anettrace_to_perfetto.py

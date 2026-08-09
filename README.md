@@ -190,15 +190,17 @@ Running/Runnable/Sleeping 状态来自系统 sched 数据。联合采集期间�
 RX 内核事件保留 NAPI/softirq 的真实线程轨道，应用线程只显示 `recvmsg` duration slice，避免把所有
 收包箭头伪装到 reader 线程下。
 
-每个 packet instant event 使用规范化双向五元组生成的 `F-XXXXXXXX` 标记作为事件名，并把完整
-64 位 `flow_id` 写入 Perfetto `correlation_id`。同一条流的 TX/RX 和不同内核阶段因此显示为
-相同标记并使用同一颜色；原内核函数名保留在 `stage` 属性中，完整五元组仍可精确检索。
+每个 packet instant event 使用按本次 trace 首次出现顺序生成的可读名称作为事件名：TCP、
+普通 UDP 和 DNS 分别独立编号为 `tcp-1`、`udp-1`、`dns-1`。完整 64 位 `flow_id` 仍写入
+Perfetto `correlation_id`，因此同一条流的 TX/RX 和不同内核阶段显示相同名称并使用同一颜色；
+原内核函数名保留在 `stage` 属性中，完整五元组仍可精确检索。
 
 每条五元组还会生成独立的 `anettrace.flow` duration track，而不是把并发请求都堆在公共网络
 线程上。slice 结束点包含 `duration_ns`、TX/RX 字节、TX/RX 包数、owner、两端地址端口、
 `end_reason` 和 `incomplete`：TCP 在 `tcp_close` 结束，DNS/UDP 在 5 秒空闲后结束，采集窗口内
 未自然结束的流在 `trace_end` 截断。同一线程交替处理多条 TCP/DNS 流时，可直接按
-`F-XXXXXXXX` 名称、颜色和独立 flow track 区分。
+`tcp-N`/`dns-N` 名称、颜色和独立 flow track 区分。编号仅在单次 trace 内有效，每次采集从 1
+重新开始；当前采集范围中的 UDP 仅包含 DNS/53，普通 `udp-N` 已预留给后续 UDP 扩展。
 
 当前 UDP 范围刻意限制为传统 DNS/53；QUIC/HTTP3（通常为 UDP/443）不在本阶段采集范围内。
 

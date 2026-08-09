@@ -84,6 +84,7 @@ struct flow_state {
 	u32 owner_tid;
 	u32 owner_tgid;
 	u32 owner_uid;
+	u32 display_index;
 	u16 local_port;
 	u16 remote_port;
 	u8 protocol;
@@ -110,6 +111,9 @@ static size_t pending_io_capacity;
 static struct flow_state *flows;
 static size_t flow_count;
 static size_t flow_capacity;
+static u32 tcp_flow_count;
+static u32 udp_flow_count;
+static u32 dns_flow_count;
 
 static u64 hash_bytes(u64 hash, const void *data, size_t size);
 
@@ -482,11 +486,6 @@ static u64 packet_flow_id(const packet_t *pkt)
 	return forward < reverse ? forward : reverse;
 }
 
-static void format_flow_tag(u64 flow_id, char *tag, size_t size)
-{
-	snprintf(tag, size, "F-%08llX", flow_id & 0xffffffffULL);
-}
-
 static u64 packet_id(const packet_t *pkt, u32 key)
 {
 	u64 hash;
@@ -733,6 +732,16 @@ static struct flow_state *flow_find(u64 id)
 	return NULL;
 }
 
+static struct flow_state *flow_find_any(u64 id)
+{
+	size_t i;
+
+	for (i = 0; i < flow_count; i++)
+		if (flows[i].id == id)
+			return &flows[i];
+	return NULL;
+}
+
 static struct flow_state *flow_find_by_socket(u64 socket_id, u8 protocol)
 {
 	struct flow_state *latest = NULL;
@@ -753,6 +762,7 @@ static struct flow_state *flow_find_by_socket(u64 socket_id, u8 protocol)
 static struct flow_state *flow_add(u64 id)
 {
 	struct flow_state *flow;
+	u32 display_index;
 	size_t capacity;
 
 	for (capacity = 0; capacity < flow_count; capacity++) {
@@ -760,8 +770,10 @@ static struct flow_state *flow_add(u64 id)
 			if (flows[capacity].closed)
 				return NULL;
 			flow = &flows[capacity];
+			display_index = flow->display_index;
 			memset(flow, 0, sizeof(*flow));
 			flow->id = id;
+			flow->display_index = display_index;
 			flow->active = true;
 			return flow;
 		}
@@ -781,9 +793,60 @@ static struct flow_state *flow_add(u64 id)
 	return flow;
 }
 
+static const char *flow_label_prefix(u8 protocol, u16 local_port,
+				     u16 remote_port)
+{
+	if (protocol == IPPROTO_TCP)
+		return "tcp";
+	if (protocol == IPPROTO_UDP &&
+	    (local_port == 53 || remote_port == 53))
+		return "dns";
+	if (protocol == IPPROTO_UDP)
+		return "udp";
+	return "flow";
+}
+
+static void flow_assign_display_index(struct flow_state *flow)
+{
+	if (flow->display_index)
+		return;
+	if (flow->protocol == IPPROTO_TCP)
+		flow->display_index = ++tcp_flow_count;
+	else if (flow->local_port == 53 || flow->remote_port == 53)
+		flow->display_index = ++dns_flow_count;
+	else
+		flow->display_index = ++udp_flow_count;
+}
+
+static void format_flow_label(const struct flow_state *flow, char *label,
+			      size_t size)
+{
+	const char *prefix = flow_label_prefix(flow->protocol, flow->local_port,
+					       flow->remote_port);
+
+	snprintf(label, size, "%s-%u", prefix, flow->display_index);
+}
+
+static void format_packet_flow_label(u64 flow_id, const packet_t *pkt,
+				     char *label, size_t size)
+{
+	struct flow_state *flow = flow_find_any(flow_id);
+
+	if (flow) {
+		format_flow_label(flow, label, size);
+		return;
+	}
+	snprintf(label, size, "%s-0",
+		 flow_label_prefix(pkt->proto_l4, ntohs(pkt->l4.min.sport),
+				   ntohs(pkt->l4.min.dport)));
+}
+
 static const char *flow_protocol_name(const struct flow_state *flow)
 {
-	return flow->protocol == IPPROTO_UDP ? "udp-dns" : "tcp";
+	if (flow->protocol == IPPROTO_UDP &&
+	    (flow->local_port == 53 || flow->remote_port == 53))
+		return "udp-dns";
+	return flow->protocol == IPPROTO_UDP ? "udp" : "tcp";
 }
 
 static struct native_track *native_flow_track(struct flow_state *flow)
@@ -799,7 +862,7 @@ static struct native_track *native_flow_track(struct flow_state *flow)
 	process = native_process_track(flow->owner_tgid, flow->task);
 	if (!process)
 		return NULL;
-	format_flow_tag(flow->id, tag, sizeof(tag));
+	format_flow_label(flow, tag, sizeof(tag));
 	snprintf(name, sizeof(name), "%s %s %s:%u -> %s:%u", tag,
 		 flow_protocol_name(flow), flow->local_addr, flow->local_port,
 		 flow->remote_addr, flow->remote_port);
@@ -816,7 +879,7 @@ static void flow_emit_start(struct flow_state *flow)
 	struct proto_buffer event = {};
 	char tag[16], task[64];
 
-	format_flow_tag(flow->id, tag, sizeof(tag));
+	format_flow_label(flow, tag, sizeof(tag));
 	json_escape(flow->task, task, sizeof(task));
 	if (export_file)
 		fprintf(export_file,
@@ -867,7 +930,7 @@ static void flow_finish(struct flow_state *flow, u64 end_ts,
 	if (end_ts < flow->first_ts)
 		end_ts = flow->first_ts;
 	duration = end_ts - flow->first_ts;
-	format_flow_tag(flow->id, tag, sizeof(tag));
+	format_flow_label(flow, tag, sizeof(tag));
 	json_escape(flow->task, task, sizeof(task));
 	if (export_file)
 		fprintf(export_file,
@@ -977,6 +1040,7 @@ static struct flow_state *flow_from_socket(const detail_event_t *detail,
 				 sizeof(flow->remote_addr));
 		flow->local_port = ntohs(event->ske.l4.min.sport);
 		flow->remote_port = ntohs(event->ske.l4.min.dport);
+		flow_assign_display_index(flow);
 		flow_set_owner(flow, detail, event, socket_id);
 		flow_emit_start(flow);
 	} else {
@@ -1046,6 +1110,7 @@ static struct flow_state *flow_from_packet(const detail_event_t *detail,
 			flow->local_port = ntohs(pkt->l4.min.sport);
 			flow->remote_port = ntohs(pkt->l4.min.dport);
 		}
+		flow_assign_display_index(flow);
 		flow_set_owner(flow, detail, event, socket_id);
 		flow_emit_start(flow);
 	} else {
@@ -1410,7 +1475,7 @@ static void native_export_packet_event(const detail_event_t *detail,
 	if (!thread)
 		return;
 	packet_addresses(pkt, source, sizeof(source), dest, sizeof(dest));
-	format_flow_tag(flow_id, flow_tag, sizeof(flow_tag));
+	format_packet_flow_label(flow_id, pkt, flow_tag, sizeof(flow_tag));
 	native_event_start(&track_event, 3, thread->uuid, flow_tag,
 			   dropped ? "anettrace.packet.drop" :
 			   "anettrace.packet");
@@ -1562,6 +1627,9 @@ static void export_state_start(void)
 	flows = NULL;
 	flow_count = 0;
 	flow_capacity = 0;
+	tcp_flow_count = 0;
+	udp_flow_count = 0;
+	dns_flow_count = 0;
 	if (getrandom(&export_salt, sizeof(export_salt), 0) !=
 	    sizeof(export_salt)) {
 		clock_gettime(CLOCK_MONOTONIC, &now);
@@ -1727,7 +1795,7 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 	packet_addresses(pkt, source, sizeof(source), dest, sizeof(dest));
 	json_escape(detail->task, task, sizeof(task));
 	json_escape(detail->ifname, ifname, sizeof(ifname));
-	format_flow_tag(flow_id, flow_tag, sizeof(flow_tag));
+	format_packet_flow_label(flow_id, pkt, flow_tag, sizeof(flow_tag));
 	fprintf(export_file,
 		"{\"schema\":\"%s\",\"type\":\"packet_event\","
 		"\"ts_ns\":%llu,\"packet_id\":\"%016llx\","
@@ -1964,6 +2032,9 @@ void perfetto_export_close(u64 event_count)
 	flows = NULL;
 	flow_count = 0;
 	flow_capacity = 0;
+	tcp_flow_count = 0;
+	udp_flow_count = 0;
+	dns_flow_count = 0;
 	pthread_mutex_unlock(&export_lock);
 }
 

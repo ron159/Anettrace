@@ -36,7 +36,7 @@ class PerfettoConverterTest(unittest.TestCase):
         ]
         self.assertIn("socket allocation", names)
         self.assertIn("socket lifetime", names)
-        self.assertIn("F-00002001", names)
+        self.assertIn("tcp-1", names)
         self.assertIn("tcp_sendmsg", names)
         self.assertIn("tcp_sendmsg_locked", names)
         self.assertIn("tcp_recvmsg", names)
@@ -53,7 +53,7 @@ class PerfettoConverterTest(unittest.TestCase):
             )
         ]
         self.assertEqual(len(packet_events), 3)
-        self.assertEqual({event.name for event in packet_events}, {"F-00002001"})
+        self.assertEqual({event.name for event in packet_events}, {"tcp-1"})
         self.assertEqual({event.correlation_id for event in packet_events}, {0x2001})
         packet_annotations = [
             {annotation.name: annotation for annotation in event.debug_annotations}
@@ -65,13 +65,9 @@ class PerfettoConverterTest(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                annotations["flow_tag"].string_value == "F-00002001"
+                annotations["flow_tag"].string_value == "tcp-1"
                 for annotations in packet_annotations
             )
-        )
-        self.assertNotEqual(
-            MODULE.flow_tag(MODULE.id_value("0000000000002001")),
-            MODULE.flow_tag(MODULE.id_value("0000000000002002")),
         )
 
         packets = [
@@ -122,7 +118,7 @@ class PerfettoConverterTest(unittest.TestCase):
             packet.track_event
             for packet in trace.packet
             if packet.HasField("track_event")
-            and packet.track_event.name == "F-00002001"
+            and packet.track_event.name == "tcp-1"
             and "anettrace.flow" in packet.track_event.categories
         ]
         self.assertEqual(len(flow_begins), 1)
@@ -189,6 +185,24 @@ class PerfettoConverterTest(unittest.TestCase):
                 packet.timestamp_clock_id == MODULE.CLOCK_MONOTONIC
                 for packet in event_packets
             )
+        )
+
+    def test_flow_labels_are_sequential_per_protocol(self) -> None:
+        exporter = MODULE.PerfettoExporter([])
+        self.assertEqual(exporter.flow_label("1", {"protocol": "tcp"}), "tcp-1")
+        self.assertEqual(exporter.flow_label("2", {"proto_l4": 17}), "udp-1")
+        self.assertEqual(
+            exporter.flow_label("3", {"proto_l4": 17, "dport": 53}), "dns-1"
+        )
+        self.assertEqual(exporter.flow_label("4", {"protocol": "tcp"}), "tcp-2")
+        self.assertEqual(exporter.flow_label("5", {"protocol": "udp"}), "udp-2")
+        self.assertEqual(
+            exporter.flow_label("6", {"protocol": "udp-dns"}), "dns-2"
+        )
+        self.assertEqual(
+            exporter.flow_label("1", {"protocol": "udp"}),
+            "tcp-1",
+            "an existing flow_id must keep its first label",
         )
 
     def test_interleaved_thread_flows_keep_visuals_and_stats_distinct(self) -> None:
@@ -268,6 +282,12 @@ class PerfettoConverterTest(unittest.TestCase):
                 "incomplete": True,
             },
         )
+        expected_labels = {
+            MODULE.id_value("0000000000002001"): "tcp-1",
+            MODULE.id_value("0000000000002002"): "tcp-2",
+            MODULE.id_value("0000000000003001"): "dns-1",
+            MODULE.id_value("0000000000003002"): "dns-2",
+        }
         records = [
             {
                 "schema": MODULE.SCHEMA,
@@ -283,7 +303,6 @@ class PerfettoConverterTest(unittest.TestCase):
                     "schema": MODULE.SCHEMA,
                     "type": "flow_start",
                     "ts_ns": flow["start_ts"],
-                    "flow_tag": MODULE.flow_tag(MODULE.id_value(flow["flow_id"])),
                     "local_addr": "10.0.0.2",
                     **owner,
                     **{
@@ -339,7 +358,6 @@ class PerfettoConverterTest(unittest.TestCase):
                     "first_ts_ns": flow["start_ts"],
                     "last_ts_ns": flow["last_ts"],
                     "duration_ns": flow["end_ts"] - flow["start_ts"],
-                    "flow_tag": MODULE.flow_tag(MODULE.id_value(flow["flow_id"])),
                     "local_addr": "10.0.0.2",
                     **owner,
                     **{
@@ -396,7 +414,7 @@ class PerfettoConverterTest(unittest.TestCase):
             and "anettrace.packet" in packet.track_event.categories
         ]
         expected_visual_order = [
-            MODULE.flow_tag(MODULE.id_value(flow["flow_id"]))
+            expected_labels[MODULE.id_value(flow["flow_id"])]
             for _, flow, _ in interleaved
         ]
         self.assertEqual([event.name for event in packet_events], expected_visual_order)
@@ -404,7 +422,7 @@ class PerfettoConverterTest(unittest.TestCase):
         for event in packet_events:
             self.assertEqual(
                 event.name,
-                MODULE.flow_tag(event.correlation_id),
+                expected_labels[event.correlation_id],
                 "one flow must keep one visual tag across interleaved packets",
             )
         self.assertEqual(len(set(expected_visual_order)), 4)
@@ -436,7 +454,7 @@ class PerfettoConverterTest(unittest.TestCase):
             begin = begin_by_id[flow_id]
             track_uuid = begin.track_event.track_uuid
             end = end_by_track[track_uuid]
-            tag = MODULE.flow_tag(flow_id)
+            tag = expected_labels[flow_id]
             descriptor_name = descriptors[track_uuid].name
             self.assertEqual(begin.track_event.name, tag)
             self.assertIn(tag, descriptor_name)
@@ -514,7 +532,7 @@ class PerfettoConverterTest(unittest.TestCase):
                 )
 
         expected_by_tag = {
-            MODULE.flow_tag(MODULE.id_value(flow["flow_id"])): flow for flow in flows
+            expected_labels[MODULE.id_value(flow["flow_id"])]: flow for flow in flows
         }
         self.assertEqual(len(flow_rows), 4)
         self.assertEqual(len({row.track_id for row in flow_rows}), 4)
