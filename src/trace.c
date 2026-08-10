@@ -40,13 +40,34 @@ static bool trace_name_matches(const trace_t *trace, const char *name)
 
 bool trace_event_visible(const trace_t *trace, const event_t *event)
 {
+	static const char *const compact_events[] = {
+		"sk_alloc",
+		"inet_sock_set_state",
+		"tcp_sendmsg",
+		"tcp_recvmsg",
+		"tcp_close",
+		"__tcp_transmit_skb",
+		"tcp_v4_rcv",
+		"tcp_v6_rcv",
+		"udp_sendmsg",
+		"udpv6_sendmsg",
+		"udp_rcv",
+		"udpv6_rcv",
+		"udp_recvmsg",
+		"udpv6_recvmsg",
+	};
+	size_t i;
+
 	if (!trace || !event || !trace_ctx.bpf_args.perfetto ||
 	    trace_ctx.args.trace_detail)
 		return true;
 	if (trace_name_matches(trace, "ip_output") ||
 	    trace_name_matches(trace, "ip6_output"))
 		return event->pkt.proto_l4 == IPPROTO_UDP;
-	return true;
+	for (i = 0; i < sizeof(compact_events) / sizeof(compact_events[0]); i++)
+		if (trace_name_matches(trace, compact_events[i]))
+			return true;
+	return false;
 }
 
 const char *trace_event_name(const trace_t *trace, const event_t *event)

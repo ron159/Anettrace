@@ -106,6 +106,7 @@ Ctrl-C 时会先打印最后一个未满统计区间。联合采集不需要也�
 需要查看原来的 TCP/IP、qdisc、NIC、skb clone/free 等完整内核函数链时追加
 `--trace-detail`。该开关只控制 Anettrace 网络事件粒度，不改变系统 Perfetto 的
 `full`/`sched` profile。
+为维持 skb/owner 关联而自动附加的 clone/free 依赖探针在精简模式中不会打印或导出。
 
 导出器每 5 秒以及结束时记录一次 `MONOTONIC/BOOTTIME/REALTIME` 时钟快照；转换后的网络
 事件保留 `CLOCK_MONOTONIC` 时钟域，由 Trace Processor 使用最近快照对齐到 Android 系统

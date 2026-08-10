@@ -127,6 +127,8 @@ require_text 'perfetto_compact_traces' src/trace.c
 require_text 'perfetto_detailed_traces' src/trace.c
 require_text 'trace_event_visible' src/perfetto_export.c
 require_text 'event->pkt.proto_l4 == IPPROTO_UDP' src/trace.c
+require_text 'static const char *const compact_events[]' src/trace.c
+require_text 'return false;' src/trace.c
 require_text '"TCP SYN send"' src/trace.c
 require_text '"TCP packet receive"' src/trace.c
 require_text '"DNS query send"' src/trace.c
