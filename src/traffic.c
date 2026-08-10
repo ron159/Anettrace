@@ -159,13 +159,15 @@ static int traffic_print_snapshot(struct traffic *skel, trace_args_t *args,
 			remote_width = width;
 	}
 	ts_print_ts(timestamp, now_ns, args->time_mode);
-	printf("\n%sTraffic %s (cumulative per flow)\n", timestamp,
+	printf("\n%sTraffic %s (cumulative application payload per flow)\n",
+	       timestamp,
 	       trace_ctx.bpf_args.pkt.l4_proto ?
 	       traffic_protocol_name(trace_ctx.bpf_args.pkt.l4_proto) :
 	       "TCP/UDP");
 	printf("%-7s %-7s %-16s %-3s %-2s %-*s %-*s %10s %10s\n",
 	       "PID", "TID", "COMM", "P", "AF", local_width,
-	       "LADDR:PORT", remote_width, "RADDR:PORT", "TX_KB", "RX_KB");
+	       "LADDR:PORT", remote_width, "RADDR:PORT", "APP_TX_KB",
+	       "APP_RX_KB");
 	for (i = 0; i < count; i++)
 		traffic_print_row(&rows[i], local_width, remote_width);
 	if (!count)
@@ -340,6 +342,8 @@ int traffic_run(trace_args_t *args, bpf_args_t *bpf_args)
 		bpf_args->pkt.l4_proto ?
 		traffic_protocol_name(bpf_args->pkt.l4_proto) : "TCP/UDP",
 		args->traffic_interval);
+	pr_info("Traffic bytes are successful sendmsg/recvmsg application payload; "
+		"Wireshark wire bytes also include headers, control packets, and retransmits.\n");
 
 	while (!traffic_exiting) {
 		struct timespec delay = {
@@ -349,14 +353,12 @@ int traffic_run(trace_args_t *args, bpf_args_t *bpf_args)
 		while (nanosleep(&delay, &delay) && errno == EINTR &&
 		       !traffic_exiting)
 			;
-		if (traffic_exiting)
-			break;
 		now_ns = traffic_monotonic_ns();
 		traffic_print_snapshot(skel, args, rows, last_report_ns, now_ns);
 		traffic_report_drops(skel, previous_drops);
 		last_report_ns = now_ns;
 		reports++;
-		if (args->count && reports >= args->count)
+		if (traffic_exiting || (args->count && reports >= args->count))
 			break;
 	}
 

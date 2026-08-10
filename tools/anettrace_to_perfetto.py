@@ -162,9 +162,8 @@ class PerfettoExporter:
         uuid = self.socket_tracks.get(socket_id)
         if uuid is not None:
             return uuid
-        parent_uuid = self.process_track(
-            int(record.get("tgid", 0)), str(record.get("task", ""))
-        )
+        tgid = int(record.get("tgid", record.get("owner_tgid", 0)))
+        parent_uuid = self.process_track(tgid, str(record.get("task", "")))
         uuid = stable_uuid("socket", socket_id)
         self.descriptor(uuid, f"socket {socket_id[-8:]}", parent_uuid)
         self.socket_tracks[socket_id] = uuid
@@ -176,7 +175,12 @@ class PerfettoExporter:
             return uuid
         owner_tgid = int(record.get("owner_tgid", record.get("tgid", 0)))
         task = str(record.get("task", ""))
-        parent_uuid = self.process_track(owner_tgid, task)
+        socket_id = str(record.get("socket_id", ""))
+        parent_uuid = (
+            self.socket_track(socket_id, record)
+            if socket_id and int(socket_id, 16)
+            else self.process_track(owner_tgid, task)
+        )
         uuid = stable_uuid("flow", flow_id)
         name = (
             f"{self.flow_label(flow_id, record)} "
@@ -513,6 +517,7 @@ class PerfettoExporter:
                 flow_record,
                 (
                     "flow_id",
+                    "byte_scope",
                     "duration_ns",
                     "tx_bytes",
                     "rx_bytes",

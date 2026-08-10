@@ -492,6 +492,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     target = parser.add_argument_group("Anettrace filter")
     target.add_argument("--uid", type=int, help="Android UID to trace")
     target.add_argument("--pid", type=int, help="exact Android thread ID to trace")
+    target.add_argument(
+        "--trace-detail",
+        action="store_true",
+        help="keep detailed kernel network stages instead of compact stages",
+    )
 
     parser.add_argument(
         "--profile",
@@ -655,11 +660,19 @@ def capture(args: argparse.Namespace) -> Path:
             filter_args.extend(["--uid", str(args.uid)])
         if args.pid is not None:
             filter_args.extend(["--pid", str(args.pid)])
+        trace_mode_args = ["--trace-detail"] if args.trace_detail else []
+        anettrace_parts = [
+            remote_binary,
+            "--perfetto-events",
+            remote_events,
+            *trace_mode_args,
+            *filter_args,
+            "-v",
+        ]
         anettrace_command = " ".join(
-            shlex.quote(part)
-            for part in [remote_binary, "--perfetto-events", remote_events, *filter_args, "-v"]
+            shlex.quote(part) for part in anettrace_parts
         )
-        commands["anettrace"] = [remote_binary, "--perfetto-events", remote_events, *filter_args, "-v"]
+        commands["anettrace"] = anettrace_parts
         anettrace_process = start_remote(adb, "anettrace", anettrace_command, remote_dir)
         remote_processes.append(anettrace_process)
         time.sleep(0.2)

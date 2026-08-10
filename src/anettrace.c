@@ -135,7 +135,7 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "traffic", .dest = &trace_args->traffic,
 			.type = OPTION_BOOL,
-			.desc = "show per-thread TCP/UDP traffic totals instead of socket lifecycle",
+			.desc = "run standalone per-thread TCP/UDP application-byte accounting",
 		},
 		{
 			.lname = "interval", .dest = &trace_args->traffic_interval,
@@ -255,6 +255,11 @@ static void do_parse_args(int argc, char *argv[])
 			.lname = "capture-trace", .dest = &trace_args->capture_trace,
 			.type = OPTION_BOOL,
 			.desc = "capture system trace plus Anettrace events into one Perfetto trace",
+		},
+		{
+			.lname = "trace-detail", .dest = &trace_args->trace_detail,
+			.type = OPTION_BOOL,
+			.desc = "include detailed kernel network stages (default compact)",
 		},
 		{
 			.lname = "trace-profile", .dest = &trace_args->trace_profile,
@@ -409,8 +414,9 @@ static void do_parse_args(int argc, char *argv[])
 		pr_version();
 		exit(0);
 	}
-	if (trace_args->capture_trace && trace_args->traffic) {
-		pr_err("--capture-trace cannot be used with --traffic\n");
+	if (trace_args->traffic &&
+	    (trace_args->capture_trace || trace_args->perfetto_events)) {
+		pr_err("--traffic is standalone; run traffic and trace capture separately\n");
 		goto err;
 	}
 	if (trace_args->capture_trace && trace_args->perfetto_events) {
@@ -427,6 +433,11 @@ static void do_parse_args(int argc, char *argv[])
 	}
 	if (trace_args->trace_profile && !trace_args->capture_trace) {
 		pr_err("--trace-profile requires --capture-trace\n");
+		goto err;
+	}
+	if (trace_args->trace_detail && !trace_args->capture_trace &&
+	    !trace_args->perfetto_events) {
+		pr_err("--trace-detail requires --capture-trace or --perfetto-events\n");
 		goto err;
 	}
 	if (trace_args->capture_trace && trace_args->trace_profile &&

@@ -143,14 +143,18 @@ static void analy_entry_output(analy_entry_t *entry, analy_entry_t *prev)
 	static char buf[1024], tinfo[512], func_range[512], __func_range[500];
 	int time_mode = trace_ctx.args.time_mode;
 	event_t *e = entry->event;
+	const char *trace_name;
 	rule_t *rule;
 	trace_t *t;
 
 	t = get_trace_from_analy_entry(entry);
+	if (e->meta != FUNC_TYPE_TINY && !trace_event_visible(t, e))
+		return;
+	trace_name = trace_event_name(t, e);
 	pr_debug("output entry(%llx)\n", PTR2X(entry));
 	if (e->meta == FUNC_TYPE_TINY) {
 		ts_print_ts(buf, ((tiny_event_t *)(void *)e)->ts, time_mode);
-		sprintf_end(buf, "[%-20s]", t->name);
+		sprintf_end(buf, "[%-20s]", trace_name);
 		goto do_latency;
 	}
 
@@ -178,10 +182,10 @@ static void analy_entry_output(analy_entry_t *entry, analy_entry_t *prev)
 			ifname = "";
 
 		sprintf(tinfo, "[%x][%-20s]%s[cpu:%-3u][%-5s][%s-tid:%u/pid:%u][uid:%u][ns:%u] ",
-			detail->key, t->name, func_range, entry->cpu, ifname,
+			detail->key, trace_name, func_range, entry->cpu, ifname,
 			detail->task, e->tid, e->tgid, e->uid, detail->netns);
 	} else if (trace_ctx.mode != TRACE_MODE_DROP) {
-		sprintf(tinfo, "[%-20s]%s[tid:%u/pid:%u][uid:%u] ", t->name, func_range,
+		sprintf(tinfo, "[%-20s]%s[tid:%u/pid:%u][uid:%u] ", trace_name, func_range,
 			e->tid, e->tgid, e->uid);
 	}
 

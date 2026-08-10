@@ -87,20 +87,25 @@ perf event / map 快照 -> 用户态聚合、规则匹配、格式化输出
    `src/output.c` 与 `src/traffic.c` 生成最终输出。
 
 `--traffic` 是独立统计通路：它在 TCP/UDP send/recv 的入口保存调用上下文，
-在返回点按真实返回值累计字节，因此显示的是可归属到线程的应用层流量，不包含纯内核转发流量。
-联合采集不需要也不会启动这套独立通路；`--capture-trace` 自身会在
-`tcp/udp/udpv6 sendmsg/recvmsg` 返回点统计实际字节，并写入对应的五元组 flow。
+在返回点按真实返回值累计字节，因此 `APP_TX_KB/APP_RX_KB` 显示的是可归属到线程的应用
+payload，不包含协议头、SYN/ACK/FIN、重传、纯内核转发，以及尚未被应用读取的数据。收到
+Ctrl-C 时会先打印最后一个未满统计区间。联合采集不需要也不会启动这套独立 skeleton；
+`--capture-trace` 自身会在 `tcp/udp/udpv6 sendmsg/recvmsg` 返回点统计实际字节，并写入对应的
+五元组 flow。两个模式不能在同一个进程组合，但可以分别启动两个 Anettrace 进程独立使用。
 
 ### Perfetto 联合时间线
 
-`--perfetto-events FILE` 启用最小数据导出，默认采集：
+`--perfetto-events FILE` 和 `--capture-trace` 默认使用精简网络模式，只采集并显示关键工作点：
 
 - `sk_alloc` 的 socket 分配开始/结束；
-- `sock:inet_sock_set_state`、`tcp_close` 等 TCP 生命周期事件；
-- `tcp_sendmsg`/`tcp_sendmsg_locked` 到 TCP/IP、qdisc/NIC 发送点，以及
-  `consume_skb`/`kfree_skb`
-  结束点；
+- TCP 状态变化、socket close、应用 write/read；
+- TCP SYN/SYN-ACK/RST/FIN、普通 packet send/receive；
+- DNS query/response send/receive；
 - 每个事件的单调时钟时间、TID/TGID/UID、CPU、网卡和协议元数据。
+
+需要查看原来的 TCP/IP、qdisc、NIC、skb clone/free 等完整内核函数链时追加
+`--trace-detail`。该开关只控制 Anettrace 网络事件粒度，不改变系统 Perfetto 的
+`full`/`sched` profile。
 
 导出器每 5 秒以及结束时记录一次 `MONOTONIC/BOOTTIME/REALTIME` 时钟快照；转换后的网络
 事件保留 `CLOCK_MONOTONIC` 时钟域，由 Trace Processor 使用最近快照对齐到 Android 系统
@@ -120,6 +125,12 @@ buffer 生命周期。socket lifetime 在 `tcp_close` 或采集结束时闭合�
 adb shell
 cd /data/local/tmp
 ./anettrace --capture-trace --uid 10187
+```
+
+详细网络函数模式：
+
+```shell
+./anettrace --capture-trace --trace-detail --uid 10187
 ```
 
 设置采集时长和最终文件：
@@ -193,10 +204,14 @@ RX 内核事件保留 NAPI/softirq 的真实线程轨道，应用线程只显示
 每个 packet instant event 使用按本次 trace 首次出现顺序生成的可读名称作为事件名：TCP、
 普通 UDP 和 DNS 分别独立编号为 `tcp-1`、`udp-1`、`dns-1`。完整 64 位 `flow_id` 仍写入
 Perfetto `correlation_id`，因此同一条流的 TX/RX 和不同内核阶段显示相同名称并使用同一颜色；
-原内核函数名保留在 `stage` 属性中，完整五元组仍可精确检索。
+精简模式的 `stage` 使用 `TCP SYN send`、`TCP packet receive`、`DNS query send` 等语义名称，
+`--trace-detail` 下则保留原内核函数名，完整五元组始终可精确检索。
 
-每条五元组还会生成独立的 `anettrace.flow` duration track，而不是把并发请求都堆在公共网络
-线程上。slice 结束点包含 `duration_ns`、TX/RX 字节、TX/RX 包数、owner、两端地址端口、
+每条五元组还会生成独立的 `anettrace.flow` duration track，并作为对应 socket track 的子轨道
+显示，而不是把并发请求都堆在公共网络线程上。socket lifetime 表示内核 socket 对象的存活区间；
+flow 表示一条五元组活动区间，一个 UDP socket 可以有多条 flow，因此二者只做层级合并、不合成
+同一条 slice。flow 结束点包含 `duration_ns`、`byte_scope=application_payload`、TX/RX 字节、
+TX/RX 包数、owner、两端地址端口、
 `end_reason` 和 `incomplete`：TCP 在 `tcp_close` 结束，DNS/UDP 在 5 秒空闲后结束，采集窗口内
 未自然结束的流在 `trace_end` 截断。同一线程交替处理多条 TCP/DNS 流时，可直接按
 `tcp-N`/`dns-N` 名称、颜色和独立 flow track 区分。编号仅在单次 trace 内有效，每次采集从 1

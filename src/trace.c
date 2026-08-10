@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MulanPSL-2.0
 
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <list.h>
 #include <errno.h>
@@ -25,6 +26,82 @@ trace_context_t trace_ctx = {
 extern trace_ops_t tracing_ops;
 extern trace_ops_t probe_ops;
 trace_ops_t *trace_ops_all[] = { &tracing_ops, &probe_ops };
+
+static bool trace_name_matches(const trace_t *trace, const char *name)
+{
+	size_t length;
+
+	if (!trace || !name)
+		return false;
+	length = strlen(name);
+	return !strncmp(trace->name, name, length) &&
+	       (!trace->name[length] || trace->name[length] == '.');
+}
+
+bool trace_event_visible(const trace_t *trace, const event_t *event)
+{
+	if (!trace || !event || !trace_ctx.bpf_args.perfetto ||
+	    trace_ctx.args.trace_detail)
+		return true;
+	if (trace_name_matches(trace, "ip_output") ||
+	    trace_name_matches(trace, "ip6_output"))
+		return event->pkt.proto_l4 == IPPROTO_UDP;
+	return true;
+}
+
+const char *trace_event_name(const trace_t *trace, const event_t *event)
+{
+	const packet_t *packet;
+	bool tx;
+
+	if (!trace)
+		return "unknown";
+	if (!trace_ctx.bpf_args.perfetto || trace_ctx.args.trace_detail)
+		return trace->name;
+	if (trace_name_matches(trace, "sk_alloc"))
+		return "socket create";
+	if (trace_name_matches(trace, "inet_sock_set_state"))
+		return "TCP state change";
+	if (trace_name_matches(trace, "tcp_close"))
+		return "TCP socket close";
+	if (trace_name_matches(trace, "tcp_sendmsg"))
+		return "TCP write";
+	if (trace_name_matches(trace, "tcp_recvmsg"))
+		return "TCP read";
+	if (trace_name_matches(trace, "udp_sendmsg") ||
+	    trace_name_matches(trace, "udpv6_sendmsg"))
+		return "DNS write";
+	if (trace_name_matches(trace, "udp_recvmsg") ||
+	    trace_name_matches(trace, "udpv6_recvmsg"))
+		return "DNS read";
+	if (!event)
+		return trace->name;
+
+	packet = &event->pkt;
+	tx = trace_name_matches(trace, "__tcp_transmit_skb");
+	if (tx || trace_name_matches(trace, "tcp_v4_rcv") ||
+	    trace_name_matches(trace, "tcp_v6_rcv")) {
+		if (packet->l4.tcp.flags & TCP_FLAGS_SYN)
+			return packet->l4.tcp.flags & TCP_FLAGS_ACK ?
+			       (tx ? "TCP SYN-ACK send" : "TCP SYN-ACK receive") :
+			       (tx ? "TCP SYN send" : "TCP SYN receive");
+		if (packet->l4.tcp.flags & TCP_FLAGS_RST)
+			return tx ? "TCP RST send" : "TCP RST receive";
+		if (packet->l4.tcp.flags & TCP_FLAGS_FIN)
+			return tx ? "TCP FIN send" : "TCP FIN receive";
+		return tx ? "TCP packet send" : "TCP packet receive";
+	}
+	if (trace_name_matches(trace, "ip_output") ||
+	    trace_name_matches(trace, "ip6_output"))
+		return packet->proto_l4 == IPPROTO_UDP &&
+		       ntohs(packet->l4.min.dport) == 53 ?
+		       "DNS query send" : "DNS response send";
+	if (trace_name_matches(trace, "udp_rcv") ||
+	    trace_name_matches(trace, "udpv6_rcv"))
+		return ntohs(packet->l4.min.sport) == 53 ?
+		       "DNS response receive" : "DNS query receive";
+	return trace->name;
+}
 
 static bool trace_group_valid(trace_group_t *group)
 {
@@ -451,7 +528,12 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		&trace_ip6_finish_output, &trace___dev_queue_xmit,
 		&trace_dev_hard_start_xmit,
 	};
-	static char perfetto_traces[] =
+	static char perfetto_compact_traces[] =
+		"sk_alloc,inet_sock_set_state,tcp_sendmsg,tcp_recvmsg,tcp_close,"
+		"__tcp_transmit_skb,udp_sendmsg,udpv6_sendmsg,"
+		"ip_output,ip6_output,tcp_v4_rcv,tcp_v6_rcv,"
+		"udp_rcv,udpv6_rcv,udp_recvmsg,udpv6_recvmsg";
+	static char perfetto_detailed_traces[] =
 		"sk_alloc,inet_sock_set_state,inet_listen,tcp_sendmsg,"
 		"tcp_sendmsg_locked,"
 		"tcp_recvmsg,tcp_close,tcp_v4_destroy_sock,tcp_skb_entail,"
@@ -477,7 +559,8 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		bpf_args->perfetto = true;
 		bpf_args->detail = true;
 		if (!args->traces)
-			args->traces = perfetto_traces;
+			args->traces = args->trace_detail ? perfetto_detailed_traces :
+							   perfetto_compact_traces;
 		trace_set_ret(&trace_sk_alloc);
 		trace_set_ret(&trace_tcp_sendmsg);
 		trace_set_ret(&trace_tcp_recvmsg);

@@ -138,8 +138,20 @@ class PerfettoConverterTest(unittest.TestCase):
         self.assertEqual(flow_annotations["rx_bytes"].uint_value, 512)
         self.assertEqual(flow_annotations["tx_packets"].uint_value, 1)
         self.assertEqual(flow_annotations["rx_packets"].uint_value, 1)
+        self.assertEqual(
+            flow_annotations["byte_scope"].string_value, "application_payload"
+        )
         self.assertEqual(flow_annotations["end_reason"].string_value, "tcp_close")
         self.assertFalse(flow_annotations["incomplete"].bool_value)
+
+        descriptors = {
+            packet.track_descriptor.uuid: packet.track_descriptor
+            for packet in trace.packet
+            if packet.HasField("track_descriptor")
+        }
+        socket_parent = descriptors[flow_track].parent_uuid
+        self.assertEqual(descriptors[socket_parent].name, "socket 00001001")
+        self.assertNotEqual(descriptors[socket_parent].parent_uuid, 0)
 
         lifetime_begins = [
             packet.track_event
@@ -440,14 +452,16 @@ class PerfettoConverterTest(unittest.TestCase):
             and "anettrace.flow" in packet.track_event.categories
         }
         self.assertEqual(len(end_by_track), 4)
+        flow_parents = {
+            descriptors[packet.track_event.track_uuid].parent_uuid
+            for packet in begins
+        }
+        self.assertEqual(len(flow_parents), 4)
+        self.assertTrue(
+            all(descriptors[parent].name.startswith("socket ") for parent in flow_parents)
+        )
         self.assertEqual(
-            len(
-                {
-                    descriptors[packet.track_event.track_uuid].parent_uuid
-                    for packet in begins
-                }
-            ),
-            1,
+            len({descriptors[parent].parent_uuid for parent in flow_parents}), 1
         )
 
         for flow_id, flow in expected_by_id.items():

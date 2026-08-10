@@ -54,6 +54,10 @@ class CliContractTest(unittest.TestCase):
         self.assertEqual(full.duration, 20)
         self.assertEqual(long_capture.duration, 600)
 
+    def test_trace_detail_is_forwarded_explicitly(self) -> None:
+        args = MODULE.parse_args(["--uid", "10000", "--trace-detail"])
+        self.assertTrue(args.trace_detail)
+
     def test_uid_zero_needs_exact_tid(self) -> None:
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             MODULE.parse_args(["--uid", "0"])
@@ -202,6 +206,7 @@ class SuccessfulCaptureTest(unittest.TestCase):
                     "10000",
                     "--duration",
                     "1",
+                    "--trace-detail",
                     "--skip-convert",
                     "--anettrace",
                     str(binary),
@@ -216,6 +221,7 @@ class SuccessfulCaptureTest(unittest.TestCase):
             self.assertEqual(manifest["status"], "success")
             self.assertEqual(manifest["device"]["boot_id"], "boot-123")
             self.assertEqual(manifest["anettrace"]["lost_events"], 0)
+            self.assertIn("--trace-detail", manifest["commands"]["anettrace"])
             output_names = {record["path"] for record in manifest["outputs"]}
             self.assertIn("anettrace-events.jsonl", output_names)
             self.assertIn("system.pftrace", output_names)

@@ -851,7 +851,7 @@ static const char *flow_protocol_name(const struct flow_state *flow)
 
 static struct native_track *native_flow_track(struct flow_state *flow)
 {
-	struct native_track *track, *process;
+	struct native_track *track, *parent;
 	char tag[16], name[160];
 	u64 uuid;
 
@@ -859,8 +859,11 @@ static struct native_track *native_flow_track(struct flow_state *flow)
 	track = native_find_track(uuid);
 	if (track)
 		return track;
-	process = native_process_track(flow->owner_tgid, flow->task);
-	if (!process)
+	parent = flow->socket_id ?
+		 native_socket_track(flow->socket_id, flow->owner_tgid,
+				     flow->task) :
+		 native_process_track(flow->owner_tgid, flow->task);
+	if (!parent)
 		return NULL;
 	format_flow_label(flow, tag, sizeof(tag));
 	snprintf(name, sizeof(name), "%s %s %s:%u -> %s:%u", tag,
@@ -868,7 +871,7 @@ static struct native_track *native_flow_track(struct flow_state *flow)
 		 flow->remote_addr, flow->remote_port);
 	track = native_add_track(uuid, flow->id, NATIVE_TRACK_FLOW);
 	if (track)
-		native_descriptor(uuid, name, process->uuid, NATIVE_TRACK_FLOW,
+		native_descriptor(uuid, name, parent->uuid, NATIVE_TRACK_FLOW,
 				  flow->owner_tgid, 0);
 	return track;
 }
@@ -939,6 +942,7 @@ static void flow_finish(struct flow_state *flow, u64 end_ts,
 			"\"last_ts_ns\":%llu,\"duration_ns\":%llu,"
 			"\"flow_id\":\"%016llx\",\"flow_tag\":\"%s\","
 			"\"protocol\":\"%s\",\"socket_id\":\"%016llx\","
+			"\"byte_scope\":\"application_payload\","
 			"\"tx_bytes\":%llu,\"rx_bytes\":%llu,"
 			"\"tx_packets\":%llu,\"rx_packets\":%llu,"
 			"\"owner_tid\":%u,\"owner_tgid\":%u,"
@@ -961,6 +965,7 @@ static void flow_finish(struct flow_state *flow, u64 end_ts,
 		native_annotation_string(&event, "protocol",
 					 flow_protocol_name(flow));
 		native_annotation_id(&event, "socket_id", flow->socket_id);
+		native_annotation_string(&event, "byte_scope", "application_payload");
 		native_annotation_uint(&event, "duration_ns", duration);
 		native_annotation_uint(&event, "tx_bytes", flow->tx_bytes);
 		native_annotation_uint(&event, "rx_bytes", flow->rx_bytes);
@@ -1175,13 +1180,14 @@ static struct pending_io *pending_io_add(u16 func, u32 tid)
 	return pending;
 }
 
-static void pending_io_emit_start(struct pending_io *pending,
-				  trace_t *trace, struct flow_state *flow)
+static void pending_io_emit_start(struct pending_io *pending, trace_t *trace,
+				  struct flow_state *flow)
 {
 	struct proto_buffer event = {};
 	const char *type = pending->tx ? "tx_write_start" : "rx_read_start";
 	const char *category = pending->tx ?
 			       "anettrace.tx.write" : "anettrace.rx.read";
+	const char *stage = trace_event_name(trace, NULL);
 	char task[64];
 
 	if (!pending || pending->visible || !flow)
@@ -1197,14 +1203,14 @@ static void pending_io_emit_start(struct pending_io *pending,
 			"\"tgid\":%u,\"uid\":%u,\"task\":\"%s\","
 			"\"owner_tid\":%u,\"owner_tgid\":%u,"
 			"\"owner_uid\":%u}\n",
-			PERFETTO_SCHEMA, type, pending->start_ts, trace->name,
+			PERFETTO_SCHEMA, type, pending->start_ts, stage,
 			pending->socket_id, flow->id, flow_protocol_name(flow),
 			pending->cpu, pending->tid, pending->tgid, pending->uid,
 			task, pending->owner_tid, pending->owner_tgid,
 			pending->owner_uid);
 	if (native_file && pending->native_track_uuid) {
-		native_event_start(&event, 1, pending->native_track_uuid,
-				   trace->name, category);
+		native_event_start(&event, 1, pending->native_track_uuid, stage,
+				   category);
 		native_annotation_id(&event, "socket_id", pending->socket_id);
 		native_annotation_id(&event, "flow_id", flow->id);
 		native_annotation_string(&event, "protocol",
@@ -1223,6 +1229,7 @@ static void pending_io_finish(struct pending_io *pending, u64 timestamp_ns,
 	struct flow_state *flow = NULL;
 	struct proto_buffer event = {};
 	trace_t *trace;
+	const char *stage;
 	u64 bytes = result > 0 ? (u64)result : 0;
 	u64 error = result < 0 ? (u64)-result : 0;
 	const char *type, *category;
@@ -1231,6 +1238,7 @@ static void pending_io_finish(struct pending_io *pending, u64 timestamp_ns,
 	if (!pending || !pending->active)
 		return;
 	trace = get_trace(pending->func);
+	stage = trace_event_name(trace, NULL);
 	protocol = trace && !strncmp(trace->name, "tcp_", 4) ?
 		   IPPROTO_TCP : IPPROTO_UDP;
 	if (pending->flow_id)
@@ -1259,8 +1267,8 @@ static void pending_io_finish(struct pending_io *pending, u64 timestamp_ns,
 			"\"socket_id\":\"%016llx\",\"flow_id\":\"%016llx\","
 			"\"result\":%lld,\"bytes\":%llu,\"error\":%llu,"
 			"\"incomplete\":%s}\n",
-			PERFETTO_SCHEMA, type, timestamp_ns,
-			trace ? trace->name : "msg", pending->tid,
+			PERFETTO_SCHEMA, type, timestamp_ns, stage,
+			pending->tid,
 			pending->socket_id, pending->flow_id, result, bytes, error,
 			incomplete ? "true" : "false");
 	if (native_file && pending->native_track_uuid) {
@@ -1413,6 +1421,7 @@ static void native_export_socket_event(const detail_event_t *detail,
 	struct native_track *thread, *socket;
 	struct proto_buffer track_event = {};
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
+	const char *stage = trace_event_name(trace, event);
 	bool terminal = !strcmp(trace->name, "tcp_close") ||
 			!strcmp(trace->name, "tcp_v4_destroy_sock");
 
@@ -1423,7 +1432,7 @@ static void native_export_socket_event(const detail_event_t *detail,
 	if (!terminal)
 		native_open_socket(socket, event->ske.ts);
 	socket_addresses(&event->ske, source, sizeof(source), dest, sizeof(dest));
-	native_event_start(&track_event, 3, thread->uuid, trace->name,
+	native_event_start(&track_event, 3, thread->uuid, stage,
 			   "anettrace.socket");
 	native_event_flow(&track_event, socket_id, terminal);
 	native_annotation_id(&track_event, "socket_id", socket_id);
@@ -1467,6 +1476,7 @@ static void native_export_packet_event(const detail_event_t *detail,
 	struct proto_buffer track_event = {};
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
 	char flow_tag[16];
+	const char *stage = trace_event_name(trace, event);
 	bool dropped = TRACE_HAS_ANALYZER(trace, drop);
 	bool terminal = dropped || TRACE_HAS_ANALYZER(trace, free) ||
 			(trace->status & TRACE_CFREE);
@@ -1481,7 +1491,7 @@ static void native_export_packet_event(const detail_event_t *detail,
 			   "anettrace.packet");
 	native_event_flow(&track_event, id, terminal);
 	native_event_correlation(&track_event, flow_id);
-	native_annotation_string(&track_event, "stage", trace->name);
+	native_annotation_string(&track_event, "stage", stage);
 	native_annotation_id(&track_event, "packet_id", id);
 	native_annotation_id(&track_event, "skb_id",
 			     object_id("skb", event->key));
@@ -1749,6 +1759,7 @@ static void export_socket_event(const detail_event_t *detail, trace_t *trace,
 		object_id("socket", detail->owner_socket_key) : 0;
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
 	char task[64], ifname[64];
+	const char *stage = trace_event_name(trace, event);
 	bool terminal = !strcmp(trace->name, "tcp_close") ||
 			!strcmp(trace->name, "tcp_v4_destroy_sock");
 
@@ -1768,7 +1779,7 @@ static void export_socket_event(const detail_event_t *detail, trace_t *trace,
 		"\"saddr\":\"%s\",\"sport\":%u,"
 		"\"daddr\":\"%s\",\"dport\":%u}\n",
 		PERFETTO_SCHEMA, event->ske.ts, object_id("socket", event->key),
-		socket_flow_id(&event->ske), trace->name,
+		socket_flow_id(&event->ske), stage,
 		terminal ? "true" : "false", cpu, event->tid, event->tgid,
 		event->uid, task, direction_name(detail->direction),
 		detail->owner_valid ? "true" : "false", detail->owner_tid,
@@ -1788,6 +1799,7 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 		object_id("socket", detail->owner_socket_key) : 0;
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
 	char task[64], ifname[64], flow_tag[16];
+	const char *stage = trace_event_name(trace, event);
 	bool dropped = TRACE_HAS_ANALYZER(trace, drop);
 	bool terminal = dropped || TRACE_HAS_ANALYZER(trace, free) ||
 			(trace->status & TRACE_CFREE);
@@ -1813,7 +1825,7 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 		"\"daddr\":\"%s\",\"dport\":%u,\"mark\":%u,"
 		"\"tcp_seq\":%u,\"tcp_ack\":%u,\"tcp_flags\":%u}\n",
 		PERFETTO_SCHEMA, pkt->ts, packet_id(pkt, event->key),
-		object_id("skb", event->key), flow_id, flow_tag, trace->name,
+		object_id("skb", event->key), flow_id, flow_tag, stage,
 		terminal ? "true" : "false",
 		dropped ? "true" : "false", cpu, event->tid, event->tgid,
 		event->uid, task, ifname, direction_name(detail->direction),
@@ -1868,6 +1880,8 @@ void perfetto_export_event(const void *data, int cpu, u32 size)
 	if (meta != FUNC_TYPE_FUNC)
 		return;
 	if (!trace || size < sizeof(detail_event_t))
+		return;
+	if (!trace_event_visible(trace, event))
 		return;
 
 	pthread_mutex_lock(&export_lock);

@@ -130,6 +130,7 @@ typedef struct trace_args {
 	char *tcp_flags;
 	char *perfetto_events;
 	bool capture_trace;
+	bool trace_detail;
 	char *trace_profile;
 	u32 duration;
 	char *output;
@@ -184,6 +185,9 @@ extern trace_group_t root_group;
 extern int trace_count;
 extern struct list_head trace_list;
 extern u32 ctx_count;
+
+const char *trace_event_name(const trace_t *trace, const event_t *event);
+bool trace_event_visible(const trace_t *trace, const event_t *event);
 
 #define DECLARE_TRACES(name, ...) extern trace_t trace_##name;
 DEFINE_ALL_PROBES(DECLARE_TRACES, DECLARE_TRACES, DECLARE_TRACES)

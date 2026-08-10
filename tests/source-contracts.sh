@@ -39,6 +39,8 @@ require_text 'bpf_program__attach_kprobe' src/trace_probe.c
 require_text 'progs/kprobe' src/Makefile
 require_text '.lname = "traffic"' src/anettrace.c
 require_text '.lname = "interval"' src/anettrace.c
+require_text '--traffic is standalone; run traffic and trace capture separately' \
+	src/anettrace.c
 require_text 'progs/traffic' src/Makefile
 require_text 'SEC("kprobe/tcp_sendmsg")' src/progs/traffic.c
 require_text 'SEC("kretprobe/tcp_recvmsg")' src/progs/traffic.c
@@ -46,7 +48,11 @@ require_text 'SEC("kprobe/udp_sendmsg")' src/progs/traffic.c
 require_text 'SEC("kprobe/udpv6_recvmsg")' src/progs/traffic.c
 require_text 'BPF_MAP_TYPE_LRU_HASH' src/progs/traffic.c
 require_text '(s32)PT_REGS_RC(ctx)' src/progs/traffic.c
-require_text 'TX_KB' src/traffic.c
+require_text 'APP_TX_KB' src/traffic.c
+require_text 'APP_RX_KB' src/traffic.c
+require_text 'cumulative application payload per flow' src/traffic.c
+require_text 'traffic_exiting || (args->count && reports >= args->count)' \
+	src/traffic.c
 require_text 'LADDR:PORT' src/traffic.c
 require_text 'traffic_print_snapshot' src/traffic.c
 require_text '.lname = "perfetto-events"' src/anettrace.c
@@ -69,7 +75,7 @@ require_text 'format_packet_flow_label(flow_id, pkt, flow_tag, sizeof(flow_tag))
 require_text 'flow->display_index = ++tcp_flow_count;' src/perfetto_export.c
 require_text 'flow->display_index = ++dns_flow_count;' src/perfetto_export.c
 require_text 'flow->display_index = ++udp_flow_count;' src/perfetto_export.c
-require_text 'native_annotation_string(&track_event, "stage", trace->name);' \
+require_text 'native_annotation_string(&track_event, "stage", stage);' \
 	src/perfetto_export.c
 require_text 'native_event_correlation(&track_event, flow_id);' \
 	src/perfetto_export.c
@@ -79,6 +85,9 @@ require_text '"tx_write_start"' src/perfetto_export.c
 require_text '"tx_write_end"' src/perfetto_export.c
 require_text '"anettrace.rx.read"' src/perfetto_export.c
 require_text '"anettrace.flow"' src/perfetto_export.c
+require_text '"byte_scope", "application_payload"' src/perfetto_export.c
+require_text 'native_socket_track(flow->socket_id, flow->owner_tgid' \
+	src/perfetto_export.c
 require_text '"idle_timeout"' src/perfetto_export.c
 require_text 'flow->tx_bytes += bytes;' src/perfetto_export.c
 require_text 'flow->rx_bytes += bytes;' src/perfetto_export.c
@@ -95,6 +104,9 @@ require_text '\"skb_id\":' src/perfetto_export.c
 require_text 'CLOCK_SNAPSHOT_INTERVAL_NS' src/perfetto_export.c
 require_text 'perfetto_export_tick();' src/trace.c
 require_text '.lname = "capture-trace"' src/anettrace.c
+require_text '.lname = "trace-detail"' src/anettrace.c
+require_text '--trace-detail requires --capture-trace or --perfetto-events' \
+	src/anettrace.c
 require_text '.lname = "trace-profile"' src/anettrace.c
 require_text 'trace_args->trace_profile = "full"' src/anettrace.c
 require_text '.lname = "duration"' src/anettrace.c
@@ -111,6 +123,14 @@ require_text 'android.surfaceflinger.frametimeline' src/trace_capture.c
 require_text 'android.statsd' src/trace_capture.c
 require_text 'tcp_rcv_established' src/trace.c
 require_text 'udp_recvmsg,udpv6_recvmsg' src/trace.c
+require_text 'perfetto_compact_traces' src/trace.c
+require_text 'perfetto_detailed_traces' src/trace.c
+require_text 'trace_event_visible' src/perfetto_export.c
+require_text 'event->pkt.proto_l4 == IPPROTO_UDP' src/trace.c
+require_text '"TCP SYN send"' src/trace.c
+require_text '"TCP packet receive"' src/trace.c
+require_text '"DNS query send"' src/trace.c
+require_text 'args->trace_detail ? perfetto_detailed_traces' src/trace.c
 require_text 'udp_send_skb:0' src/trace.yaml
 require_text 'udp_v6_send_skb:0' src/trace.yaml
 require_text 'tcp_sendmsg/0' src/trace.yaml
@@ -122,6 +142,9 @@ require_text 'packet.timestamp_clock_id = CLOCK_MONOTONIC' \
 	tools/anettrace_to_perfetto.py
 require_text 'packet_record["flow_tag"] = self.flow_label' \
 	tools/anettrace_to_perfetto.py
+require_text 'record.get("tgid", record.get("owner_tgid", 0))' \
+	tools/anettrace_to_perfetto.py
+require_text '"byte_scope"' tools/anettrace_to_perfetto.py
 require_text 'track_event.correlation_id = correlation_id' \
 	tools/anettrace_to_perfetto.py
 require_text '--uid 0 is too broad for Perfetto capture' src/trace.c

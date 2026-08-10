@@ -41,6 +41,19 @@ PING_TARGET="$(ip route get 1.1.1.1 2>/dev/null | awk '
 
 "$BIN" --version | tee "$OUT/version.txt"
 "$BIN" -h > "$OUT/help.txt"
+grep -q -- '--trace-detail' "$OUT/help.txt" || fail "--trace-detail help missing"
+
+if "$BIN" --trace-detail > "$OUT/trace-detail-invalid.txt" 2>&1; then
+	fail "--trace-detail unexpectedly succeeded without trace export"
+fi
+grep -q -- '--trace-detail requires --capture-trace or --perfetto-events' \
+	"$OUT/trace-detail-invalid.txt" || fail "missing --trace-detail scope error"
+
+if "$BIN" --traffic --capture-trace > "$OUT/traffic-trace-conflict.txt" 2>&1; then
+	fail "standalone --traffic unexpectedly combined with trace capture"
+fi
+grep -q -- '--traffic is standalone' "$OUT/traffic-trace-conflict.txt" ||
+	fail "missing standalone traffic error"
 
 if "$BIN" --date --timestamp > "$OUT/conflict.txt" 2>&1; then
 	fail "--date and --timestamp unexpectedly succeeded together"
@@ -132,7 +145,7 @@ run_tcp_traffic_report() {
 run_tcp_traffic_report traffic-all
 grep -q 'Traffic TCP/UDP' "$OUT/traffic-all.txt" ||
 	fail "whole-device traffic heading missing"
-grep -q 'PID.*TID.*COMM.*LADDR:PORT.*RADDR:PORT.*TX_KB.*RX_KB' \
+grep -q 'PID.*TID.*COMM.*LADDR:PORT.*RADDR:PORT.*APP_TX_KB.*APP_RX_KB' \
 	"$OUT/traffic-all.txt" || fail "traffic columns missing"
 grep -q ' TCP ' "$OUT/traffic-all.txt" || fail "TCP flow row missing"
 grep -q "$PING_TARGET" "$OUT/traffic-all.txt" ||

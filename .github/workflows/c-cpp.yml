@@ -32,6 +32,7 @@ jobs:
           ./src/anettrace -h | grep -q -- '--interval'
           ./src/anettrace -h | grep -q -- '--perfetto-events'
           ./src/anettrace -h | grep -q -- '--capture-trace'
+          ./src/anettrace -h | grep -q -- '--trace-detail'
           ./src/anettrace -h | grep -q -- '--trace-profile'
           ./src/anettrace -h | grep -q -- '--duration'
           ./src/anettrace -h | grep -q -- '--output'
@@ -41,6 +42,16 @@ jobs:
           fi
           grep -q -- '--trace-profile must be full or sched' \
             /tmp/trace-profile-invalid.txt
+          if ./src/anettrace --trace-detail > /tmp/trace-detail-invalid.txt 2>&1; then
+            exit 1
+          fi
+          grep -q -- '--trace-detail requires --capture-trace or --perfetto-events' \
+            /tmp/trace-detail-invalid.txt
+          if ./src/anettrace --traffic --capture-trace \
+            > /tmp/traffic-trace-conflict.txt 2>&1; then
+            exit 1
+          fi
+          grep -q -- '--traffic is standalone' /tmp/traffic-trace-conflict.txt
           if ./src/anettrace --date --timestamp > /tmp/conflict.txt 2>&1; then
             exit 1
           fi
