@@ -61,7 +61,7 @@ class PerfettoConverterTest(unittest.TestCase):
         ]
         self.assertEqual(
             {annotations["stage"].string_value for annotations in packet_annotations},
-            {"__tcp_transmit_skb", "consume_skb", "tcp_rcv_established"},
+            {"__tcp_transmit_skb", "consume_skb", "tcp_v4_rcv"},
         )
         self.assertTrue(
             all(
@@ -79,12 +79,21 @@ class PerfettoConverterTest(unittest.TestCase):
         self.assertEqual(packets[0].type, TrackEvent.TYPE_INSTANT)
         self.assertEqual(list(packets[0].terminating_flow_ids), [0x3001])
 
+        tx_packets = [
+            event
+            for event, annotations in zip(packet_events, packet_annotations)
+            if annotations["stage"].string_value == "__tcp_transmit_skb"
+        ]
+        self.assertEqual(len(tx_packets), 1)
+        self.assertEqual(list(tx_packets[0].flow_ids), [0x3001, 0x2001])
+
         rx_packets = [
             event
             for event, annotations in zip(packet_events, packet_annotations)
-            if annotations["stage"].string_value == "tcp_rcv_established"
+            if annotations["stage"].string_value == "tcp_v4_rcv"
         ]
         self.assertEqual(len(rx_packets), 1)
+        self.assertEqual(list(rx_packets[0].flow_ids), [0x3002, 0x2001])
         rx_annotations = {
             annotation.name: annotation
             for annotation in rx_packets[0].debug_annotations
@@ -122,6 +131,7 @@ class PerfettoConverterTest(unittest.TestCase):
             and "anettrace.flow" in packet.track_event.categories
         ]
         self.assertEqual(len(flow_begins), 1)
+        self.assertEqual(list(flow_begins[0].flow_ids), [0x2001])
         flow_track = flow_begins[0].track_uuid
         flow_ends = [
             packet.track_event
@@ -131,6 +141,7 @@ class PerfettoConverterTest(unittest.TestCase):
             and packet.track_event.type == TrackEvent.TYPE_SLICE_END
         ]
         self.assertEqual(len(flow_ends), 1)
+        self.assertEqual(list(flow_ends[0].terminating_flow_ids), [0x2001])
         flow_annotations = {
             annotation.name: annotation for annotation in flow_ends[0].debug_annotations
         }
@@ -352,6 +363,7 @@ class PerfettoConverterTest(unittest.TestCase):
                     "stage": "test_tx" if direction == "tx" else "test_rx",
                     "terminal": False,
                     "dropped": False,
+                    "flow_anchor": True,
                     "cpu": 0,
                     "tid": owner["owner_tid"],
                     "tgid": owner["owner_tgid"],
@@ -544,6 +556,9 @@ class PerfettoConverterTest(unittest.TestCase):
                         """
                     )
                 )
+                flow_link_rows = list(
+                    processor.query("SELECT COUNT(*) AS count FROM flow")
+                )
 
         expected_by_tag = {
             expected_labels[MODULE.id_value(flow["flow_id"])]: flow for flow in flows
@@ -565,6 +580,7 @@ class PerfettoConverterTest(unittest.TestCase):
 
         self.assertEqual([row.name for row in packet_rows], expected_visual_order)
         self.assertEqual(len({row.track_id for row in packet_rows}), 1)
+        self.assertEqual(flow_link_rows[0].count, 12)
 
     def test_multiple_clock_snapshots_cover_suspend_offset_changes(self) -> None:
         fixture = ROOT / "tests" / "fixtures" / "perfetto-events.jsonl"

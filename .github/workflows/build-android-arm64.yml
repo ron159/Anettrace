@@ -88,6 +88,12 @@ jobs:
               grep -q -- "--trace-profile" /tmp/anettrace-help.txt
               grep -q -- "--duration" /tmp/anettrace-help.txt
               grep -q -- "--output" /tmp/anettrace-help.txt
+              grep -q "^Packet and owner filters:$" /tmp/anettrace-help.txt
+              grep -q "^Analysis modes:$" /tmp/anettrace-help.txt
+              grep -q "^Trace capture and export:$" /tmp/anettrace-help.txt
+              grep -q "^Event display:$" /tmp/anettrace-help.txt
+              grep -q "^Advanced trace controls:$" /tmp/anettrace-help.txt
+              grep -q "^Diagnostics and general:$" /tmp/anettrace-help.txt
               if src/anettrace --capture-trace --trace-profile invalid \
                 > /tmp/anettrace-trace-profile-invalid.txt 2>&1; then
                 exit 1
@@ -106,6 +112,12 @@ jobs:
               fi
               grep -q -- "--traffic is standalone" \
                 /tmp/anettrace-traffic-trace-conflict.txt
+              if src/anettrace --capture-trace --trace tcp \
+                > /tmp/anettrace-capture-trace-conflict.txt 2>&1; then
+                exit 1
+              fi
+              grep -q -- "--capture-trace and --trace are standalone" \
+                /tmp/anettrace-capture-trace-conflict.txt
               grep -q -- "--timestamp" /tmp/anettrace-help.txt
               grep -q -- "--id" /tmp/anettrace-help.txt
               grep -q -- "--mark" /tmp/anettrace-help.txt

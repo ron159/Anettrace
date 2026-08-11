@@ -86,6 +86,9 @@ perf event / map 快照 -> 用户态聚合、规则匹配、格式化输出
    `src/analysis.c` 关联报文生命周期并执行规则，
    `src/output.c` 与 `src/traffic.c` 生成最终输出。
 
+`anettrace --help` 按使用目的分为六组：包与 owner 过滤、分析模式、Trace 采集与导出、事件显示、
+高级 trace 控制、诊断与通用选项。建议先选择一种运行模式，再叠加过滤条件和该模式的输出选项。
+
 `--traffic` 是独立统计通路：它在 TCP/UDP send/recv 的入口保存调用上下文，
 在返回点按真实返回值累计字节，因此 `APP_TX_KB/APP_RX_KB` 显示的是可归属到线程的应用
 payload，不包含协议头、SYN/ACK/FIN、重传、纯内核转发，以及尚未被应用读取的数据。收到
@@ -95,7 +98,7 @@ Ctrl-C 时会先打印最后一个未满统计区间。联合采集不需要也�
 
 ### Perfetto 联合时间线
 
-`--perfetto-events FILE` 和 `--capture-trace` 默认使用精简网络模式，只采集并显示关键工作点：
+`--perfetto-events FILE` 和 `--capture-trace` 默认使用精简网络模式，只采集关键工作点：
 
 - `sk_alloc` 的 socket 分配开始/结束；
 - TCP 状态变化、socket close、应用 write/read；
@@ -126,6 +129,16 @@ buffer 生命周期。socket lifetime 在 `tcp_close` 或采集结束时闭合�
 adb shell
 cd /data/local/tmp
 ./anettrace --capture-trace --uid 10187
+```
+
+`--capture-trace` 只生成联合 `.pftrace`，不会再把网络事件逐条打印到终端，也不会隐式开启
+`--trace`。`--trace` 是独立终端诊断模式，两者不能在同一个进程组合。确需边抓文件边看终端时，
+使用相同过滤条件分别启动两个 Anettrace 进程：
+
+```shell
+./anettrace --capture-trace --duration 15 --uid 10187 \
+  --output /data/local/tmp/browser-network.pftrace &
+./anettrace --trace tcp --uid 10187
 ```
 
 详细网络函数模式：
@@ -180,8 +193,9 @@ Android 系统 Perfetto trace 合并；设备端不需要 Python。临时 system
 adb pull /data/local/tmp/browser-network.pftrace .
 ```
 
-直接模式要求设备存在 `/system/bin/perfetto`。`--capture-trace` 与 `--perfetto-events` 是两个独立
-输出模式，不能同时使用。建议始终使用 UID 或 TID 过滤；`--uid 0` 仍需叠加更窄过滤或 `--force`。
+直接模式要求设备存在 `/system/bin/perfetto`。`--capture-trace`、`--perfetto-events` 和终端
+`--trace` 是独立模式；`--capture-trace` 不能与后两者在同一进程组合。建议始终使用 UID 或 TID
+过滤；`--uid 0` 仍需叠加更窄过滤或 `--force`。
 
 需要 `light/long` profile、simpleperf、外部主机工具、manifest 或自动 Trace Processor 完整性门禁
 时，继续使用跨平台 Python 编排器：
@@ -198,15 +212,21 @@ python tools/capture_android_trace.py \
 设备端 `full` 直采为了保留线程下的 atrace tag，会按 PerfAllInOne 基线采集全局
 `ftrace/print`；这比 `sched` 档开销和输出体积更大。把最终文件拖入
 [Perfetto UI](https://ui.perfetto.dev/) 后，发包时间点位于实际执行线程轨道，线程
-Running/Runnable/Sleeping 状态来自系统 sched 数据。联合采集期间网络阶段仍会同步打印到当前终端；
-RX 内核事件保留 NAPI/softirq 的真实线程轨道，应用线程只显示 `recvmsg` duration slice，避免把所有
-收包箭头伪装到 reader 线程下。
+Running/Runnable/Sleeping 状态来自系统 sched 数据。`--capture-trace` 不打印逐包终端事件；需要
+同步查看时另启 `--trace GROUP` 进程。RX 内核事件保留 NAPI/softirq 的真实线程轨道，应用线程只显示
+`recvmsg` duration slice，避免把所有收包箭头伪装到 reader 线程下。
 
 每个 packet instant event 使用按本次 trace 首次出现顺序生成的可读名称作为事件名：TCP、
 普通 UDP 和 DNS 分别独立编号为 `tcp-1`、`udp-1`、`dns-1`。完整 64 位 `flow_id` 仍写入
 Perfetto `correlation_id`，因此同一条流的 TX/RX 和不同内核阶段显示相同名称并使用同一颜色；
 精简模式的 `stage` 使用 `TCP SYN send`、`TCP packet receive`、`DNS query send` 等语义名称，
 `--trace-detail` 下则保留原内核函数名，完整五元组始终可精确检索。
+
+同一 flow 还使用 Perfetto 原生 Flow 链接串起 `flow start -> packet anchor -> ... -> flow end`。
+精简模式下每个实际 TX/RX 包只有一个语义 anchor，选中任一 `tcp-N`/`dns-N` packet event 时会显示
+指向前一个和后一个包的箭头，可沿箭头端点在跨线程的收发包之间跳转。详细模式只把 transport
+边界事件作为 anchor，避免把每个内核函数 stage 都接入包间导航链；原有 `packet_id` Flow 仍单独
+负责串起同一个包的详细内核阶段。
 
 每条五元组还会生成独立的 `anettrace.flow` duration track，并作为对应 socket track 的子轨道
 显示，而不是把并发请求都堆在公共网络线程上。socket lifetime 表示内核 socket 对象的存活区间；

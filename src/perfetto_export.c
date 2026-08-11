@@ -904,6 +904,7 @@ static void flow_emit_start(struct flow_state *flow)
 		return;
 	flow->native_track_uuid = track->uuid;
 	native_event_start(&event, 1, track->uuid, tag, "anettrace.flow");
+	native_event_flow(&event, flow->id, false);
 	native_event_correlation(&event, flow->id);
 	native_annotation_id(&event, "flow_id", flow->id);
 	native_annotation_string(&event, "protocol", flow_protocol_name(flow));
@@ -960,6 +961,7 @@ static void flow_finish(struct flow_state *flow, u64 end_ts,
 	if (native_file && flow->native_track_uuid) {
 		native_event_start(&event, 2, flow->native_track_uuid, NULL,
 				   "anettrace.flow");
+		native_event_flow(&event, flow->id, true);
 		native_event_correlation(&event, flow->id);
 		native_annotation_id(&event, "flow_id", flow->id);
 		native_annotation_string(&event, "protocol",
@@ -1480,6 +1482,8 @@ static void native_export_packet_event(const detail_event_t *detail,
 	bool dropped = TRACE_HAS_ANALYZER(trace, drop);
 	bool terminal = dropped || TRACE_HAS_ANALYZER(trace, free) ||
 			(trace->status & TRACE_CFREE);
+	bool flow_anchor = flow_packet_anchor(trace, pkt->proto_l4,
+					      detail->direction);
 
 	thread = native_thread_track(event->tgid, event->tid, detail->task);
 	if (!thread)
@@ -1490,6 +1494,8 @@ static void native_export_packet_event(const detail_event_t *detail,
 			   dropped ? "anettrace.packet.drop" :
 			   "anettrace.packet");
 	native_event_flow(&track_event, id, terminal);
+	if (flow_anchor)
+		native_event_flow(&track_event, flow_id, false);
 	native_event_correlation(&track_event, flow_id);
 	native_annotation_string(&track_event, "stage", stage);
 	native_annotation_id(&track_event, "packet_id", id);
@@ -1498,6 +1504,7 @@ static void native_export_packet_event(const detail_event_t *detail,
 	native_annotation_id(&track_event, "flow_id", flow_id);
 	native_annotation_bool(&track_event, "terminal", terminal);
 	native_annotation_bool(&track_event, "dropped", dropped);
+	native_annotation_bool(&track_event, "flow_anchor", flow_anchor);
 	native_annotation_uint(&track_event, "cpu", cpu);
 	native_annotation_uint(&track_event, "uid", event->uid);
 	native_annotation_string(&track_event, "direction",
@@ -1803,6 +1810,8 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 	bool dropped = TRACE_HAS_ANALYZER(trace, drop);
 	bool terminal = dropped || TRACE_HAS_ANALYZER(trace, free) ||
 			(trace->status & TRACE_CFREE);
+	bool flow_anchor = flow_packet_anchor(trace, pkt->proto_l4,
+					      detail->direction);
 
 	packet_addresses(pkt, source, sizeof(source), dest, sizeof(dest));
 	json_escape(detail->task, task, sizeof(task));
@@ -1814,7 +1823,8 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 		"\"skb_id\":\"%016llx\","
 		"\"flow_id\":\"%016llx\",\"flow_tag\":\"%s\","
 		"\"stage\":\"%s\","
-		"\"terminal\":%s,\"dropped\":%s,\"cpu\":%d,"
+		"\"terminal\":%s,\"dropped\":%s,\"flow_anchor\":%s,"
+		"\"cpu\":%d,"
 		"\"tid\":%u,\"tgid\":%u,\"uid\":%u,"
 		"\"task\":\"%s\",\"ifname\":\"%s\","
 		"\"direction\":\"%s\",\"owner_valid\":%s,"
@@ -1827,7 +1837,8 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 		PERFETTO_SCHEMA, pkt->ts, packet_id(pkt, event->key),
 		object_id("skb", event->key), flow_id, flow_tag, stage,
 		terminal ? "true" : "false",
-		dropped ? "true" : "false", cpu, event->tid, event->tgid,
+		dropped ? "true" : "false", flow_anchor ? "true" : "false",
+		cpu, event->tid, event->tgid,
 		event->uid, task, ifname, direction_name(detail->direction),
 		detail->owner_valid ? "true" : "false", detail->owner_tid,
 		detail->owner_tgid, detail->owner_uid, owner_socket_id,

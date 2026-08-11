@@ -42,6 +42,16 @@ PING_TARGET="$(ip route get 1.1.1.1 2>/dev/null | awk '
 "$BIN" --version | tee "$OUT/version.txt"
 "$BIN" -h > "$OUT/help.txt"
 grep -q -- '--trace-detail' "$OUT/help.txt" || fail "--trace-detail help missing"
+for section in \
+	"Packet and owner filters" \
+	"Analysis modes" \
+	"Trace capture and export" \
+	"Event display" \
+	"Advanced trace controls" \
+	"Diagnostics and general"; do
+	grep -q "^${section}:$" "$OUT/help.txt" ||
+		fail "help section missing: $section"
+done
 
 if "$BIN" --trace-detail > "$OUT/trace-detail-invalid.txt" 2>&1; then
 	fail "--trace-detail unexpectedly succeeded without trace export"
@@ -54,6 +64,12 @@ if "$BIN" --traffic --capture-trace > "$OUT/traffic-trace-conflict.txt" 2>&1; th
 fi
 grep -q -- '--traffic is standalone' "$OUT/traffic-trace-conflict.txt" ||
 	fail "missing standalone traffic error"
+
+if "$BIN" --capture-trace --trace tcp > "$OUT/capture-trace-conflict.txt" 2>&1; then
+	fail "standalone --capture-trace unexpectedly combined with --trace"
+fi
+grep -q -- '--capture-trace and --trace are standalone' \
+	"$OUT/capture-trace-conflict.txt" || fail "missing standalone capture error"
 
 if "$BIN" --date --timestamp > "$OUT/conflict.txt" 2>&1; then
 	fail "--date and --timestamp unexpectedly succeeded together"

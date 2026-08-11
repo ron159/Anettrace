@@ -39,7 +39,7 @@ int parse_args(int argc, char *argv[], arg_config_t *config,
 		int val = item->sname;
 		bool has_s = val;
 
-		if (item->type == OPTION_BLANK)
+		if (item->type == OPTION_BLANK || item->type == OPTION_GROUP)
 			continue;
 		if (!has_s)
 			val = cur_key++;
@@ -203,6 +203,10 @@ help:
 		char name[64];
 		if (item->type == OPTION_BLANK) {
 			printf("\n");
+			continue;
+		}
+		if (item->type == OPTION_GROUP) {
+			printf("\n%s:\n", item->desc);
 			continue;
 		}
 		if (item->sname && item->lname)

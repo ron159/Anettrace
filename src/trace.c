@@ -1057,10 +1057,14 @@ static int trace_bpf_load()
 
 static void capture_poll_handler(void *ctx, int cpu, void *data, u32 size)
 {
-	/* Keep the normal terminal analysis active while the same events are
-	 * encoded into the joint Perfetto trace by poll_handler_wrap().
+	/* poll_handler_wrap() has already exported this event to Perfetto.
+	 * Direct capture intentionally skips terminal packet analysis; --trace
+	 * remains a standalone diagnostic mode.
 	 */
-	perfetto_poll_handler(ctx, cpu, data, size);
+	(void)ctx;
+	(void)cpu;
+	(void)data;
+	(void)size;
 }
 
 static void trace_prepare_ops()

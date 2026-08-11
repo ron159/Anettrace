@@ -42,6 +42,10 @@ static void do_parse_args(int argc, char *argv[])
 
 	option_item_t opts[] = {
 		{
+			.type = OPTION_GROUP,
+			.desc = "Packet and owner filters",
+		},
+		{
 			.lname = "saddr",
 			.sname = 's',
 			.dest = saddr_buf,
@@ -131,7 +135,10 @@ static void do_parse_args(int argc, char *argv[])
 			.type = OPTION_STRING,
 			.desc = "filter by TCP flags, such as: SAPR",
 		},
-		{ .type = OPTION_BLANK },
+		{
+			.type = OPTION_GROUP,
+			.desc = "Analysis modes",
+		},
 		{
 			.lname = "traffic", .dest = &trace_args->traffic,
 			.type = OPTION_BOOL,
@@ -224,27 +231,15 @@ static void do_parse_args(int argc, char *argv[])
 			.type = OPTION_BOOL,
 			.desc = "show latency by statistics",
 		},
-		{ .type = OPTION_BLANK },
+		{
+			.type = OPTION_GROUP,
+			.desc = "Trace capture and export",
+		},
 		{
 			.lname = "trace", .sname = 't',
 			.dest = &trace_args->traces,
 			.desc = "enable trace group or trace. Some traces are "
 				"disabled by default, use \"all\" to enable all",
-		},
-		{
-			.lname = "force", .dest = &trace_args->force,
-			.type = OPTION_BOOL,
-			.desc = "skip some check and force load anettrace",
-		},
-		{
-			.lname = "ret", .dest = &trace_args->ret,
-			.type = OPTION_BOOL,
-			.desc = "show function return value",
-		},
-		{
-			.lname = "detail", .dest = &bpf_args->detail,
-			.type = OPTION_BOOL,
-			.desc = "show extern packet info, such as pid, ifname, etc",
 		},
 		{
 			.lname = "perfetto-events", .dest = &trace_args->perfetto_events,
@@ -254,7 +249,7 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "capture-trace", .dest = &trace_args->capture_trace,
 			.type = OPTION_BOOL,
-			.desc = "capture system trace plus Anettrace events into one Perfetto trace",
+			.desc = "capture system plus Anettrace events without terminal trace output",
 		},
 		{
 			.lname = "trace-detail", .dest = &trace_args->trace_detail,
@@ -275,6 +270,10 @@ static void do_parse_args(int argc, char *argv[])
 			.lname = "output", .dest = &trace_args->output,
 			.type = OPTION_STRING,
 			.desc = "combined .pftrace file or existing output directory",
+		},
+		{
+			.type = OPTION_GROUP,
+			.desc = "Event display",
 		},
 		{
 			.lname = "date", .dest = &date,
@@ -310,6 +309,25 @@ static void do_parse_args(int argc, char *argv[])
 			.lname = "tiny-show", .dest = &bpf_args->tiny_output,
 			.type = OPTION_BOOL,
 			.desc = "set this option to show less infomation",
+		},
+		{
+			.type = OPTION_GROUP,
+			.desc = "Advanced trace controls",
+		},
+		{
+			.lname = "force", .dest = &trace_args->force,
+			.type = OPTION_BOOL,
+			.desc = "skip some check and force load anettrace",
+		},
+		{
+			.lname = "ret", .dest = &trace_args->ret,
+			.type = OPTION_BOOL,
+			.desc = "show function return value",
+		},
+		{
+			.lname = "detail", .dest = &bpf_args->detail,
+			.type = OPTION_BOOL,
+			.desc = "show extern packet info, such as pid, ifname, etc",
 		},
 		{
 			.lname = "trace-stack", .dest = &trace_args->traces_stack,
@@ -351,7 +369,10 @@ static void do_parse_args(int argc, char *argv[])
 			.type = OPTION_STRING,
 			.desc = "custom the path of BTF info of vmlinux",
 		},
-		{ .type = OPTION_BLANK },
+		{
+			.type = OPTION_GROUP,
+			.desc = "Diagnostics and general",
+		},
 		{
 			.sname = 'v', .dest = &show_log,
 			.type = OPTION_BOOL,
@@ -421,6 +442,10 @@ static void do_parse_args(int argc, char *argv[])
 	}
 	if (trace_args->capture_trace && trace_args->perfetto_events) {
 		pr_err("--capture-trace and --perfetto-events are separate output modes\n");
+		goto err;
+	}
+	if (trace_args->capture_trace && trace_args->traces) {
+		pr_err("--capture-trace and --trace are standalone; run them separately\n");
 		goto err;
 	}
 	if (trace_args->output && !trace_args->capture_trace) {

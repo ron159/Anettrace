@@ -31,6 +31,10 @@ require_text $'\t\t} ipv4;\n#if 0\n\t\tstruct {' src/progs/skb_shared.h
 require_text 'pkt->mark = _C(skb, mark);' src/progs/skb_parse.h
 require_text 'pkt->l3.ipv4.id = bpf_ntohs(_C(ipv4, id));' src/progs/skb_parse.h
 require_text '--date and --timestamp cannot be used together' src/anettrace.c
+require_text 'OPTION_GROUP' utils/arg_parse.h
+require_text 'Packet and owner filters' src/anettrace.c
+require_text 'Trace capture and export' src/anettrace.c
+require_text 'Advanced trace controls' src/anettrace.c
 require_text 'TIME_MODE_MONOTONIC' src/output.c
 require_text '"/system/bin/date"' src/output.c
 require_text 'id:0x%x' src/output.c
@@ -79,6 +83,11 @@ require_text 'native_annotation_string(&track_event, "stage", stage);' \
 	src/perfetto_export.c
 require_text 'native_event_correlation(&track_event, flow_id);' \
 	src/perfetto_export.c
+require_text 'native_event_flow(&track_event, flow_id, false);' \
+	src/perfetto_export.c
+require_text 'native_event_flow(&event, flow->id, true);' \
+	src/perfetto_export.c
+require_text '"flow_anchor"' src/perfetto_export.c
 require_text '"rx_read_start"' src/perfetto_export.c
 require_text '"rx_read_end"' src/perfetto_export.c
 require_text '"tx_write_start"' src/perfetto_export.c
@@ -104,6 +113,8 @@ require_text '\"skb_id\":' src/perfetto_export.c
 require_text 'CLOCK_SNAPSHOT_INTERVAL_NS' src/perfetto_export.c
 require_text 'perfetto_export_tick();' src/trace.c
 require_text '.lname = "capture-trace"' src/anettrace.c
+require_text '--capture-trace and --trace are standalone; run them separately' \
+	src/anettrace.c
 require_text '.lname = "trace-detail"' src/anettrace.c
 require_text '--trace-detail requires --capture-trace or --perfetto-events' \
 	src/anettrace.c
@@ -138,7 +149,8 @@ require_text 'udp_v6_send_skb:0' src/trace.yaml
 require_text 'tcp_sendmsg/0' src/trace.yaml
 require_text 'udp_sendmsg/0' src/trace.yaml
 require_text 'udpv6_sendmsg/0' src/trace.yaml
-require_text 'perfetto_poll_handler(ctx, cpu, data, size);' src/trace.c
+require_text 'Direct capture intentionally skips terminal packet analysis' \
+	src/trace.c
 require_text 'trace && trace_using_sk(trace)' src/analysis.c
 require_text 'packet.timestamp_clock_id = CLOCK_MONOTONIC' \
 	tools/anettrace_to_perfetto.py
@@ -149,6 +161,9 @@ require_text 'record.get("tgid", record.get("owner_tgid", 0))' \
 require_text '"byte_scope"' tools/anettrace_to_perfetto.py
 require_text 'track_event.correlation_id = correlation_id' \
 	tools/anettrace_to_perfetto.py
+require_text 'track_event.flow_ids.append(linked_flow_id)' \
+	tools/anettrace_to_perfetto.py
+require_text 'def packet_flow_anchor' tools/anettrace_to_perfetto.py
 require_text '--uid 0 is too broad for Perfetto capture' src/trace.c
 require_text '--uid 0 alone is too broad; add --pid' \
 	tools/capture_android_trace.py

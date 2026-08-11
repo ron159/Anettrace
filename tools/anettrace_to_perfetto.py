@@ -53,6 +53,23 @@ def flow_prefix(record: dict[str, Any]) -> str:
     return "flow"
 
 
+def packet_flow_anchor(record: dict[str, Any]) -> bool:
+    if "flow_anchor" in record:
+        return bool(record["flow_anchor"])
+    stage = str(record.get("stage", ""))
+    protocol = int(record.get("proto_l4", 0) or 0)
+    direction = str(record.get("direction", ""))
+    if direction == "tx":
+        if protocol == 6:
+            return stage == "__tcp_transmit_skb"
+        return stage in ("ip_output", "ip6_output")
+    if direction == "rx":
+        if protocol == 6:
+            return stage in ("tcp_v4_rcv", "tcp_v6_rcv")
+        return stage in ("udp_rcv", "udpv6_rcv")
+    return False
+
+
 def read_records(path: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     with path.open(encoding="utf-8") as source:
@@ -235,6 +252,7 @@ class PerfettoExporter:
         category: str = "anettrace",
         flow_id: int | None = None,
         terminating_flow: bool = False,
+        linked_flow_ids: Iterable[int] = (),
         correlation_id: int | None = None,
         annotations: tuple[dict[str, Any], Iterable[str]] | None = None,
     ) -> None:
@@ -252,6 +270,8 @@ class PerfettoExporter:
                 track_event.terminating_flow_ids.append(flow_id)
             else:
                 track_event.flow_ids.append(flow_id)
+        for linked_flow_id in linked_flow_ids:
+            track_event.flow_ids.append(linked_flow_id)
         if correlation_id is not None:
             track_event.correlation_id = correlation_id
         if annotations:
@@ -412,10 +432,9 @@ class PerfettoExporter:
 
     def export_packet_event(self, record: dict[str, Any]) -> None:
         packet_id = str(record["packet_id"])
+        flow_id = str(record["flow_id"])
         packet_record = dict(record)
-        packet_record["flow_tag"] = self.flow_label(
-            str(record["flow_id"]), record
-        )
+        packet_record["flow_tag"] = self.flow_label(flow_id, record)
         self.event(
             int(record["ts_ns"]),
             self.thread_track(record),
@@ -426,7 +445,10 @@ class PerfettoExporter:
             else "anettrace.packet",
             id_value(packet_id),
             bool(record.get("terminal")),
-            correlation_id=id_value(str(record["flow_id"])),
+            linked_flow_ids=(id_value(flow_id),)
+            if packet_flow_anchor(record)
+            else (),
+            correlation_id=id_value(flow_id),
             annotations=(
                 packet_record,
                 (
@@ -437,6 +459,7 @@ class PerfettoExporter:
                     "flow_tag",
                     "terminal",
                     "dropped",
+                    "flow_anchor",
                     "cpu",
                     "uid",
                     "direction",
@@ -472,6 +495,7 @@ class PerfettoExporter:
             TrackEvent.TYPE_SLICE_BEGIN,
             flow_record["flow_tag"],
             "anettrace.flow",
+            flow_id=id_value(flow_id),
             correlation_id=id_value(flow_id),
             annotations=(
                 flow_record,
@@ -505,6 +529,7 @@ class PerfettoExporter:
                 TrackEvent.TYPE_SLICE_BEGIN,
                 flow_record["flow_tag"],
                 "anettrace.flow",
+                flow_id=id_value(flow_id),
                 correlation_id=id_value(flow_id),
             )
         self.event(
@@ -512,6 +537,8 @@ class PerfettoExporter:
             track,
             TrackEvent.TYPE_SLICE_END,
             category="anettrace.flow",
+            flow_id=id_value(flow_id),
+            terminating_flow=True,
             correlation_id=id_value(flow_id),
             annotations=(
                 flow_record,
