@@ -52,6 +52,7 @@ def workload_script(
     run_seconds: int,
     interval_ms: int,
     progress_every: int = 0,
+    hold_seconds: int = 0,
 ) -> str:
     command = [
         remote_workload,
@@ -67,12 +68,17 @@ def workload_script(
     ]
     if progress_every:
         command.extend(("--progress-every", str(progress_every)))
+    if hold_seconds:
+        command.extend(("--hold-seconds", str(hold_seconds)))
     return " ".join(shlex.quote(value) for value in command)
 
 
 def baseline_result(output: str) -> tuple[int, int]:
     matches = re.findall(
-        r"completed=([0-9]+) elapsed_ms=([0-9]+) complete=true", output
+        r"^scenario=success completed=([0-9]+) "
+        r"elapsed_ms=([0-9]+) complete=true$",
+        output,
+        re.MULTILINE,
     )
     if len(matches) != 1:
         raise SoakError("baseline workload did not produce one completion summary")
@@ -96,7 +102,10 @@ def external_command(args: argparse.Namespace, script: str) -> list[str]:
 
 
 def validate_soak_report(
-    report: dict[str, Any], manifest: dict[str, Any], duration_s: int
+    report: dict[str, Any],
+    manifest: dict[str, Any],
+    duration_s: int,
+    workload_completed: int,
 ) -> dict[str, Any]:
     if report.get("status") != "valid":
         raise SoakError(f"soak report is not valid: {report.get('status')}")
@@ -119,8 +128,12 @@ def validate_soak_report(
         raise SoakError(f"soak produced unexpected outcomes: {unexpected}")
     if success_count <= 0 or success_count + unknown_count != attempt_count:
         raise SoakError(f"soak produced unexpected outcomes: {unexpected or counts}")
-    if unknown_count > 1:
-        raise SoakError("soak produced more than one boundary-incomplete attempt")
+    if unknown_count:
+        raise SoakError("soak produced an incomplete attempt before its quiet tail")
+    if attempt_count != workload_completed:
+        raise SoakError(
+            "soak report attempt count does not match workload completion count"
+        )
 
     capture_manifest = manifest.get("capture", {})
     cleanup = capture_manifest.get("cleanup") or {}
@@ -183,9 +196,10 @@ def run_soak(args: argparse.Namespace) -> Path:
         traced_workload = workload_script(
             remote_workload,
             uid,
-            run_seconds=args.duration + 5,
+            run_seconds=args.duration - 5,
             interval_ms=args.interval_ms,
             progress_every=20,
+            hold_seconds=10,
         )
         bounded_workload = (
             f"{traced_workload} & workload_pid=$!; "
@@ -231,7 +245,15 @@ def run_soak(args: argparse.Namespace) -> Path:
         manifest = json.loads(
             (diagnosis / "manifest.json").read_text(encoding="utf-8")
         )
-        traced = validate_soak_report(report, manifest, args.duration)
+        traced_completed, traced_elapsed_ms = baseline_result(
+            (diagnosis / "session.log").read_text(encoding="utf-8")
+        )
+        traced = validate_soak_report(
+            report,
+            manifest,
+            args.duration,
+            traced_completed,
+        )
         process_cleanup_verified = ACCEPTANCE.stop_remote_workload(
             adb,
             remote_pid_file,
@@ -252,7 +274,7 @@ def run_soak(args: argparse.Namespace) -> Path:
         if not workload_cleanup_verified:
             raise SoakError("soak workload artifact cleanup was not verified")
         baseline_rate = baseline_completed / (baseline_elapsed_ms / 1000)
-        traced_rate = float(traced["attempts_per_second"])
+        traced_rate = traced_completed / (traced_elapsed_ms / 1000)
         summary = {
             "schema_version": SCHEMA,
             "uid": uid,
@@ -266,6 +288,11 @@ def run_soak(args: argparse.Namespace) -> Path:
                 "attempts_per_second": round(baseline_rate, 6),
             },
             "traced": traced,
+            "traced_workload": {
+                "duration_s": round(traced_elapsed_ms / 1000, 3),
+                "completed": traced_completed,
+                "attempts_per_second": round(traced_rate, 6),
+            },
             "business_throughput_change_percent": round(
                 (traced_rate / baseline_rate - 1) * 100, 3
             ),

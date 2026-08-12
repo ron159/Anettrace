@@ -62,8 +62,9 @@ class SoakContractTest(unittest.TestCase):
         traced_workload = MODULE.workload_script(
             "/data/local/tmp/session/connect-workload",
             10123,
-            run_seconds=1805,
+            run_seconds=1795,
             interval_ms=250,
+            hold_seconds=10,
         )
         bounded_workload = (
             f"{traced_workload} & workload_pid=$!; "
@@ -77,6 +78,7 @@ class SoakContractTest(unittest.TestCase):
         self.assertIn("echo $workload_pid", script)
         self.assertIn("exec toybox timeout", script)
         self.assertIn("--uid 10123", script)
+        self.assertIn("--hold-seconds 10", script)
 
     def test_baseline_summary_is_strict(self) -> None:
         self.assertEqual(
@@ -93,7 +95,7 @@ class SoakContractTest(unittest.TestCase):
             "status": "valid",
             "summary": {
                 "attempt_count": 7200,
-                "outcome_counts": {"success": 7199, "incomplete_or_unknown": 1},
+                "outcome_counts": {"success": 7200},
             },
             "capture": {
                 "started_ns": 1_000_000_000,
@@ -108,12 +110,12 @@ class SoakContractTest(unittest.TestCase):
                 "resource_sampling": {"samples": 360, "peak_rss_kib": 2048},
             }
         }
-        result = MODULE.validate_soak_report(report, manifest, 1800)
-        self.assertEqual(result["success_count"], 7199)
+        result = MODULE.validate_soak_report(report, manifest, 1800, 7200)
+        self.assertEqual(result["success_count"], 7200)
         self.assertEqual(result["collector_resources"]["samples"], 360)
         report["capture"]["lost_events"] = 1
         with self.assertRaises(MODULE.SoakError):
-            MODULE.validate_soak_report(report, manifest, 1800)
+            MODULE.validate_soak_report(report, manifest, 1800, 7200)
 
     def test_soak_requires_at_least_one_success(self) -> None:
         report = {
@@ -136,7 +138,27 @@ class SoakContractTest(unittest.TestCase):
             }
         }
         with self.assertRaisesRegex(MODULE.SoakError, "unexpected outcomes"):
-            MODULE.validate_soak_report(report, manifest, 1800)
+            MODULE.validate_soak_report(report, manifest, 1800, 1)
+
+    def test_soak_rejects_report_workload_count_mismatch(self) -> None:
+        report = {
+            "status": "valid",
+            "summary": {"attempt_count": 10, "outcome_counts": {"success": 10}},
+            "capture": {
+                "started_ns": 1_000_000_000,
+                "ended_ns": 1_801_000_000_000,
+                "lost_events": 0,
+                "truncated": False,
+            },
+        }
+        manifest = {
+            "capture": {
+                "cleanup": {"verified": True, "remaining": []},
+                "resource_sampling": {"samples": 360},
+            }
+        }
+        with self.assertRaisesRegex(MODULE.SoakError, "workload completion"):
+            MODULE.validate_soak_report(report, manifest, 1800, 9)
 
 
 if __name__ == "__main__":

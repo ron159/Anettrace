@@ -71,8 +71,11 @@ verified device cleanup:
 
 The formal gate does not accept a soak shorter than 1800 seconds. It requires a
 valid report, zero lost events, no truncation, at least two resource samples and
-verified capture cleanup. Throughput change is recorded as evidence rather than
-silently compared with an undocumented threshold.
+verified capture cleanup. The traced workload completes before a five-second
+quiet tail; its exact completion count must match the diagnostic attempt count,
+and its measured rate is used for the throughput comparison. Throughput change
+is recorded as evidence rather than silently compared with an undocumented
+threshold.
 
 If a core probe or event-integrity requirement is missing, Anettrace produces
 an `invalid` report without a root-cause verdict. Missing optional evidence

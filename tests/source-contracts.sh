@@ -231,6 +231,8 @@ require_text 'release soak duration must be at least 1800 seconds' \
 	tools/soak_android_connect.py
 require_text 'stop_remote_workload' tools/validate_android_connect.py
 require_text 'workload_cleanup_verified' tools/soak_android_connect.py
+require_text 'traced_workload' tools/soak_android_connect.py
+require_text 'workload completion count' tools/soak_android_connect.py
 require_text 'resource_sampling' tools/capture_android_trace.py
 require_text 'connect_diagnostics.sql' docs/connect-diagnostics.md
 require_text 'CycloneDX' tools/generate_release_sbom.py
