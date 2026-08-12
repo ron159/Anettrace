@@ -75,9 +75,11 @@ jobs:
               cd /work
               make clean
               make BPFTOOL=/tmp/bpftool/src/bpftool \
-                TARGET_PLATFORM=android-arm64 BUILD_TYPE=dual all
+                TARGET_PLATFORM=android-arm64 BUILD_TYPE=dual \
+                BUILD_COMMIT="${GITHUB_SHA}" all
               make BPFTOOL=/tmp/bpftool/src/bpftool \
-                TARGET_PLATFORM=android-arm64 BUILD_TYPE=dual pack
+                TARGET_PLATFORM=android-arm64 BUILD_TYPE=dual \
+                BUILD_COMMIT="${GITHUB_SHA}" pack
 
               gcc -O2 -Wall -Wextra -static \
                 tests/android/connect_workload.c \

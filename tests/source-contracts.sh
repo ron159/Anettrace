@@ -24,6 +24,8 @@ require_text 'args->uid_enabled && args->uid != uid' src/progs/core.c
 require_text '.tid = (u32)bpf_get_current_pid_tgid()' src/progs/kprobe.c
 require_text 'e->event.tid' src/trace_probe.c
 require_text 'ANETTRACE_ANDROID_TARGET=1' common.mk
+require_text 'BUILD_COMMIT="${GITHUB_SHA}"' \
+	.github/workflows/build-android-arm64.yml
 require_text 'packet mark must remain the final field' src/progs/skb_shared.h
 require_text $'\t\t} ipv4;\n#ifndef NT_DISABLE_IPV6\n\t\tstruct {' \
 	src/progs/skb_shared.h
