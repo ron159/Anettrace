@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
 import json
 import sys
 import tempfile
@@ -96,6 +97,57 @@ class CliContractTest(unittest.TestCase):
 
 
 class PrivacyAndFailureTest(unittest.TestCase):
+    def test_shared_uid_query_is_scoped_to_target_uid(self) -> None:
+        adb = mock.Mock()
+        adb.shell.side_effect = [
+            MODULE.subprocess.CompletedProcess(
+                [], 0, "package:com.example.app uid:10123\n", ""
+            ),
+            MODULE.subprocess.CompletedProcess(
+                [],
+                0,
+                "package:com.example.app uid:10123\n"
+                "package:com.example.shared uid:10123\n",
+                "",
+            ),
+        ]
+        uid, candidates, count = MODULE.resolve_package(
+            adb, "com.example.app", False
+        )
+        self.assertEqual((uid, candidates, count), (10123, [], 2))
+        self.assertEqual(
+            adb.shell.call_args_list[1],
+            mock.call("cmd package list packages -U --uid 10123", check=False),
+        )
+
+    def test_perfetto_raw_service_state_is_parsed_without_human_output(self) -> None:
+        # num_sessions=2, num_sessions_started=1, supports_tracing_sessions=true.
+        raw = bytes((0x18, 0x02, 0x20, 0x01, 0x38, 0x01))
+        self.assertEqual(
+            MODULE.parse_perfetto_service_state(raw),
+            {
+                "supports_tracing_sessions": True,
+                "session_count": 2,
+                "started_session_count": 1,
+            },
+        )
+        adb = mock.Mock()
+        adb.shell.return_value = MODULE.subprocess.CompletedProcess(
+            [], 0, base64.b64encode(raw).decode() + "\n", ""
+        )
+        self.assertEqual(
+            MODULE.query_perfetto_service_state(adb)["started_session_count"], 1
+        )
+        adb.shell.assert_called_once_with(
+            "perfetto --query-raw | base64", check=False
+        )
+
+    def test_perfetto_service_state_rejects_missing_session_support(self) -> None:
+        with self.assertRaisesRegex(
+            MODULE.DiagnosticError, "cannot report active tracing sessions"
+        ):
+            MODULE.parse_perfetto_service_state(bytes((0x18, 0x00, 0x20, 0x00)))
+
     def test_missing_core_device_capability_stops_before_capture(self) -> None:
         adb = mock.Mock()
         adb.run.return_value = MODULE.subprocess.CompletedProcess([], 0, "device\n", "")
@@ -112,6 +164,40 @@ class PrivacyAndFailureTest(unittest.TestCase):
                     False,
                     "sched",
                 )
+
+    def test_active_perfetto_session_stops_before_device_mutation(self) -> None:
+        adb = mock.Mock()
+        adb.run.return_value = MODULE.subprocess.CompletedProcess([], 0, "device\n", "")
+
+        def device_value(_adb: object, script: str) -> str:
+            if script == "id -u":
+                return "0"
+            if script == "cat /sys/kernel/tracing/current_tracer":
+                return "nop"
+            return ""
+
+        with mock.patch.object(MODULE, "device_value", side_effect=device_value), \
+             mock.patch.object(MODULE, "capability", return_value=True), \
+             mock.patch.object(
+                 MODULE,
+                 "query_perfetto_service_state",
+                 return_value={
+                     "supports_tracing_sessions": True,
+                     "session_count": 2,
+                     "started_session_count": 2,
+                 },
+             ):
+            with self.assertRaisesRegex(
+                MODULE.DiagnosticError, "started Perfetto sessions: 2"
+            ):
+                MODULE.device_preflight(
+                    adb,
+                    Path("/tmp/anettrace"),
+                    "com.example.app",
+                    False,
+                    "sched",
+                )
+        adb.push.assert_not_called()
 
     def test_trace_processor_metrics_create_sched_and_exit_evidence(self) -> None:
         output = (

@@ -40,6 +40,42 @@ class ConnectDiagnosticsSchemaTest(unittest.TestCase):
         )
         validator_class(schema, format_checker=jsonschema.FormatChecker()).validate(report)
 
+    def test_schema_rejects_unknown_outcome_count_key(self) -> None:
+        schema = json.loads(
+            (ROOT / "schemas" / "connect-diagnostics-v1.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        report = MODULE.analyze_records(
+            MODULE.read_event_records(
+                ROOT / "tests" / "fixtures" / "connect-diagnostics-events.jsonl"
+            ),
+            report_id="0123456789abcdef",
+            uid=10000,
+            generated_at_utc="2026-08-12T00:00:00Z",
+        )
+        report["summary"]["outcome_counts"]["guessed_failure"] = 1
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.Draft202012Validator(schema).validate(report)
+
+    def test_schema_enforces_package_opt_in_shape(self) -> None:
+        schema = json.loads(
+            (ROOT / "schemas" / "connect-diagnostics-v1.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        report = MODULE.analyze_records(
+            MODULE.read_event_records(
+                ROOT / "tests" / "fixtures" / "connect-diagnostics-events.jsonl"
+            ),
+            report_id="0123456789abcdef",
+            uid=10000,
+            generated_at_utc="2026-08-12T00:00:00Z",
+        )
+        report["target"]["package"] = "com.example.leaked"
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.Draft202012Validator(schema).validate(report)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Sequence
@@ -57,6 +58,7 @@ def validate_workload(path: Path) -> None:
 def external_workload_command(
     args: argparse.Namespace,
     remote_workload: str,
+    remote_pid_file: str,
     uid: int,
     scenario: str,
 ) -> list[str]:
@@ -76,8 +78,50 @@ def external_workload_command(
     ]
     if scenario == "timeout":
         device_command.extend(("--timeout-address", args.timeout_address))
-    command.extend(("shell", " ".join(shlex.quote(part) for part in device_command)))
+    device_script = (
+        f"echo $$ > {shlex.quote(remote_pid_file)}; exec "
+        + " ".join(shlex.quote(part) for part in device_command)
+    )
+    command.extend(("shell", device_script))
     return command
+
+
+def remote_workload_matches(adb: Any, pid: int, remote_workload: str) -> bool:
+    script = (
+        f"test -r /proc/{pid}/cmdline && "
+        f"tr '\\000' ' ' < /proc/{pid}/cmdline | "
+        f"grep -Fq -- {shlex.quote(remote_workload)}"
+    )
+    return adb.shell(script, check=False).returncode == 0
+
+
+def stop_remote_workload(
+    adb: Any,
+    remote_pid_file: str,
+    remote_workload: str,
+    *,
+    require_pid: bool,
+) -> bool:
+    pid_text = DIAGNOSE.device_value(adb, f"cat {shlex.quote(remote_pid_file)}")
+    if not re.fullmatch(r"[1-9][0-9]*", pid_text):
+        if require_pid:
+            raise AcceptanceError("workload PID record is missing or invalid")
+        return True
+    pid = int(pid_text)
+    if not remote_workload_matches(adb, pid, remote_workload):
+        return True
+    adb.shell(f"kill -TERM {pid}", check=False)
+    for _ in range(50):
+        if not remote_workload_matches(adb, pid, remote_workload):
+            return True
+        time.sleep(0.1)
+    if remote_workload_matches(adb, pid, remote_workload):
+        adb.shell(f"kill -KILL {pid}", check=False)
+    for _ in range(20):
+        if not remote_workload_matches(adb, pid, remote_workload):
+            return True
+        time.sleep(0.1)
+    raise AcceptanceError("workload process cleanup could not be verified")
 
 
 def validate_scenario_report(
@@ -125,7 +169,9 @@ def run_acceptance(args: argparse.Namespace) -> Path:
     session = uuid.uuid4().hex[:12]
     remote_dir = f"/data/local/tmp/anettrace-connect-accept-{session}"
     remote_workload = f"{remote_dir}/connect-workload"
+    remote_pid_files: list[str] = []
     results: list[dict[str, Any]] = []
+    workload_process_cleanup_verified = False
     try:
         adb.shell(
             f"mkdir -p {shlex.quote(remote_dir)} && chmod 0700 {shlex.quote(remote_dir)}"
@@ -134,6 +180,8 @@ def run_acceptance(args: argparse.Namespace) -> Path:
         adb.shell(f"chmod 0700 {shlex.quote(remote_workload)}")
         for scenario, expected in SCENARIOS.items():
             scenario_output = output / scenario
+            remote_pid_file = f"{remote_dir}/{scenario}.pid"
+            remote_pid_files.append(remote_pid_file)
             diagnose_argv = [
                 "--package",
                 args.package,
@@ -157,7 +205,7 @@ def run_acceptance(args: argparse.Namespace) -> Path:
             diagnose_argv.append("--external-command")
             diagnose_argv.extend(
                 external_workload_command(
-                    args, remote_workload, uid, scenario
+                    args, remote_workload, remote_pid_file, uid, scenario
                 )
             )
             try:
@@ -172,8 +220,34 @@ def run_acceptance(args: argparse.Namespace) -> Path:
             )
             result["report_sha256"] = sha256(scenario_output / "report.json")
             results.append(result)
+            stop_remote_workload(
+                adb,
+                remote_pid_file,
+                remote_workload,
+                require_pid=True,
+            )
     finally:
-        adb.shell(f"rm -rf {shlex.quote(remote_dir)}", check=False)
+        try:
+            workload_process_cleanup_verified = all(
+                stop_remote_workload(
+                    adb,
+                    remote_pid_file,
+                    remote_workload,
+                    require_pid=False,
+                )
+                for remote_pid_file in remote_pid_files
+            )
+        finally:
+            adb.shell(f"rm -rf {shlex.quote(remote_dir)}", check=False)
+
+    cleanup_verified = (
+        workload_process_cleanup_verified
+        and adb.run("get-state", check=False).stdout.strip() == "device"
+        and adb.shell(f"test -e {shlex.quote(remote_dir)}", check=False).returncode
+        != 0
+    )
+    if not cleanup_verified:
+        raise AcceptanceError("acceptance workload cleanup was not verified")
 
     summary = {
         "schema_version": SCHEMA,
@@ -183,6 +257,7 @@ def run_acceptance(args: argparse.Namespace) -> Path:
         "binary_sha256": sha256(args.binary.resolve()),
         "package_included": args.include_package,
         **({"package": args.package} if args.include_package else {}),
+        "workload_cleanup_verified": cleanup_verified,
         "results": results,
     }
     summary_path = output / "acceptance-summary.json"

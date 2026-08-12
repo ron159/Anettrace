@@ -38,6 +38,18 @@
         "attempt_count": {"type": "integer", "minimum": 0},
         "outcome_counts": {
           "type": "object",
+          "propertyNames": {
+            "enum": [
+              "success",
+              "local_rejection",
+              "network_unreachable",
+              "peer_refused",
+              "timeout_no_response",
+              "kernel_drop",
+              "interrupted_or_cancelled",
+              "incomplete_or_unknown"
+            ]
+          },
           "additionalProperties": {
             "type": "integer",
             "minimum": 0
@@ -49,6 +61,20 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["uid", "application_id", "package_included", "shared_uid_ambiguous"],
+      "allOf": [
+        {
+          "if": {"properties": {"package_included": {"const": true}}},
+          "then": {"required": ["package", "shared_uid_candidates"]},
+          "else": {
+            "not": {
+              "anyOf": [
+                {"required": ["package"]},
+                {"required": ["shared_uid_candidates"]}
+              ]
+            }
+          }
+        }
+      ],
       "properties": {
         "uid": {"type": "integer", "minimum": 0},
         "application_id": {"$ref": "#/$defs/id"},

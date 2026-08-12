@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import importlib.util
 import json
@@ -145,6 +146,68 @@ def capability(adb: Any, script: str) -> bool:
     return adb.shell(script, check=False).returncode == 0
 
 
+def _protobuf_varint(data: bytes, offset: int) -> tuple[int, int]:
+    value = 0
+    for shift in range(0, 70, 7):
+        if offset >= len(data):
+            raise DiagnosticError("truncated Perfetto service-state protobuf")
+        byte = data[offset]
+        offset += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value, offset
+    raise DiagnosticError("invalid Perfetto service-state protobuf varint")
+
+
+def parse_perfetto_service_state(data: bytes) -> dict[str, Any]:
+    values: dict[int, int] = {}
+    offset = 0
+    while offset < len(data):
+        key, offset = _protobuf_varint(data, offset)
+        field = key >> 3
+        wire_type = key & 7
+        if not field:
+            raise DiagnosticError("invalid Perfetto service-state protobuf field")
+        if wire_type == 0:
+            value, offset = _protobuf_varint(data, offset)
+            if field in (3, 4, 7):
+                values[field] = value
+        elif wire_type == 1:
+            offset += 8
+        elif wire_type == 2:
+            size, offset = _protobuf_varint(data, offset)
+            offset += size
+        elif wire_type == 5:
+            offset += 4
+        else:
+            raise DiagnosticError(
+                f"unsupported Perfetto service-state wire type: {wire_type}"
+            )
+        if offset > len(data):
+            raise DiagnosticError("truncated Perfetto service-state protobuf field")
+    if values.get(7) != 1 or 3 not in values or 4 not in values:
+        raise DiagnosticError("Perfetto cannot report active tracing sessions")
+    return {
+        "supports_tracing_sessions": True,
+        "session_count": values[3],
+        "started_session_count": values[4],
+    }
+
+
+def query_perfetto_service_state(adb: Any) -> dict[str, Any]:
+    result = adb.shell("perfetto --query-raw | base64", check=False)
+    if result.returncode != 0:
+        raise DiagnosticError("Perfetto service-state query failed")
+    encoded = "".join(result.stdout.split())
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (ValueError, base64.binascii.Error) as error:
+        raise DiagnosticError("Perfetto service-state query was not valid base64") from error
+    if not raw:
+        raise DiagnosticError("Perfetto service-state query returned no data")
+    return parse_perfetto_service_state(raw)
+
+
 def resolve_package(adb: Any, package: str, include_package: bool) -> tuple[int, list[str], int]:
     if not re.fullmatch(r"[A-Za-z0-9._:]+", package):
         raise DiagnosticError("invalid Android package name")
@@ -156,23 +219,18 @@ def resolve_package(adb: Any, package: str, include_package: bool) -> tuple[int,
     if len(exact) != 1:
         raise DiagnosticError(f"package is not installed or is ambiguous: {package}")
     uid = exact[0][1]
-    count_output = device_value(
-        adb,
-        "cmd package list packages -U | "
-        f"awk '$2 == \"uid:{uid}\" {{count++}} END {{print count+0}}'",
+    candidate_output = device_value(
+        adb, f"cmd package list packages -U --uid {uid}"
     )
-    try:
-        candidate_count = int(count_output)
-    except ValueError as error:
-        raise DiagnosticError("cannot determine shared UID ambiguity") from error
-    candidates: list[str] = []
-    if include_package:
-        candidate_output = device_value(
-            adb,
-            "cmd package list packages -U | "
-            f"awk '$2 == \"uid:{uid}\" {{sub(/^package:/, \"\", $1); print $1}}'",
-        )
-        candidates = sorted(line for line in candidate_output.splitlines() if line)
+    candidate_matches = re.findall(
+        rf"package:([^\s]+)\s+uid:{uid}(?:\s|$)", candidate_output
+    )
+    candidates = sorted(set(candidate_matches))
+    candidate_count = len(candidates)
+    if package not in candidates or candidate_count < 1:
+        raise DiagnosticError("cannot determine shared UID ambiguity")
+    if not include_package:
+        candidates = []
     return uid, candidates, candidate_count
 
 
@@ -196,7 +254,22 @@ def device_preflight(
         "btf_vmlinux": capability(adb, "test -r /sys/kernel/btf/vmlinux"),
         "tracefs": capability(adb, "test -d /sys/kernel/tracing/events"),
         "current_tracer_nop": current_tracer == "nop",
+        "global_trace_events_idle": capability(
+            adb,
+            "test \"$(cat /sys/kernel/tracing/tracing_on)\" != 1 || "
+            "test -z \"$(cat /sys/kernel/tracing/set_event)\"",
+        ),
+        "trace_instances_idle": capability(
+            adb,
+            "for trace_instance in /sys/kernel/tracing/instances/*; do "
+            "test -d \"$trace_instance\" || continue; "
+            "test \"$(cat \"$trace_instance/tracing_on\")\" != 1 || "
+            "{ test \"$(cat \"$trace_instance/current_tracer\")\" = nop && "
+            "test -z \"$(cat \"$trace_instance/set_event\")\"; } || exit 1; "
+            "done",
+        ),
         "perfetto": capability(adb, "test -x /system/bin/perfetto"),
+        "base64": capability(adb, "test -x /system/bin/base64"),
         "raw_syscalls_enter": capability(
             adb, "test -r /sys/kernel/tracing/events/raw_syscalls/sys_enter/format"
         ),
@@ -243,13 +316,49 @@ def device_preflight(
         "tcp_ack_update_rtt_symbol": capability(
             adb, "grep -q -w tcp_ack_update_rtt /proc/kallsyms"
         ),
+        "tcp_ack_update_rtt_kprobe_allowed": capability(
+            adb,
+            "grep -q -w tcp_ack_update_rtt /proc/kallsyms && "
+            "(test ! -r /sys/kernel/debug/kprobes/blacklist || "
+            "! grep -q -w tcp_ack_update_rtt /sys/kernel/debug/kprobes/blacklist)",
+        ),
+        "tcp_tx_kprobe_allowed": capability(
+            adb,
+            "grep -q -w __tcp_transmit_skb /proc/kallsyms && "
+            "(test ! -r /sys/kernel/debug/kprobes/blacklist || "
+            "! grep -q -w __tcp_transmit_skb /sys/kernel/debug/kprobes/blacklist)",
+        ),
+        "tcp_v4_rx_kprobe_allowed": capability(
+            adb,
+            "grep -q -w tcp_v4_rcv /proc/kallsyms && "
+            "(test ! -r /sys/kernel/debug/kprobes/blacklist || "
+            "! grep -q -w tcp_v4_rcv /sys/kernel/debug/kprobes/blacklist)",
+        ),
+        "tcp_v6_rx_kprobe_allowed": capability(
+            adb,
+            "grep -q -w tcp_v6_rcv /proc/kallsyms && "
+            "(test ! -r /sys/kernel/debug/kprobes/blacklist || "
+            "! grep -q -w tcp_v6_rcv /sys/kernel/debug/kprobes/blacklist)",
+        ),
     }
+    perfetto_service_state: dict[str, Any] = {}
+    if checks["perfetto"] and checks["base64"]:
+        perfetto_service_state = query_perfetto_service_state(adb)
+    checks["perfetto_session_query"] = bool(perfetto_service_state)
+    checks["perfetto_no_active_sessions"] = (
+        perfetto_service_state.get("started_session_count") == 0
+    )
     required = (
         "root_adb_shell",
         "btf_vmlinux",
         "tracefs",
         "current_tracer_nop",
+        "global_trace_events_idle",
+        "trace_instances_idle",
         "perfetto",
+        "base64",
+        "perfetto_session_query",
+        "perfetto_no_active_sessions",
         "raw_syscalls_enter",
         "raw_syscalls_exit",
         "socket_state",
@@ -267,8 +376,17 @@ def device_preflight(
         required += ("sched_switch",)
     missing_required = [name for name in required if not checks[name]]
     if missing_required:
+        conflict_detail = ""
+        if not checks["perfetto_no_active_sessions"] and perfetto_service_state:
+            conflict_detail = (
+                "; started Perfetto sessions: "
+                + str(perfetto_service_state["started_session_count"])
+                + "; existing tracing is not modified"
+            )
         raise DiagnosticError(
-            "missing core device capabilities: " + ", ".join(missing_required)
+            "missing core device capabilities: "
+            + ", ".join(missing_required)
+            + conflict_detail
         )
     optional = tuple(name for name in checks if name not in required)
     missing_optional = [name for name in optional if not checks[name]]
@@ -307,6 +425,7 @@ def device_preflight(
         "existing_tracing": {
             "tracing_on": device_value(adb, "cat /sys/kernel/tracing/tracing_on"),
             "current_tracer": current_tracer,
+            "perfetto": perfetto_service_state,
         },
     }
     return device, uid, candidates, candidate_count, missing_optional

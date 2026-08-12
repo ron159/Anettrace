@@ -38,6 +38,26 @@ class SoakContractTest(unittest.TestCase):
         self.assertEqual(args.baseline_seconds, 30)
         self.assertEqual(args.resource_sample_interval, 5)
 
+    def test_traced_workload_records_the_actual_child_pid(self) -> None:
+        traced_workload = MODULE.workload_script(
+            "/data/local/tmp/session/connect-workload",
+            10123,
+            run_seconds=1805,
+            interval_ms=250,
+        )
+        bounded_workload = (
+            f"{traced_workload} & workload_pid=$!; "
+            "echo $workload_pid > /data/local/tmp/session/traced.pid; "
+            "wait $workload_pid"
+        )
+        script = "exec toybox timeout -s TERM 1815 sh -c " + MODULE.shlex.quote(
+            bounded_workload
+        )
+        self.assertIn("workload_pid=$!", script)
+        self.assertIn("echo $workload_pid", script)
+        self.assertIn("exec toybox timeout", script)
+        self.assertIn("--uid 10123", script)
+
     def test_baseline_summary_is_strict(self) -> None:
         self.assertEqual(
             MODULE.baseline_result(

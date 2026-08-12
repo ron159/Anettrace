@@ -86,6 +86,8 @@ class ReleaseAssetTest(unittest.TestCase):
                 f"{prefix}/tools/capture_android_trace.py",
                 f"{prefix}/tools/anettrace_to_perfetto.py",
                 f"{prefix}/tools/merge_trace_with_anettrace.py",
+                f"{prefix}/tools/requirements-perfetto.txt",
+                f"{prefix}/tools/perfetto_sql/anettrace_integrity.sql",
                 f"{prefix}/tools/perfetto_sql/connect_diagnostics.sql",
                 f"{prefix}/tools/perfetto_sql/connect_diagnostics_metrics.sql",
             }

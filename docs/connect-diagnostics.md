@@ -41,7 +41,9 @@ the Android Actions artifact. The gate runs each scenario three times and keeps
 only privacy-filtered reports:
 
 ```sh
-python3 tools/validate_android_connect.py \
+python3 -m venv /tmp/anettrace-connect-venv
+/tmp/anettrace-connect-venv/bin/pip install -r tools/requirements-perfetto.txt
+/tmp/anettrace-connect-venv/bin/python tools/validate_android_connect.py \
   --package com.example.app \
   --binary /path/to/anettrace \
   --workload /path/to/anettrace-connect-workload \
@@ -59,7 +61,7 @@ records collector CPU, peak RSS, event-file growth, lost events, truncation and
 verified device cleanup:
 
 ```sh
-python3 tools/soak_android_connect.py \
+/tmp/anettrace-connect-venv/bin/python tools/soak_android_connect.py \
   --package com.example.app \
   --binary /path/to/anettrace-0.5.0-android-arm64-dual \
   --workload /path/to/anettrace-0.5.0-connect-workload-android-arm64 \
@@ -75,6 +77,12 @@ silently compared with an undocumented threshold.
 If a core probe or event-integrity requirement is missing, Anettrace produces
 an `invalid` report without a root-cause verdict. Missing optional evidence
 produces a `degraded` report with the unavailable capability listed.
+
+Preflight also reads Perfetto's protobuf service state through `--query-raw`.
+If another started Perfetto session exists, the diagnostic refuses to start; it
+does not stop, attach to, or alter that session. Retry only after its owner has
+finished it. Active global or per-instance tracefs event collection is treated
+the same way; merely having an idle tracefs instance is not a conflict.
 
 ## Diagnostic unit and outcomes
 
@@ -120,6 +128,8 @@ By default it does not persist package names, shared-UID package candidates,
 device serials, fingerprints, account data or the device application list.
 `--include-package` opts the current report into storing the selected package
 and shared-UID candidates.
+Shared-UID detection queries only packages assigned to the selected UID; it
+does not enumerate the full device package list.
 
 The v1 collector does not read or store payloads, URLs, headers, SNI, DNS query
 names or DNS response content. It does not install a TLS probe.

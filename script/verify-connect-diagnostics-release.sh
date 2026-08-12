@@ -16,6 +16,8 @@ android_archive="${android_binary}.tar.bz2"
 host_archive="anettrace-${version}-host-tools.tar.bz2"
 connect_workload="anettrace-${version}-connect-workload-android-arm64"
 sbom="anettrace-${version}-sbom.cdx.json"
+staging_root="$(mktemp -d "${TMPDIR:-/tmp}/anettrace-release-verify.XXXXXX")"
+trap 'rm -rf -- "$staging_root"' EXIT
 
 expected="$(printf '%s\n' \
 	"$android_binary" "$android_archive" "$connect_workload" \
@@ -41,18 +43,28 @@ readelf -h "$asset_dir/$connect_workload" | grep -q 'Machine:.*AArch64'
 ! readelf -l "$asset_dir/$connect_workload" | grep -q INTERP
 ! readelf -d "$asset_dir/$connect_workload" | grep -q NEEDED
 
-tar -tjf "$asset_dir/$android_archive" | \
-	grep -q "^anettrace-${version}-android-arm64-dual/anettrace$"
-tar -tjf "$asset_dir/$host_archive" | \
-	grep -q "^anettrace-${version}-host-tools/tools/diagnose_android_connect.py$"
-tar -tjf "$asset_dir/$host_archive" | \
-	grep -q "^anettrace-${version}-host-tools/tools/validate_android_connect.py$"
-tar -tjf "$asset_dir/$host_archive" | \
-	grep -q "^anettrace-${version}-host-tools/tools/soak_android_connect.py$"
-tar -tjf "$asset_dir/$host_archive" | \
-	grep -q "^anettrace-${version}-host-tools/schemas/connect-diagnostics-v1.schema.json$"
-tar -tjf "$asset_dir/$host_archive" | \
-	grep -q "^anettrace-${version}-host-tools/tools/perfetto_sql/connect_diagnostics.sql$"
+android_member="anettrace-${version}-android-arm64-dual/anettrace"
+android_members="$(tar -tjf "$asset_dir/$android_archive")"
+grep -Fxq "$android_member" <<<"$android_members"
+tar -xjf "$asset_dir/$android_archive" -C "$staging_root" "$android_member"
+cmp "$asset_dir/$android_binary" "$staging_root/$android_member"
+
+host_prefix="anettrace-${version}-host-tools"
+host_members="$(tar -tjf "$asset_dir/$host_archive")"
+for member in \
+	VERSION README.md LICENSE docs/connect-diagnostics.md \
+	schemas/connect-diagnostics-v1.schema.json \
+	tools/anettrace_to_perfetto.py tools/capture_android_trace.py \
+	tools/connect_diagnostics.py tools/diagnose_android_connect.py \
+	tools/validate_android_connect.py tools/soak_android_connect.py \
+	tools/merge_trace_with_anettrace.py tools/requirements-perfetto.txt \
+	tools/perfetto_sql/anettrace_integrity.sql \
+	tools/perfetto_sql/connect_diagnostics.sql \
+	tools/perfetto_sql/connect_diagnostics_metrics.sql; do
+	grep -Fxq "$host_prefix/$member" <<<"$host_members"
+done
+test "$(tar -xOf "$asset_dir/$host_archive" "$host_prefix/VERSION" | \
+	tr -d '[:space:]')" = "$version"
 
 python3 - "$asset_dir" "$version" <<'PY'
 import hashlib

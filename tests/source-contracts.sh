@@ -85,6 +85,13 @@ require_text 'connect_required' src/trace.h
 require_text 'required connect diagnostic trace is unavailable' src/trace.c
 require_text 'bpf_program__attach_tracepoint' src/trace_probe.c
 require_text 'connect_diagnostics_metrics.sql' tools/diagnose_android_connect.py
+require_text 'perfetto --query-raw | base64' tools/diagnose_android_connect.py
+require_text 'perfetto_no_active_sessions' tools/diagnose_android_connect.py
+require_text 'global_trace_events_idle' tools/diagnose_android_connect.py
+require_text 'trace_instances_idle' tools/diagnose_android_connect.py
+require_text 'tcp_tx_kprobe_allowed' tools/diagnose_android_connect.py
+require_text 'tcp_v4_rx_kprobe_allowed' tools/diagnose_android_connect.py
+require_text 'tcp_v6_rx_kprobe_allowed' tools/diagnose_android_connect.py
 require_text 'process_exit_ns' tools/perfetto_sql/connect_diagnostics_metrics.sql
 require_text 'DEFINE_TP_SK(inet_sock_set_state' src/progs/core.c
 require_text 'perfetto_export_event(data, cpu, size);' src/trace.c
@@ -211,6 +218,8 @@ require_text 'TCP_USER_TIMEOUT' tests/android/connect_workload.c
 require_text 'timeout_no_response' tools/validate_android_connect.py
 require_text 'release soak duration must be at least 1800 seconds' \
 	tools/soak_android_connect.py
+require_text 'stop_remote_workload' tools/validate_android_connect.py
+require_text 'workload_cleanup_verified' tools/soak_android_connect.py
 require_text 'resource_sampling' tools/capture_android_trace.py
 require_text 'connect_diagnostics.sql' docs/connect-diagnostics.md
 require_text 'CycloneDX' tools/generate_release_sbom.py

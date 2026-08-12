@@ -64,7 +64,9 @@ Wireshark 的链路层字节数。
 使用与当前源码 commit 匹配的 Android arm64 dual 二进制和 Trace Processor，在主机执行：
 
 ```shell
-python3 tools/diagnose_android_connect.py \
+python3 -m venv /tmp/anettrace-connect-venv
+/tmp/anettrace-connect-venv/bin/pip install -r tools/requirements-perfetto.txt
+/tmp/anettrace-connect-venv/bin/python tools/diagnose_android_connect.py \
   --package com.example.app \
   --binary /path/to/anettrace-0.5.0-android-arm64-dual \
   --trace-processor /path/to/trace_processor_shell \

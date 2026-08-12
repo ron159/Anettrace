@@ -152,6 +152,7 @@ def run_soak(args: argparse.Namespace) -> Path:
     session = uuid.uuid4().hex[:12]
     remote_dir = f"/data/local/tmp/anettrace-connect-soak-{session}"
     remote_workload = f"{remote_dir}/connect-workload"
+    remote_pid_file = f"{remote_dir}/traced.pid"
     try:
         adb.shell(
             f"mkdir -p {shlex.quote(remote_dir)} && chmod 0700 {shlex.quote(remote_dir)}"
@@ -172,15 +173,21 @@ def run_soak(args: argparse.Namespace) -> Path:
             raise SoakError("baseline workload failed")
         baseline_completed, baseline_elapsed_ms = baseline_result(baseline.stdout)
 
+        traced_workload = workload_script(
+            remote_workload,
+            uid,
+            run_seconds=args.duration + 5,
+            interval_ms=args.interval_ms,
+            progress_every=20,
+        )
+        bounded_workload = (
+            f"{traced_workload} & workload_pid=$!; "
+            f"echo $workload_pid > {shlex.quote(remote_pid_file)}; "
+            "wait $workload_pid"
+        )
         traced_script = (
-            f"exec toybox timeout -s TERM {args.duration + 15} "
-            + workload_script(
-                remote_workload,
-                uid,
-                run_seconds=args.duration + 5,
-                interval_ms=args.interval_ms,
-                progress_every=20,
-            )
+            f"exec toybox timeout -s TERM {args.duration + 15} sh -c "
+            + shlex.quote(bounded_workload)
         )
         diagnose_argv = [
             "--package",
@@ -216,10 +223,17 @@ def run_soak(args: argparse.Namespace) -> Path:
             (diagnosis / "manifest.json").read_text(encoding="utf-8")
         )
         traced = validate_soak_report(report, manifest, args.duration)
+        process_cleanup_verified = ACCEPTANCE.stop_remote_workload(
+            adb,
+            remote_pid_file,
+            remote_workload,
+            require_pid=True,
+        )
         adb.shell(f"rm -rf {shlex.quote(remote_dir)}", check=False)
         cleanup_state = adb.run("get-state", check=False)
         workload_cleanup_verified = (
-            cleanup_state.returncode == 0
+            process_cleanup_verified
+            and cleanup_state.returncode == 0
             and cleanup_state.stdout.strip() == "device"
             and adb.shell(
                 f"test -e {shlex.quote(remote_dir)}", check=False
@@ -257,7 +271,15 @@ def run_soak(args: argparse.Namespace) -> Path:
         )
         return summary_path
     finally:
-        adb.shell(f"rm -rf {shlex.quote(remote_dir)}", check=False)
+        try:
+            ACCEPTANCE.stop_remote_workload(
+                adb,
+                remote_pid_file,
+                remote_workload,
+                require_pid=False,
+            )
+        finally:
+            adb.shell(f"rm -rf {shlex.quote(remote_dir)}", check=False)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -292,7 +314,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         summary = run_soak(args)
-    except (SoakError, DIAGNOSE.DiagnosticError, OSError) as error:
+    except (
+        SoakError,
+        ACCEPTANCE.AcceptanceError,
+        DIAGNOSE.DiagnosticError,
+        OSError,
+    ) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     print(f"soak summary: {summary}")
