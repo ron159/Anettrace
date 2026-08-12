@@ -148,6 +148,56 @@ class ConnectDiagnosticsContractTest(unittest.TestCase):
         )
         self.assertEqual(report["attempts"][0]["outcome"], "peer_refused")
 
+    def test_pending_socket_close_is_correlated_cancellation(self) -> None:
+        records = [
+            self.records[0],
+            {
+                "schema": MODULE.EVENT_SCHEMA,
+                "type": "connect_attempt_start",
+                "ts_ns": 2_000_000_000,
+                "attempt_id": "00000000000000dd",
+                "uid": 10000,
+                "tid": 200,
+                "tgid": 200,
+                "fd": 20,
+            },
+            {
+                "schema": MODULE.EVENT_SCHEMA,
+                "type": "connect_socket",
+                "ts_ns": 2_000_010_000,
+                "attempt_id": "00000000000000dd",
+                "socket_instance_id": "00000000000000ee",
+            },
+            {
+                "schema": MODULE.EVENT_SCHEMA,
+                "type": "connect_attempt_end",
+                "ts_ns": 2_000_020_000,
+                "attempt_id": "00000000000000dd",
+                "result": -115,
+                "error": 115,
+                "async_pending": True,
+            },
+            {
+                "schema": MODULE.EVENT_SCHEMA,
+                "type": "socket_event",
+                "ts_ns": 2_000_030_000,
+                "socket_id": "00000000000000ee",
+                "stage": "tcp_close",
+            },
+            {
+                "schema": MODULE.EVENT_SCHEMA,
+                "type": "trace_end",
+                "ts_ns": 2_000_040_000,
+                "lost_events": 0,
+            },
+        ]
+        report = MODULE.analyze_records(
+            records, report_id="0123456789abcdef", uid=10000
+        )
+        attempt = report["attempts"][0]
+        self.assertEqual(attempt["outcome"], "interrupted_or_cancelled")
+        self.assertEqual(attempt["evidence_strength"], "correlated")
+
     def test_unknown_errno_is_not_guessed(self) -> None:
         records = [
             self.records[0],

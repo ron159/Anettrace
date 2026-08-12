@@ -862,7 +862,7 @@ out:
 	e->key = skb ? (u64)(void *)skb : (u64)(void *)info->sk;
 #endif
 	if (args->perfetto && sk && !skb)
-		e->key_generation = ((detail_event_t *)e)->owner_socket_generation;
+		e->key_generation = perfetto_socket_generation(sk, false);
 	e->func = info->func;
 	e->meta = info->is_return ? FUNC_TYPE_TRACING_RET : FUNC_TYPE_FUNC;
 	e->tid = tid;

@@ -351,6 +351,10 @@ def build_attempts(records: Sequence[dict[str, Any]]) -> tuple[list[Attempt], in
             elif stage == "tcp_ack_update_rtt" and "first_rtt_us" in record:
                 attempt.rtt_samples.append(int(record["first_rtt_us"]))
                 attempt.add_evidence(record, "connect_rtt")
+            elif stage in ("tcp_close", "tcp_v4_destroy_sock"):
+                if attempt.async_pending and not attempt.established:
+                    attempt.cancelled = True
+                    attempt.add_evidence(record, "connect_cancel")
         elif record_type == "packet_event":
             tcp_flags = int(record.get("tcp_flags", 0))
             is_connect_syn = bool(tcp_flags & 0x02) and not bool(tcp_flags & 0x10)
