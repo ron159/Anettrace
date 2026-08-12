@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <sys/sysinfo.h>
 #include <parse_sym.h>
 
@@ -246,7 +247,7 @@ found:
 	put_fake_analy_ctx(pos->fake_ctx);
 	e->entry = pos;
 	pos->status &= ~ANALY_ENTRY_ONLIST;
-	pr_debug("found exit for entry: %s(%x) pid=%d with return "
+	pr_debug("found exit for entry: %s(%llx) pid=%d with return "
 		 "value %llx, ctx:%llx:%u\n", trace->name, pos->event->key,
 		 key, e->event.val, PTR2X(pos->ctx),
 		 pos->ctx->refs);
