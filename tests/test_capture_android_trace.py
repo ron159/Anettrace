@@ -73,6 +73,23 @@ class CliContractTest(unittest.TestCase):
         self.assertEqual(args.max_device_file_mib, 256)
         self.assertTrue(args.redact_device_metadata)
 
+    def test_resource_sampling_is_explicit_and_summarized(self) -> None:
+        args = MODULE.parse_args(
+            ["--uid", "10000", "--resource-sample-interval", "5"]
+        )
+        self.assertEqual(args.resource_sample_interval, 5)
+        summary = MODULE.summarize_resource_samples(
+            [
+                {"elapsed_s": 1.0, "rss_kib": 100, "cpu_ticks": 10, "event_file_bytes": 4},
+                {"elapsed_s": 6.0, "rss_kib": 140, "cpu_ticks": 60, "event_file_bytes": 20},
+            ],
+            100,
+        )
+        self.assertEqual(summary["peak_rss_kib"], 140)
+        self.assertEqual(summary["cpu_seconds"], 0.5)
+        self.assertEqual(summary["average_cpu_percent"], 10.0)
+        self.assertEqual(summary["max_event_file_bytes"], 20)
+
     def test_uid_zero_needs_exact_tid(self) -> None:
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             MODULE.parse_args(["--uid", "0"])
@@ -195,6 +212,8 @@ class SuccessfulCaptureTest(unittest.TestCase):
                     return self.result()
                 if script.startswith("test -s "):
                     return self.result()
+                if script.startswith("test -e "):
+                    return self.result(returncode=1)
                 return self.result()
 
             def push(self, _source: Path, _destination: str) -> None:
@@ -237,6 +256,8 @@ class SuccessfulCaptureTest(unittest.TestCase):
             self.assertEqual(manifest["device"]["boot_id"], "boot-123")
             self.assertEqual(manifest["anettrace"]["lost_events"], 0)
             self.assertIn("--trace-detail", manifest["commands"]["anettrace"])
+            self.assertTrue(manifest["cleanup"]["verified"])
+            self.assertEqual(manifest["cleanup"]["remaining"], [])
             output_names = {record["path"] for record in manifest["outputs"]}
             self.assertIn("anettrace-events.jsonl", output_names)
             self.assertIn("system.pftrace", output_names)

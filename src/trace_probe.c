@@ -13,44 +13,63 @@ struct list_head cpus[MAX_CPU_COUNT];
 trace_ops_t probe_ops;
 static struct kprobe *skel;
 
-static void probe_trace_attach_manual(char *prog_name, char *func,
-				      bool retprobe)
+static int probe_trace_attach_manual(trace_t *trace, char *prog_name,
+				     bool retprobe)
 {
 	struct bpf_program *prog;
+	struct bpf_link *link;
 	bool legacy;
 	int err;
 
 	prog = bpf_pbn(skel->obj, prog_name);
 	if (!prog) {
 		pr_verb("failed to find prog %s\n", prog_name);
-		return;
+		return -ENOENT;
 	}
 
 	bpf_program__set_autoattach(prog, false);
+	if (!trace_is_func(trace)) {
+		char category[64], event[64];
+
+		if (!trace->tp || sscanf(trace->tp, "%63[^/]/%63s", category,
+					 event) != 2)
+			return -EINVAL;
+		link = bpf_program__attach_tracepoint(prog, category, event);
+		err = libbpf_get_error(link);
+		if (err) {
+			pr_err("failed to manually attach tracepoint %s\n",
+			       trace->tp);
+			return err;
+		}
+		pr_verb("manually attach tracepoint %s success\n", trace->tp);
+		return 0;
+	}
 	legacy = !file_exist(kprobe_type);
 
 again:
-	if (!legacy)
-		err = libbpf_get_error(bpf_program__attach_kprobe(prog,
-				       retprobe, func));
+	if (!legacy) {
+		link = bpf_program__attach_kprobe(prog, retprobe, trace->name);
+		err = libbpf_get_error(link);
+	}
 	else
 		err = compat_bpf_attach_kprobe(bpf_program__fd(prog),
-					       func, retprobe);
+					       trace->name, retprobe);
 
 	if (err && !legacy) {
 		pr_verb("retring to attach in legacy mode, prog=%s, func=%s\n",
-			prog_name, func);
+			prog_name, trace->name);
 		legacy = true;
 		goto again;
 	}
 
 	if (err) {
 		pr_err("failed to manually attach program prog=%s, func=%s\n",
-		       prog_name, func);
-		return;
+		       prog_name, trace->name);
+		return err;
 	}
 
 	pr_verb("manually attach prog %s success\n", prog_name);
+	return 0;
 }
 
 static int probe_trace_attach()
@@ -61,14 +80,24 @@ static int probe_trace_attach()
 
 again:
 	trace_for_each(trace) {
+		int err;
+
+		if (!trace_is_usable(trace))
+			continue;
 		if ((auto_attach && !(trace->status & TRACE_ATTACH_MANUAL)) ||
 		    (!auto_attach && (trace->status & TRACE_ATTACH_MANUAL))) {
-			probe_trace_attach_manual(trace->prog, trace->name, false);
+			err = probe_trace_attach_manual(trace, trace->prog, false);
+			if (err && trace_ctx.args.connect_diagnostics &&
+			    trace->connect_required)
+				return err;
 			if (!trace_is_ret(trace))
 				continue;
 
 			sprintf(kret_name, "ret%s", trace->prog);
-			probe_trace_attach_manual(kret_name, trace->name, true);
+			err = probe_trace_attach_manual(trace, kret_name, true);
+			if (err && trace_ctx.args.connect_diagnostics &&
+			    trace->connect_required)
+				return err;
 		}
 	}
 

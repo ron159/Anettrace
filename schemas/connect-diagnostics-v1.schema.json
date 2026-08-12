@@ -144,8 +144,10 @@
         "evidence_strength",
         "errno",
         "endpoint",
+        "network_context",
         "evidence",
-        "contributing_factors"
+        "contributing_factors",
+        "missing_evidence"
       ],
       "properties": {
         "attempt_id": {"$ref": "#/$defs/id"},
@@ -179,6 +181,7 @@
         },
         "errno": {"$ref": "#/$defs/errno"},
         "endpoint": {"$ref": "#/$defs/endpoint"},
+        "network_context": {"$ref": "#/$defs/network_context"},
         "evidence": {
           "type": "array",
           "items": {"$ref": "#/$defs/evidence"}
@@ -187,6 +190,42 @@
           "type": "array",
           "items": {"type": "string"},
           "uniqueItems": true
+        },
+        "missing_evidence": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "network_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interfaces", "network_namespace_ids", "android_fwmarks"],
+      "properties": {
+        "interfaces": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true
+        },
+        "network_namespace_ids": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 0},
+          "uniqueItems": true
+        },
+        "android_fwmarks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["mark", "net_id", "explicitly_selected", "protected_from_vpn"],
+            "properties": {
+              "mark": {"type": "integer", "minimum": 0},
+              "net_id": {"type": "integer", "minimum": 0, "maximum": 65535},
+              "explicitly_selected": {"type": "boolean"},
+              "protected_from_vpn": {"type": "boolean"}
+            }
+          }
         }
       }
     }

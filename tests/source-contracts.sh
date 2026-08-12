@@ -69,6 +69,7 @@ require_text 'PACKET_DIRECTION_RX' src/progs/shared.h
 require_text 'FUNC_STATUS_RX' src/progs/shared.h
 require_text 'FUNC_STATUS_TX' src/progs/shared.h
 require_text 'm_perfetto_socket_owner' src/progs/core.c
+require_text 'm_perfetto_socket_generation_counter' src/progs/core.c
 require_text 'm_perfetto_flow_owner' src/progs/core.c
 require_text 'm_perfetto_scratch' src/progs/core.c
 require_text 'pkt->l4.min.sport == bpf_htons(53)' src/progs/core.c
@@ -77,9 +78,20 @@ require_text 'SEC("kprobe/sk_alloc")' src/progs/core.c
 require_text 'SEC("tp/raw_syscalls/sys_enter")' src/progs/core.c
 require_text 'SEC("tp/raw_syscalls/sys_exit")' src/progs/core.c
 require_text 'SEC("kprobe/inet_stream_connect")' src/progs/core.c
+require_text 'SEC("tp/tcp/tcp_retransmit_skb")' src/progs/core.c
+require_text 'SEC("kprobe/tcp_close")' src/progs/core.c
+require_text 'CONNECT_EVENT_CANCEL' src/progs/shared.h
+require_text 'connect_required' src/trace.h
+require_text 'required connect diagnostic trace is unavailable' src/trace.c
+require_text 'bpf_program__attach_tracepoint' src/trace_probe.c
+require_text 'connect_diagnostics_metrics.sql' tools/diagnose_android_connect.py
+require_text 'process_exit_ns' tools/perfetto_sql/connect_diagnostics_metrics.sql
 require_text 'DEFINE_TP_SK(inet_sock_set_state' src/progs/core.c
 require_text 'perfetto_export_event(data, cpu, size);' src/trace.c
 require_text '\"type\":\"packet_event\"' src/perfetto_export.c
+require_text '\"drop_reason\"' src/perfetto_export.c
+require_text 'NATIVE_TRACK_CONNECT' src/perfetto_export.c
+require_text 'native_connect_track' src/perfetto_export.c
 require_text 'format_packet_flow_label(flow_id, pkt, flow_tag, sizeof(flow_tag));' \
 	src/perfetto_export.c
 require_text 'flow->display_index = ++tcp_flow_count;' src/perfetto_export.c
@@ -186,12 +198,29 @@ require_text 'raw_native_tracepacket_concat' \
 	tools/merge_trace_with_anettrace.py
 require_text 'capture_android_trace.py' tools/capture_android_perfetto.sh
 require_text 'perfetto==0.57.2' tools/requirements-perfetto.txt
+require_text 'jsonschema==4.23.0' tools/requirements-perfetto.txt
 require_text 'anettrace-${{ steps.product.outputs.version }}-android-arm64-dual' \
 	.github/workflows/build-android-arm64.yml
 require_text 'anettrace.connect-diagnostics.v1' \
 	schemas/connect-diagnostics-v1.schema.json
 require_text 'connect_attempt_start' tools/connect_diagnostics.py
 require_text 'runtime download is disabled' tools/diagnose_android_connect.py
+require_text '--recover-session' tools/diagnose_android_connect.py
+require_text '--external-command' tools/diagnose_android_connect.py
+require_text 'TCP_USER_TIMEOUT' tests/android/connect_workload.c
+require_text 'timeout_no_response' tools/validate_android_connect.py
+require_text 'release soak duration must be at least 1800 seconds' \
+	tools/soak_android_connect.py
+require_text 'resource_sampling' tools/capture_android_trace.py
 require_text 'connect_diagnostics.sql' docs/connect-diagnostics.md
+require_text 'CycloneDX' tools/generate_release_sbom.py
+require_text 'gh release create "${GITHUB_REF_NAME}"' \
+	.github/workflows/release.yml
+require_text 'gh release download "${GITHUB_REF_NAME}"' \
+	.github/workflows/release.yml
+require_text 'gh release edit "${GITHUB_REF_NAME}" --draft=false --latest' \
+	.github/workflows/release.yml
+require_text 'uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' \
+	.github/workflows/release.yml
 
 echo "source contracts: ok"

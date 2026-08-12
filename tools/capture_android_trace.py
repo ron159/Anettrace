@@ -304,6 +304,64 @@ def remote_file_exists(adb: Adb, path: str) -> bool:
     return adb.shell(f"test -s {shlex.quote(path)}", check=False).returncode == 0
 
 
+def remote_process_sample(
+    adb: Adb,
+    process: RemoteProcess,
+    event_path: str,
+    elapsed_s: float,
+) -> dict[str, Any] | None:
+    root_pid = process.pid
+    script = f"""
+root_pid={root_pid}
+rss_kib=0
+cpu_ticks=0
+child_pids=$(cat /proc/$root_pid/task/$root_pid/children 2>/dev/null)
+for process_id in $root_pid $child_pids; do
+  process_rss=$(awk '$1 == "VmRSS:" {{print $2}}' /proc/$process_id/status 2>/dev/null)
+  process_ticks=$(awk '{{print $14 + $15}}' /proc/$process_id/stat 2>/dev/null)
+  rss_kib=$((rss_kib + ${{process_rss:-0}}))
+  cpu_ticks=$((cpu_ticks + ${{process_ticks:-0}}))
+done
+event_bytes=$(stat -c %s {shlex.quote(event_path)} 2>/dev/null || echo 0)
+printf '%s %s %s\n' "$rss_kib" "$cpu_ticks" "$event_bytes"
+""".strip()
+    result = adb.shell(script, check=False)
+    if result.returncode != 0:
+        return None
+    fields = result.stdout.strip().split()
+    if len(fields) != 3 or not all(value.isdigit() for value in fields):
+        return None
+    return {
+        "elapsed_s": round(elapsed_s, 3),
+        "rss_kib": int(fields[0]),
+        "cpu_ticks": int(fields[1]),
+        "event_file_bytes": int(fields[2]),
+    }
+
+
+def summarize_resource_samples(
+    samples: Sequence[dict[str, Any]], clock_ticks_per_second: int
+) -> dict[str, Any]:
+    cpu_ticks = [int(sample["cpu_ticks"]) for sample in samples]
+    elapsed = [float(sample["elapsed_s"]) for sample in samples]
+    cpu_seconds = 0.0
+    average_cpu_percent = 0.0
+    if len(samples) >= 2 and elapsed[-1] > elapsed[0]:
+        cpu_seconds = max(0, cpu_ticks[-1] - cpu_ticks[0]) / clock_ticks_per_second
+        average_cpu_percent = cpu_seconds / (elapsed[-1] - elapsed[0]) * 100
+    return {
+        "samples": len(samples),
+        "clock_ticks_per_second": clock_ticks_per_second,
+        "peak_rss_kib": max((int(sample["rss_kib"]) for sample in samples), default=0),
+        "cpu_ticks_delta": max(0, cpu_ticks[-1] - cpu_ticks[0]) if samples else 0,
+        "cpu_seconds": round(cpu_seconds, 3),
+        "average_cpu_percent": round(average_cpu_percent, 3),
+        "max_event_file_bytes": max(
+            (int(sample["event_file_bytes"]) for sample in samples), default=0
+        ),
+    }
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -449,10 +507,18 @@ def start_external(command: Sequence[str], output_dir: Path) -> subprocess.Popen
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
+    log_path = output_dir / "external-command.log"
+    log = log_path.open("wb")
+    log_path.chmod(0o600)
+    kwargs["stdout"] = log
+    kwargs["stderr"] = subprocess.STDOUT
     try:
-        return subprocess.Popen(list(command), **kwargs)
+        process = subprocess.Popen(list(command), **kwargs)
     except OSError as exc:
+        log.close()
         raise CaptureError(f"failed to start external command: {exc}") from exc
+    log.close()
+    return process
 
 
 def stop_external(process: subprocess.Popen[Any], timeout_s: float = 5.0) -> None:
@@ -526,6 +592,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="device-side hard limit for the Anettrace event file",
     )
     parser.add_argument(
+        "--resource-sample-interval",
+        type=int,
+        help="sample collector CPU, RSS, and event-file size every N seconds",
+    )
+    parser.add_argument(
         "--redact-device-metadata",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -554,6 +625,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("duration must be a positive integer")
     if args.max_device_file_mib is not None and args.max_device_file_mib <= 0:
         parser.error("max device file size must be positive")
+    if args.resource_sample_interval is not None and args.resource_sample_interval <= 0:
+        parser.error("resource sample interval must be positive")
     if args.perfetto_config and args.profile == "none":
         parser.error("--perfetto-config cannot be used with --profile none")
     if args.simpleperf_app and args.simpleperf_pid:
@@ -592,11 +665,14 @@ def capture(args: argparse.Namespace) -> Path:
     started_at = utc_now()
     started_monotonic = time.monotonic()
     stop_requested = threading.Event()
+    resource_samples: list[dict[str, Any]] = []
+    clock_ticks_per_second = 100
     errors: list[str] = []
     warnings: list[str] = []
     commands: dict[str, Any] = {}
     remote_processes: list[RemoteProcess] = []
     external_process: subprocess.Popen[Any] | None = None
+    remote_session_created = False
     status = "failed"
     previous_handlers: dict[int, Any] = {}
 
@@ -614,6 +690,12 @@ def capture(args: argparse.Namespace) -> Path:
         "outputs": [],
         "errors": errors,
         "warnings": warnings,
+        "cleanup": {
+            "requested": not args.keep_remote,
+            "verified": False,
+            "remaining": [],
+        },
+        "resource_sampling": None,
     }
 
     def request_stop(_signum: int, _frame: Any) -> None:
@@ -670,6 +752,7 @@ def capture(args: argparse.Namespace) -> Path:
             f"mkdir -p {shlex.quote(remote_dir)} && "
             f"chmod 0700 {shlex.quote(remote_dir)}"
         )
+        remote_session_created = True
         adb.push(args.anettrace.resolve(), remote_binary)
         adb.shell(f"chmod 0700 {shlex.quote(remote_binary)}")
 
@@ -714,6 +797,14 @@ def capture(args: argparse.Namespace) -> Path:
         commands["anettrace"] = anettrace_parts
         anettrace_process = start_remote(adb, "anettrace", anettrace_command, remote_dir)
         remote_processes.append(anettrace_process)
+        if args.resource_sample_interval:
+            clock_ticks = device_value(adb, "getconf CLK_TCK")
+            if clock_ticks.isdigit() and int(clock_ticks) > 0:
+                clock_ticks_per_second = int(clock_ticks)
+            else:
+                warnings.append(
+                    "device clock tick rate unavailable; resource CPU uses Linux USER_HZ=100"
+                )
         time.sleep(0.2)
         if not remote_alive(adb, anettrace_process):
             raise CaptureError("Anettrace exited during startup")
@@ -771,6 +862,7 @@ def capture(args: argparse.Namespace) -> Path:
             external_process = start_external(args.external_command, output_dir)
 
         deadline = time.monotonic() + args.duration
+        next_resource_sample = time.monotonic()
         while time.monotonic() < deadline:
             if stop_requested.wait(timeout=min(0.25, max(0.0, deadline - time.monotonic()))):
                 interrupted = True
@@ -788,6 +880,22 @@ def capture(args: argparse.Namespace) -> Path:
                 raise CaptureError(
                     f"external command exited early with status {external_process.returncode}"
                 )
+            if (
+                args.resource_sample_interval
+                and anettrace_process
+                and time.monotonic() >= next_resource_sample
+            ):
+                sample = remote_process_sample(
+                    adb,
+                    anettrace_process,
+                    remote_events,
+                    time.monotonic() - started_monotonic,
+                )
+                if sample is not None:
+                    resource_samples.append(sample)
+                else:
+                    warnings.append("collector resource sample was unavailable")
+                next_resource_sample += args.resource_sample_interval
 
         if external_process and external_process.poll() not in (None, 0):
             raise CaptureError(
@@ -904,13 +1012,50 @@ def capture(args: argparse.Namespace) -> Path:
                 except CaptureError as exc:
                     warnings.append(f"partial output collection failed: {exc}")
 
-        if not args.keep_remote:
+        if args.resource_sample_interval:
+            samples_path = output_dir / "resource-samples.jsonl"
+            samples_path.write_text(
+                "".join(json.dumps(sample, sort_keys=True) + "\n" for sample in resource_samples),
+                encoding="utf-8",
+            )
+            samples_path.chmod(0o600)
+            manifest["resource_sampling"] = summarize_resource_samples(
+                resource_samples, clock_ticks_per_second
+            )
+
+        if not args.keep_remote and remote_session_created:
             try:
                 adb.shell(f"rm -rf {shlex.quote(remote_dir)}", check=False)
                 adb.shell(f"rm -f {shlex.quote(remote_config)}", check=False)
                 adb.shell(f"rm -f {shlex.quote(remote_system_trace)}", check=False)
+                cleanup_targets = {
+                    "session_directory": remote_dir,
+                    "perfetto_config": remote_config,
+                    "perfetto_trace": remote_system_trace,
+                }
+                device_ready = adb.run("get-state", check=False)
+                if device_ready.returncode != 0 or device_ready.stdout.strip() != "device":
+                    warnings.append("remote artifact cleanup could not be verified")
+                else:
+                    remaining = [
+                        name
+                        for name, path in cleanup_targets.items()
+                        if adb.shell(
+                            f"test -e {shlex.quote(path)}", check=False
+                        ).returncode
+                        == 0
+                    ]
+                    manifest["cleanup"]["remaining"] = remaining
+                    manifest["cleanup"]["verified"] = not remaining
+                if manifest["cleanup"]["remaining"]:
+                    warnings.append(
+                        "remote artifact cleanup is incomplete: "
+                        + ", ".join(manifest["cleanup"]["remaining"])
+                    )
             except CaptureError as exc:
                 warnings.append(f"remote directory cleanup failed: {exc}")
+        elif not args.keep_remote:
+            manifest["cleanup"]["verified"] = True
 
         manifest["status"] = status
         manifest["ended_at_utc"] = utc_now()

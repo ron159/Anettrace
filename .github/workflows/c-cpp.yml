@@ -6,6 +6,7 @@ on:
   pull_request:
     branches: [ master ]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -15,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -92,10 +93,15 @@ jobs:
           python3 -m unittest \
             tests/test_capture_android_trace.py \
             tests/test_connect_diagnostics.py \
-            tests/test_diagnose_android_connect.py
+            tests/test_diagnose_android_connect.py \
+            tests/test_validate_android_connect.py \
+            tests/test_soak_android_connect.py \
+            tests/test_release_assets.py
       - name: Run Perfetto conversion contract
         run: |
           python3 -m venv /tmp/perfetto-venv
           /tmp/perfetto-venv/bin/pip install -r tools/requirements-perfetto.txt
           /tmp/perfetto-venv/bin/python -m unittest \
-            tests/test_perfetto_converter.py tests/test_trace_merge.py
+            tests/test_perfetto_converter.py \
+            tests/test_trace_merge.py \
+            tests/test_connect_diagnostics_schema.py

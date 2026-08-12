@@ -137,6 +137,9 @@ class Attempt:
     retransmissions: int = 0
     rtt_samples: list[int] = field(default_factory=list)
     sched_delays: list[int] = field(default_factory=list)
+    interfaces: set[str] = field(default_factory=set)
+    network_namespaces: set[int] = field(default_factory=set)
+    socket_marks: set[int] = field(default_factory=set)
 
     def add_evidence(self, record: dict[str, Any], evidence_type: str) -> None:
         evidence = {
@@ -155,6 +158,30 @@ class Attempt:
             return self.error
         return None
 
+    def observe_network_context(self, record: dict[str, Any]) -> None:
+        interface = str(record.get("ifname", ""))
+        if interface:
+            self.interfaces.add(interface)
+        if record.get("netns") is not None:
+            self.network_namespaces.add(int(record["netns"]))
+        if record.get("mark") is not None:
+            self.socket_marks.add(int(record["mark"]))
+
+    def network_context(self) -> dict[str, Any]:
+        return {
+            "interfaces": sorted(self.interfaces),
+            "network_namespace_ids": sorted(self.network_namespaces),
+            "android_fwmarks": [
+                {
+                    "mark": mark,
+                    "net_id": mark & 0xFFFF,
+                    "explicitly_selected": bool(mark & 0x10000),
+                    "protected_from_vpn": bool(mark & 0x20000),
+                }
+                for mark in sorted(self.socket_marks)
+            ],
+        }
+
     def classify(self, report_status: str, trace_end_ns: int) -> tuple[str, str]:
         if report_status == "invalid":
             return "incomplete_or_unknown", "insufficient"
@@ -169,6 +196,8 @@ class Attempt:
             return "network_unreachable", "direct"
         if effective_error in (LINUX_ECONNRESET, LINUX_ECONNREFUSED):
             return "peer_refused", "direct"
+        if self.reset_while_connecting:
+            return "peer_refused", "correlated"
         if effective_error == LINUX_ETIMEDOUT:
             return "timeout_no_response", "direct"
         if effective_error in INTERRUPTED_ERRNOS:
@@ -176,8 +205,6 @@ class Attempt:
         if effective_error is not None:
             return "incomplete_or_unknown", "insufficient"
 
-        if self.reset_while_connecting:
-            return "peer_refused", "correlated"
         if self.cancelled:
             return "interrupted_or_cancelled", "correlated"
         if self.result == 0:
@@ -188,6 +215,28 @@ class Attempt:
         if self.ended_ns is None:
             self.ended_ns = trace_end_ns
         return "incomplete_or_unknown", "insufficient"
+
+    def missing_evidence(self, outcome: str, report_status: str) -> list[str]:
+        if outcome != "incomplete_or_unknown":
+            return []
+        missing: list[str] = []
+        if report_status == "invalid":
+            missing.append("valid_core_event_stream")
+        if self.result is None:
+            missing.append("connect_syscall_return")
+        if self.socket_instance_id is None:
+            missing.append("socket_association")
+        if self.async_pending:
+            if not self.established:
+                missing.append("established_socket_state")
+            if self.so_error in (None, LINUX_EINPROGRESS, LINUX_EALREADY):
+                missing.append("terminal_so_error")
+        effective_error = self.effective_error()
+        if effective_error is not None:
+            missing.append("recognized_errno_mapping")
+        if not missing:
+            missing.append("terminal_outcome_evidence")
+        return missing
 
     def report(self, report_status: str, trace_end_ns: int) -> dict[str, Any]:
         outcome, strength = self.classify(report_status, trace_end_ns)
@@ -214,8 +263,10 @@ class Attempt:
             "evidence_strength": strength,
             "errno": errno_record(effective_error),
             "endpoint": dict(self.endpoint),
+            "network_context": self.network_context(),
             "evidence": list(self.evidence),
             "contributing_factors": factors,
+            "missing_evidence": self.missing_evidence(outcome, report_status),
         }
 
 
@@ -285,6 +336,8 @@ def build_attempts(records: Sequence[dict[str, Any]]) -> tuple[list[Attempt], in
                 capture_end_ns = int(record.get("ts_ns", 0))
             continue
 
+        attempt.observe_network_context(record)
+
         if record_type == "connect_socket":
             socket_id = str(record["socket_instance_id"])
             previous = sockets.get(socket_id)
@@ -297,18 +350,27 @@ def build_attempts(records: Sequence[dict[str, Any]]) -> tuple[list[Attempt], in
             _update_endpoint(attempt, record)
             attempt.add_evidence(record, "connect_socket")
         elif record_type == "connect_attempt_end":
-            attempt.ended_ns = int(record["ts_ns"])
             attempt.result = int(record["result"])
             attempt.error = int(record.get("error", 0))
             attempt.async_pending = bool(record.get("async_pending", False))
+            if not attempt.async_pending:
+                attempt.ended_ns = int(record["ts_ns"])
             attempt.add_evidence(record, "connect_attempt_end")
         elif record_type == "connect_so_error":
             attempt.so_error = int(record["error"])
+            if attempt.so_error not in (LINUX_EINPROGRESS, LINUX_EALREADY):
+                attempt.ended_ns = max(
+                    attempt.ended_ns or 0, int(record["ts_ns"])
+                )
             attempt.add_evidence(record, "connect_so_error")
         elif record_type == "socket_state":
             state_before = attempt.state
             attempt.state = str(record.get("new_state_name", ""))
             attempt.established = attempt.established or attempt.state == "ESTABLISHED"
+            if attempt.async_pending and attempt.established and attempt.so_error == 0:
+                attempt.ended_ns = max(
+                    attempt.ended_ns or 0, int(record["ts_ns"])
+                )
             attempt.add_evidence(record, "socket_state")
             if record.get("tcp_rst") and state_before == "SYN_SENT":
                 attempt.reset_while_connecting = True
@@ -317,6 +379,8 @@ def build_attempts(records: Sequence[dict[str, Any]]) -> tuple[list[Attempt], in
                 record.get("exact", False)
                 and str(record.get("state", attempt.state)) == "SYN_SENT"
             )
+            if attempt.reset_while_connecting:
+                attempt.ended_ns = int(record["ts_ns"])
             attempt.add_evidence(record, "connect_reset")
         elif record_type == "connect_drop":
             attempt.exact_drop = bool(record.get("exact", False))
@@ -332,6 +396,8 @@ def build_attempts(records: Sequence[dict[str, Any]]) -> tuple[list[Attempt], in
             attempt.add_evidence(record, "connect_sched_delay")
         elif record_type == "connect_cancel":
             attempt.cancelled = bool(record.get("exact", False))
+            if attempt.cancelled:
+                attempt.ended_ns = int(record["ts_ns"])
             attempt.add_evidence(record, "connect_cancel")
         elif record_type == "socket_event":
             stage = str(record.get("stage", ""))
@@ -340,12 +406,12 @@ def build_attempts(records: Sequence[dict[str, Any]]) -> tuple[list[Attempt], in
                 "tcp_v6_send_reset",
                 "tcp_send_active_reset",
             ):
-                attempt.reset_while_connecting = bool(
-                    record.get("state_name", attempt.state) == "SYN_SENT"
-                    or attempt.state == "SYN_SENT"
-                )
-                attempt.add_evidence(record, "connect_reset")
-            elif stage in ("tcp_retransmit_skb", "__tcp_retransmit_skb"):
+                attempt.add_evidence(record, "connect_local_reset")
+            elif stage in (
+                "connect_tcp_retransmit",
+                "tcp_retransmit_skb",
+                "__tcp_retransmit_skb",
+            ):
                 attempt.retransmissions += 1
                 attempt.add_evidence(record, "connect_retransmit")
             elif stage == "tcp_ack_update_rtt" and "first_rtt_us" in record:
@@ -354,14 +420,24 @@ def build_attempts(records: Sequence[dict[str, Any]]) -> tuple[list[Attempt], in
             elif stage in ("tcp_close", "tcp_v4_destroy_sock"):
                 if attempt.async_pending and not attempt.established:
                     attempt.cancelled = True
+                    attempt.ended_ns = int(record["ts_ns"])
                     attempt.add_evidence(record, "connect_cancel")
         elif record_type == "packet_event":
             tcp_flags = int(record.get("tcp_flags", 0))
             is_connect_syn = bool(tcp_flags & 0x02) and not bool(tcp_flags & 0x10)
             if (
+                tcp_flags & 0x04
+                and str(record.get("direction", "")) == "rx"
+                and attempt.state == "SYN_SENT"
+            ):
+                attempt.reset_while_connecting = True
+                attempt.ended_ns = int(record["ts_ns"])
+                attempt.add_evidence(record, "connect_reset")
+            if (
                 record.get("dropped")
                 and str(record.get("stage", "")) == "kfree_skb"
                 and is_connect_syn
+                and str(record.get("direction", "")) == "tx"
             ):
                 attempt.exact_drop = True
                 attempt.add_evidence(record, "connect_drop")
@@ -382,6 +458,7 @@ def analyze_records(
     profile: str = "sched",
     package: str | None = None,
     shared_uid_candidates: Sequence[str] = (),
+    shared_uid_ambiguous: bool | None = None,
     requested_status: str = "valid",
     generated_at_utc: str | None = None,
 ) -> dict[str, Any]:
@@ -413,14 +490,15 @@ def analyze_records(
     attempt_reports = [attempt.report(status, capture_end_ns) for attempt in attempts]
     outcome_counts = Counter(item["outcome"] for item in attempt_reports)
     candidates = sorted(set(shared_uid_candidates))
-    if len(candidates) > 1:
+    ambiguous = len(candidates) > 1 if shared_uid_ambiguous is None else shared_uid_ambiguous
+    if ambiguous:
         warnings.append("target UID is shared by multiple packages")
 
     target: dict[str, Any] = {
         "uid": uid,
         "application_id": anonymous_application_id(report_id, uid),
         "package_included": package is not None,
-        "shared_uid_ambiguous": len(candidates) > 1,
+        "shared_uid_ambiguous": ambiguous,
     }
     if package is not None:
         target["package"] = package
@@ -473,8 +551,25 @@ def render_markdown(report: dict[str, Any]) -> str:
                 f"- Outcome: `{attempt['outcome']}`",
                 f"- Evidence: `{attempt['evidence_strength']}`",
                 f"- Duration: {attempt['duration_ns']} ns",
+                f"- Socket: `{attempt['socket_instance_id'] or 'unassociated'}`",
                 f"- Endpoint: `{endpoint['remote_addr']}:{endpoint['remote_port']}`",
                 f"- Errno: `{error['name']} ({error['number']})`" if error else "- Errno: none",
+                "- Contributing factors: "
+                + (", ".join(attempt["contributing_factors"]) or "none"),
+                "- Missing evidence: "
+                + (", ".join(attempt["missing_evidence"]) or "none"),
+                "- Evidence: "
+                + (
+                    ", ".join(
+                        f"{item['type']}@{item['ts_ns']}"
+                        for item in attempt["evidence"]
+                    )
+                    or "none"
+                ),
+                "- Network context: "
+                + json.dumps(
+                    attempt["network_context"], ensure_ascii=False, sort_keys=True
+                ),
                 "",
             ]
         )

@@ -56,8 +56,90 @@ class CliContractTest(unittest.TestCase):
         self.assertTrue(capture.redact_device_metadata)
         self.assertEqual(capture.max_device_file_mib, 256)
 
+    def test_external_workload_is_forwarded_without_shell_parsing(self) -> None:
+        args = MODULE.parse_args(
+            [
+                "--package",
+                "com.example.app",
+                "--binary",
+                "/tmp/anettrace",
+                "--out",
+                "/tmp/report",
+                "--external-command",
+                "adb",
+                "shell",
+                "workload --scenario success",
+            ]
+        )
+        capture = MODULE.capture_args(
+            args, 10000, Path("/tmp/capture"), Path("/tmp/trace_processor")
+        )
+        self.assertEqual(
+            capture.external_command,
+            ["adb", "shell", "workload --scenario success"],
+        )
+
+    def test_recovery_mode_does_not_require_package_or_binary(self) -> None:
+        args = MODULE.parse_args(
+            ["--recover-session", "0123456789ab", "--recover-action", "inspect"]
+        )
+        self.assertEqual(args.recover_session, "0123456789ab")
+        self.assertIsNone(args.package)
+
+    def test_recovery_paths_are_exact_and_reject_untrusted_ids(self) -> None:
+        paths = MODULE.recovery_paths("0123456789ab")
+        self.assertEqual(
+            paths[0], "/data/local/tmp/anettrace-capture-0123456789ab"
+        )
+        with self.assertRaises(MODULE.DiagnosticError):
+            MODULE.recovery_paths("../../data")
+
 
 class PrivacyAndFailureTest(unittest.TestCase):
+    def test_missing_core_device_capability_stops_before_capture(self) -> None:
+        adb = mock.Mock()
+        adb.run.return_value = MODULE.subprocess.CompletedProcess([], 0, "device\n", "")
+        with mock.patch.object(MODULE, "device_value", return_value="0"), mock.patch.object(
+            MODULE, "capability", return_value=False
+        ):
+            with self.assertRaisesRegex(
+                MODULE.DiagnosticError, "missing core device capabilities"
+            ):
+                MODULE.device_preflight(
+                    adb,
+                    Path("/tmp/anettrace"),
+                    "com.example.app",
+                    False,
+                    "sched",
+                )
+
+    def test_trace_processor_metrics_create_sched_and_exit_evidence(self) -> None:
+        output = (
+            "attempt_id,started_ns,duration_ns,tid,tgid,runnable_delay_ns,"
+            "running_ns,process_exit_ns\n"
+            "00000000000000aa,100,900,20,20,300,500,800\n"
+        )
+        completed = MODULE.subprocess.CompletedProcess([], 0, output, "")
+        with mock.patch.object(MODULE, "run", return_value=completed) as run:
+            records, summary = MODULE.query_connect_metrics(
+                Path("/tmp/tp"), Path("/tmp/trace")
+            )
+        run.assert_called_once_with(
+            [
+                "/tmp/tp",
+                "--query-file",
+                str(MODULE.CONNECT_METRICS_SQL),
+                "/tmp/trace",
+            ]
+        )
+        self.assertEqual(summary["attempt_rows"], 1)
+        self.assertEqual(
+            [record["type"] for record in records],
+            ["connect_sched_delay", "connect_cancel"],
+        )
+        self.assertEqual(records[0]["delay_ns"], 300)
+        self.assertEqual(records[1]["reason"], "process_exit")
+
     def test_invalid_preflight_still_writes_fixed_private_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "report"
@@ -120,6 +202,12 @@ class PrivacyAndFailureTest(unittest.TestCase):
         )
         self.assertNotIn("sensitive-serial", redacted)
         self.assertNotIn("com.example.app", redacted)
+        self.assertEqual(
+            MODULE.redacted_messages(
+                ["sensitive-serial", "com.example.app"], args
+            ),
+            ["<redacted>", "<redacted>"],
+        )
 
 
 if __name__ == "__main__":

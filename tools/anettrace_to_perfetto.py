@@ -506,6 +506,8 @@ class PerfettoExporter:
                     "tcp_seq",
                     "tcp_ack",
                     "tcp_flags",
+                    "drop_reason",
+                    "drop_location_id",
                 ),
             ),
         )
@@ -545,7 +547,10 @@ class PerfettoExporter:
             self.connect_sockets[socket_id] = attempt_id
 
         should_close = (
-            record_type == "connect_so_error"
+            (
+                record_type == "connect_so_error"
+                and int(record.get("error", 0)) not in (114, 115)
+            )
             or record_type == "connect_cancel"
             or (
                 record_type == "connect_attempt_end"

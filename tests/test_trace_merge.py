@@ -56,6 +56,23 @@ class MergeCapabilityTest(unittest.TestCase):
 
 
 class IntegrityGateTest(unittest.TestCase):
+    def test_integrity_query_uses_trace_processor_query_file_interface(self) -> None:
+        output = "packet_events,thread_states\n1,2\n"
+        completed = MODULE.subprocess.CompletedProcess([], 0, output, "")
+        with mock.patch.object(MODULE, "run", return_value=completed) as run:
+            metrics = MODULE.query_integrity(
+                Path("/tmp/trace.pftrace"), Path("/tmp/trace_processor")
+            )
+        self.assertEqual(metrics, {"packet_events": 1, "thread_states": 2})
+        run.assert_called_once_with(
+            [
+                "/tmp/trace_processor",
+                "--query-file",
+                str(MODULE.INTEGRITY_SQL),
+                "/tmp/trace.pftrace",
+            ]
+        )
+
     def test_valid_system_and_network_metrics_pass(self) -> None:
         metrics = {
             "packet_events": 5,

@@ -58,6 +58,7 @@ bool trace_event_visible(const trace_t *trace, const event_t *event)
 		"connect_sys_enter",
 		"connect_sys_exit",
 		"inet_stream_connect",
+		"connect_tcp_retransmit",
 		"tcp_retransmit_skb",
 		"tcp_v4_send_reset",
 		"tcp_v6_send_reset",
@@ -586,8 +587,7 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 	static char connect_diagnostic_traces[] =
 		"connect_sys_enter,connect_sys_exit,inet_stream_connect,"
 		"sk_alloc,inet_sock_set_state,tcp_close,__tcp_transmit_skb,"
-		"tcp_v4_rcv,tcp_v6_rcv,tcp_retransmit_skb,"
-		"tcp_v4_send_reset,tcp_v6_send_reset,tcp_send_active_reset,"
+		"tcp_v4_rcv,tcp_v6_rcv,connect_tcp_retransmit,"
 		"tcp_ack_update_rtt,kfree_skb";
 	size_t i;
 
@@ -951,6 +951,24 @@ static void trace_print_enabled()
 	}
 }
 
+static int trace_validate_connect_required()
+{
+	trace_t *trace;
+
+	if (!trace_ctx.args.connect_diagnostics)
+		return 0;
+	trace_for_each(trace) {
+		if (!trace->connect_required)
+			continue;
+		if (trace_is_usable(trace))
+			continue;
+		pr_err("required connect diagnostic trace is unavailable: %s\n",
+		       trace->name);
+		return -ENOTSUP;
+	}
+	return 0;
+}
+
 int trace_prepare()
 {
 	int err, i = 0;
@@ -1008,6 +1026,10 @@ int trace_prepare()
 	}
 
 	trace_prepare_backup();
+	if (trace_validate_connect_required()) {
+		err = -ENOTSUP;
+		goto err;
+	}
 	if (trace_ctx.args.show_traces) {
 		trace_show(&root_group);
 		exit(0);

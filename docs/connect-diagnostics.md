@@ -36,6 +36,42 @@ diagnostic therefore uses raw syscall events for the `connect()` boundary,
 KPROBE/KRETPROBE for socket association, and stable kernel tracepoints for TCP
 state, retransmission, reset, drop and scheduling evidence.
 
+Maintainers validate the three release outcomes with the AArch64 workload from
+the Android Actions artifact. The gate runs each scenario three times and keeps
+only privacy-filtered reports:
+
+```sh
+python3 tools/validate_android_connect.py \
+  --package com.example.app \
+  --binary /path/to/anettrace \
+  --workload /path/to/anettrace-connect-workload \
+  --trace-processor /path/to/trace_processor_shell \
+  --out /path/to/acceptance
+```
+
+`success` and `refused` use loopback and are deterministic. `timeout` uses a
+numeric non-responsive address with bounded TCP retry settings; the gate fails
+instead of rewriting another observed errno as a timeout.
+
+The release soak uses the same workload for a controlled 30-minute success
+stream. It compares a short pre-capture baseline with traced throughput and
+records collector CPU, peak RSS, event-file growth, lost events, truncation and
+verified device cleanup:
+
+```sh
+python3 tools/soak_android_connect.py \
+  --package com.example.app \
+  --binary /path/to/anettrace-0.5.0-android-arm64-dual \
+  --workload /path/to/anettrace-0.5.0-connect-workload-android-arm64 \
+  --trace-processor /path/to/trace_processor_shell \
+  --out /path/to/soak
+```
+
+The formal gate does not accept a soak shorter than 1800 seconds. It requires a
+valid report, zero lost events, no truncation, at least two resource samples and
+verified capture cleanup. Throughput change is recorded as evidence rather than
+silently compared with an undocumented threshold.
+
 If a core probe or event-integrity requirement is missing, Anettrace produces
 an `invalid` report without a root-cause verdict. Missing optional evidence
 produces a `degraded` report with the unavailable capability listed.
@@ -75,6 +111,11 @@ By default the report contains the network metadata needed for diagnosis:
 UID/TID, anonymous application and socket IDs, addresses, ports, protocol,
 interface/network context, monotonic timing, errno and capability information.
 
+When packet evidence is available, `network_context` also reports interface,
+network namespace and the Android fwmark-derived `net_id`, explicit-selection
+bit and `protected_from_vpn` bit. The latter means the socket was marked to
+bypass VPN capture; it does not by itself prove that a VPN caused an outcome.
+
 By default it does not persist package names, shared-UID package candidates,
 device serials, fingerprints, account data or the device application list.
 `--include-package` opts the current report into storing the selected package
@@ -100,6 +141,22 @@ bundle. Its architecture, version, Git commit and SHA-256 are recorded before
 use. Trace Processor is supplied with `--trace-processor` or found on `PATH`;
 its version and SHA-256 are also recorded. The command never downloads a tool at
 runtime.
+
+If ADB disconnects, the invalid report manifest preserves the non-sensitive
+12-hex capture session ID when it was created. After reconnecting, inspect,
+pull, or explicitly clean only that session:
+
+```sh
+python3 tools/diagnose_android_connect.py \
+  --recover-session 0123456789ab --recover-action inspect
+python3 tools/diagnose_android_connect.py \
+  --recover-session 0123456789ab --recover-action pull --out /path/to/recovery
+python3 tools/diagnose_android_connect.py \
+  --recover-session 0123456789ab --recover-action cleanup
+```
+
+Recovery never scans unrelated device directories and never persists the ADB
+device selector.
 
 ## Report bundle
 

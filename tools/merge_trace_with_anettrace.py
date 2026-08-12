@@ -222,7 +222,7 @@ def query_integrity(trace: Path, trace_processor: Path | None) -> dict[str, int]
     sql = INTEGRITY_SQL.read_text(encoding="utf-8")
     if trace_processor:
         result = run(
-            [str(trace_processor), "query", "-f", str(INTEGRITY_SQL), str(trace)]
+            [str(trace_processor), "--query-file", str(INTEGRITY_SQL), str(trace)]
         )
         rows = list(csv.DictReader(result.stdout.splitlines()))
     else:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib.util
 import json
 import os
@@ -25,6 +26,7 @@ VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 MANIFEST_SCHEMA = "anettrace.connect-diagnostics.manifest.v1"
 DEFAULT_DURATION_S = 120
 DEFAULT_MAX_REPORT_MIB = 512
+CONNECT_METRICS_SQL = ROOT / "tools" / "perfetto_sql" / "connect_diagnostics_metrics.sql"
 
 
 def load_tool(name: str):
@@ -179,7 +181,8 @@ def device_preflight(
     binary: Path,
     package: str,
     include_package: bool,
-) -> tuple[dict[str, Any], int, list[str], int]:
+    profile: str,
+) -> tuple[dict[str, Any], int, list[str], int, list[str]]:
     if adb.run("get-state").stdout.strip() != "device":
         raise DiagnosticError("Android device is not ready")
     if device_value(adb, "id -u") != "0":
@@ -187,10 +190,12 @@ def device_preflight(
             "adb shell must already be root; automatic privilege escalation is disabled"
         )
 
+    current_tracer = device_value(adb, "cat /sys/kernel/tracing/current_tracer")
     checks = {
         "root_adb_shell": True,
         "btf_vmlinux": capability(adb, "test -r /sys/kernel/btf/vmlinux"),
         "tracefs": capability(adb, "test -d /sys/kernel/tracing/events"),
+        "current_tracer_nop": current_tracer == "nop",
         "perfetto": capability(adb, "test -x /system/bin/perfetto"),
         "raw_syscalls_enter": capability(
             adb, "test -r /sys/kernel/tracing/events/raw_syscalls/sys_enter/format"
@@ -213,12 +218,60 @@ def device_preflight(
         "inet_stream_connect_symbol": capability(
             adb, "grep -q -w inet_stream_connect /proc/kallsyms"
         ),
+        "sk_alloc_symbol": capability(adb, "grep -q -w sk_alloc /proc/kallsyms"),
+        "inet_stream_connect_kprobe_allowed": capability(
+            adb,
+            "test ! -r /sys/kernel/debug/kprobes/blacklist || "
+            "! grep -q -w inet_stream_connect /sys/kernel/debug/kprobes/blacklist",
+        ),
+        "sk_alloc_kprobe_allowed": capability(
+            adb,
+            "test ! -r /sys/kernel/debug/kprobes/blacklist || "
+            "! grep -q -w sk_alloc /sys/kernel/debug/kprobes/blacklist",
+        ),
+        "kprobe_events_writable": capability(
+            adb, "test -w /sys/kernel/tracing/kprobe_events"
+        ),
         "toybox_timeout": capability(adb, "toybox timeout --help >/dev/null 2>&1"),
         "file_ulimit": capability(adb, "sh -c 'ulimit -f' >/dev/null 2>&1"),
+        "tcp_close_symbol": capability(adb, "grep -q -w tcp_close /proc/kallsyms"),
+        "tcp_close_kprobe_allowed": capability(
+            adb,
+            "test ! -r /sys/kernel/debug/kprobes/blacklist || "
+            "! grep -q -w tcp_close /sys/kernel/debug/kprobes/blacklist",
+        ),
+        "tcp_ack_update_rtt_symbol": capability(
+            adb, "grep -q -w tcp_ack_update_rtt /proc/kallsyms"
+        ),
     }
-    missing = [name for name, supported in checks.items() if not supported]
-    if missing:
-        raise DiagnosticError("missing core device capabilities: " + ", ".join(missing))
+    required = (
+        "root_adb_shell",
+        "btf_vmlinux",
+        "tracefs",
+        "current_tracer_nop",
+        "perfetto",
+        "raw_syscalls_enter",
+        "raw_syscalls_exit",
+        "socket_state",
+        "inet_stream_connect_symbol",
+        "inet_stream_connect_kprobe_allowed",
+        "sk_alloc_symbol",
+        "sk_alloc_kprobe_allowed",
+        "tcp_close_symbol",
+        "tcp_close_kprobe_allowed",
+        "kprobe_events_writable",
+        "toybox_timeout",
+        "file_ulimit",
+    )
+    if profile in ("sched", "full"):
+        required += ("sched_switch",)
+    missing_required = [name for name in required if not checks[name]]
+    if missing_required:
+        raise DiagnosticError(
+            "missing core device capabilities: " + ", ".join(missing_required)
+        )
+    optional = tuple(name for name in checks if name not in required)
+    missing_optional = [name for name in optional if not checks[name]]
 
     uid, candidates, candidate_count = resolve_package(adb, package, include_package)
     session = uuid.uuid4().hex[:12]
@@ -250,14 +303,13 @@ def device_preflight(
         "kernel_release": device_value(adb, "uname -r"),
         "selinux": device_value(adb, "getenforce"),
         "capabilities": checks,
+        "missing_optional_capabilities": missing_optional,
         "existing_tracing": {
             "tracing_on": device_value(adb, "cat /sys/kernel/tracing/tracing_on"),
-            "current_tracer": device_value(
-                adb, "cat /sys/kernel/tracing/current_tracer"
-            ),
+            "current_tracer": current_tracer,
         },
     }
-    return device, uid, candidates, candidate_count
+    return device, uid, candidates, candidate_count, missing_optional
 
 
 def capture_args(
@@ -290,12 +342,19 @@ def capture_args(
         values.extend(("--device", args.device))
     if args.keep_device_artifacts:
         values.append("--keep-remote")
+    if args.resource_sample_interval:
+        values.extend(
+            ("--resource-sample-interval", str(args.resource_sample_interval))
+        )
+    if args.external_command:
+        values.append("--external-command")
+        values.extend(args.external_command)
     return CAPTURE.parse_args(values)
 
 
 def redacted_session_log(capture_dir: Path, secrets: Sequence[str]) -> str:
     chunks: list[str] = []
-    for name in ("anettrace.log", "perfetto.log"):
+    for name in ("anettrace.log", "perfetto.log", "external-command.log"):
         path = capture_dir / name
         if path.is_file():
             chunks.append(f"[{name}]\n{path.read_text(encoding='utf-8', errors='replace')}")
@@ -304,6 +363,54 @@ def redacted_session_log(capture_dir: Path, secrets: Sequence[str]) -> str:
         if secret:
             text = text.replace(secret, "<redacted>")
     return text
+
+
+def query_connect_metrics(
+    trace_processor: Path, trace: Path
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    result = run(
+        [
+            str(trace_processor),
+            "--query-file",
+            str(CONNECT_METRICS_SQL),
+            str(trace),
+        ]
+    )
+    records: list[dict[str, Any]] = []
+    rows = list(csv.DictReader(result.stdout.splitlines()))
+    for row in rows:
+        attempt_id = str(row.get("attempt_id", ""))
+        if not re.fullmatch(r"[0-9a-f]{16,64}", attempt_id):
+            raise DiagnosticError("Trace Processor returned an invalid attempt ID")
+        runnable_delay_ns = int(row.get("runnable_delay_ns") or 0)
+        if runnable_delay_ns > 0:
+            records.append(
+                {
+                    "schema": ANALYZER.EVENT_SCHEMA,
+                    "type": "connect_sched_delay",
+                    "ts_ns": int(row["started_ns"]),
+                    "attempt_id": attempt_id,
+                    "delay_ns": runnable_delay_ns,
+                    "running_ns": int(row.get("running_ns") or 0),
+                }
+            )
+        process_exit_ns = int(row.get("process_exit_ns") or 0)
+        if process_exit_ns > 0:
+            records.append(
+                {
+                    "schema": ANALYZER.EVENT_SCHEMA,
+                    "type": "connect_cancel",
+                    "ts_ns": process_exit_ns,
+                    "attempt_id": attempt_id,
+                    "exact": True,
+                    "reason": "process_exit",
+                }
+            )
+    return records, {
+        "query": str(CONNECT_METRICS_SQL.relative_to(ROOT)),
+        "attempt_rows": len(rows),
+        "derived_events": len(records),
+    }
 
 
 def redact_failure(error: object, args: argparse.Namespace) -> str:
@@ -315,6 +422,67 @@ def redact_failure(error: object, args: argparse.Namespace) -> str:
         if secret:
             text = text.replace(secret, "<redacted>")
     return text
+
+
+def redacted_messages(values: Sequence[object], args: argparse.Namespace) -> list[str]:
+    return [redact_failure(value, args) for value in values]
+
+
+def recovery_paths(session_id: str) -> tuple[str, ...]:
+    if not re.fullmatch(r"[0-9a-f]{12}", session_id):
+        raise DiagnosticError("recovery session ID must be 12 lowercase hex characters")
+    remote_dir = f"/data/local/tmp/anettrace-capture-{session_id}"
+    return (
+        remote_dir,
+        f"/data/misc/perfetto-configs/anettrace-capture-{session_id}.pbtxt",
+        f"/data/misc/perfetto-traces/anettrace-capture-{session_id}.pftrace",
+    )
+
+
+def recover_session(args: argparse.Namespace) -> str:
+    remote_dir, remote_config, remote_trace = recovery_paths(args.recover_session)
+    adb = CAPTURE.Adb(args.adb, args.device)
+    if adb.run("get-state").stdout.strip() != "device":
+        raise DiagnosticError("Android device is not ready")
+    if device_value(adb, "id -u") != "0":
+        raise DiagnosticError("adb shell must already be root")
+
+    if args.recover_action == "cleanup":
+        adb.shell(f"rm -rf {shlex.quote(remote_dir)}")
+        adb.shell(
+            f"rm -f {shlex.quote(remote_config)} {shlex.quote(remote_trace)}"
+        )
+        return f"cleaned recovery session {args.recover_session}"
+
+    remote_files = (
+        f"{remote_dir}/anettrace-events.jsonl",
+        f"{remote_dir}/anettrace.log",
+        f"{remote_dir}/perfetto.log",
+        remote_config,
+        remote_trace,
+    )
+    existing = [
+        path for path in remote_files if capability(adb, f"test -e {shlex.quote(path)}")
+    ]
+    if args.recover_action == "inspect":
+        rows = []
+        for path in existing:
+            size = device_value(adb, f"stat -c %s {shlex.quote(path)}") or "unknown"
+            rows.append(f"{Path(path).name}\t{size}")
+        return "\n".join(rows) if rows else "no recovery artifacts found"
+
+    if args.out is None:
+        raise DiagnosticError("--out is required for recovery pull")
+    output = prepare_output_dir(args.out)
+    for path in existing:
+        destination = output / Path(path).name
+        adb.pull(path, destination)
+        destination.chmod(0o600)
+    private_write(
+        output / "RECOVERY_SESSION",
+        f"session_id={args.recover_session}\nfiles={len(existing)}\n",
+    )
+    return str(output)
 
 
 def write_manifest(path: Path, manifest: dict[str, Any]) -> None:
@@ -359,24 +527,64 @@ def diagnose(args: argparse.Namespace) -> Path:
     report: dict[str, Any] | None = None
     failure: str | None = None
     capture_manifest: dict[str, Any] = {}
+    connect_metrics: dict[str, Any] = {}
+    analysis_warnings: list[str] = []
 
     try:
         trace_processor = resolve_trace_processor(args.trace_processor)
         inputs = validate_local_inputs(args.binary.resolve(), trace_processor)
         adb = CAPTURE.Adb(args.adb, args.device)
-        device, uid, candidates, candidate_count = device_preflight(
-            adb, args.binary.resolve(), args.package, args.include_package
+        device, uid, candidates, candidate_count, missing_optional = device_preflight(
+            adb,
+            args.binary.resolve(),
+            args.package,
+            args.include_package,
+            args.profile,
         )
-        requested_status = "degraded" if candidate_count > 1 else "valid"
+        requested_status = (
+            "degraded" if candidate_count > 1 or missing_optional else "valid"
+        )
+        if missing_optional:
+            analysis_warnings.append(
+                "optional device evidence unavailable: " + ", ".join(missing_optional)
+            )
         with tempfile.TemporaryDirectory(prefix="anettrace-connect-") as directory:
             capture_dir = Path(directory) / "capture"
-            manifest_path = CAPTURE.capture(
-                capture_args(args, uid, capture_dir, trace_processor)
-            )
+            try:
+                manifest_path = CAPTURE.capture(
+                    capture_args(args, uid, capture_dir, trace_processor)
+                )
+            except CAPTURE.CaptureError:
+                failed_manifest = capture_dir / "session-manifest.json"
+                if failed_manifest.is_file():
+                    capture_manifest = json.loads(
+                        failed_manifest.read_text(encoding="utf-8")
+                    )
+                    private_write(
+                        output_dir / "session.log",
+                        redacted_session_log(
+                            capture_dir,
+                            () if args.include_package else (args.package,),
+                        ),
+                    )
+                raise
             capture_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             events = ANALYZER.read_event_records(
                 capture_dir / "anettrace-events.jsonl"
             )
+            source_trace = capture_dir / "anettrace-combined.pftrace"
+            if not source_trace.is_file():
+                raise DiagnosticError("capture did not produce the combined Perfetto trace")
+            try:
+                derived, connect_metrics = query_connect_metrics(
+                    trace_processor, source_trace
+                )
+                events.extend(derived)
+            except DiagnosticError as error:
+                requested_status = "degraded"
+                analysis_warnings.append(
+                    "scheduler/process-exit metrics unavailable: " + str(error)
+                )
             report = ANALYZER.analyze_records(
                 events,
                 report_id=report_id,
@@ -384,11 +592,10 @@ def diagnose(args: argparse.Namespace) -> Path:
                 profile=args.profile,
                 package=args.package if args.include_package else None,
                 shared_uid_candidates=candidates,
+                shared_uid_ambiguous=candidate_count > 1,
                 requested_status=requested_status,
             )
-            source_trace = capture_dir / "anettrace-combined.pftrace"
-            if not source_trace.is_file():
-                raise DiagnosticError("capture did not produce the combined Perfetto trace")
+            report["warnings"].extend(analysis_warnings)
             report_size = sum(
                 path.stat().st_size for path in capture_dir.iterdir() if path.is_file()
             )
@@ -406,7 +613,14 @@ def diagnose(args: argparse.Namespace) -> Path:
     except (DiagnosticError, CAPTURE.CaptureError, ANALYZER.ConnectDiagnosticsError) as error:
         failure = redact_failure(error, args)
         report = invalid_report(report_id, uid, args.profile, failure)
-        private_write(output_dir / "session.log", f"diagnostic failed: {failure}\n")
+        failure_line = f"diagnostic failed: {failure}\n"
+        session_log = output_dir / "session.log"
+        existing_log = (
+            session_log.read_text(encoding="utf-8", errors="replace")
+            if session_log.is_file()
+            else ""
+        )
+        private_write(session_log, existing_log + failure_line)
         (output_dir / "trace.pftrace").write_bytes(b"")
         (output_dir / "trace.pftrace").chmod(0o600)
 
@@ -439,9 +653,17 @@ def diagnose(args: argparse.Namespace) -> Path:
         "inputs": inputs,
         "device": device,
         "capture": {
+            "session_id": capture_manifest.get("session_id"),
             "status": capture_manifest.get("status"),
+            "cleanup": capture_manifest.get("cleanup"),
             "anettrace": capture_manifest.get("anettrace"),
             "merge": capture_manifest.get("merge"),
+            "resource_sampling": capture_manifest.get("resource_sampling"),
+            "connect_metrics": connect_metrics,
+            "warnings": redacted_messages(
+                capture_manifest.get("warnings", []), args
+            ),
+            "errors": redacted_messages(capture_manifest.get("errors", []), args),
         },
         "failure": failure,
     }
@@ -454,28 +676,56 @@ def diagnose(args: argparse.Namespace) -> Path:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--package", required=True, help="target Android package")
-    parser.add_argument("--binary", type=Path, required=True, help="matching Android arm64 Anettrace")
+    parser.add_argument("--package", help="target Android package")
+    parser.add_argument("--binary", type=Path, help="matching Android arm64 Anettrace")
     parser.add_argument("--trace-processor", type=Path, help="compatible Trace Processor CLI")
-    parser.add_argument("--out", type=Path, required=True, help="new or empty report directory")
+    parser.add_argument("--out", type=Path, help="new or empty report directory")
     parser.add_argument("--duration", type=int, default=DEFAULT_DURATION_S)
     parser.add_argument("--max-report-mib", type=int, default=DEFAULT_MAX_REPORT_MIB)
+    parser.add_argument("--resource-sample-interval", type=int)
     parser.add_argument("--profile", choices=("sched", "full"), default="sched")
     parser.add_argument("--include-package", action="store_true")
     parser.add_argument("--keep-device-artifacts", action="store_true")
     parser.add_argument("--device", help="adb device selector; never persisted")
     parser.add_argument("--adb", default="adb")
+    parser.add_argument(
+        "--recover-session",
+        help="inspect, pull, or clean a 12-hex interrupted capture session",
+    )
+    parser.add_argument(
+        "--recover-action",
+        choices=("inspect", "pull", "cleanup"),
+        default="inspect",
+    )
+    parser.add_argument(
+        "--external-command",
+        nargs=argparse.REMAINDER,
+        help="host workload command started with capture; this option must be last",
+    )
     args = parser.parse_args(argv)
     if args.duration <= 0:
         parser.error("duration must be positive")
     if args.max_report_mib <= 0:
         parser.error("max report size must be positive")
+    if args.resource_sample_interval is not None and args.resource_sample_interval <= 0:
+        parser.error("resource sample interval must be positive")
+    if args.recover_session:
+        if args.recover_action == "pull" and args.out is None:
+            parser.error("--out is required with --recover-action pull")
+        return args
+    if args.external_command == []:
+        parser.error("--external-command needs a command")
+    if not args.package or args.binary is None or args.out is None:
+        parser.error("--package, --binary, and --out are required for a new diagnosis")
     return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
+        if args.recover_session:
+            print(recover_session(args))
+            return 0
         output = diagnose(args)
     except DiagnosticError as error:
         print(f"error: {error}", file=sys.stderr)

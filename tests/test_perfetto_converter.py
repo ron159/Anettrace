@@ -631,6 +631,30 @@ class PerfettoConverterTest(unittest.TestCase):
         self.assertTrue(any(row.name == "TCP connect attempt" for row in rows))
         self.assertTrue(any(row.name == "connect SO_ERROR" for row in rows))
         self.assertTrue(any(row.name == "connect kernel drop" for row in rows))
+        success = next(
+            row for row in rows
+            if row.name == "TCP connect attempt"
+            and row.attempt_id == "0000000000000001"
+        )
+        self.assertEqual(success.dur, 6_000_000)
+
+        with TemporaryDirectory(prefix="anettrace-connect-metrics-") as directory:
+            trace_path = Path(directory) / "connect.pftrace"
+            trace_path.write_bytes(encoded)
+            with TraceProcessor(trace=str(trace_path)) as processor:
+                metrics = list(
+                    processor.query(
+                        (
+                            ROOT
+                            / "tools"
+                            / "perfetto_sql"
+                            / "connect_diagnostics_metrics.sql"
+                        ).read_text(encoding="utf-8")
+                    )
+                )
+        self.assertEqual(len(metrics), 8)
+        self.assertTrue(all(row.runnable_delay_ns == 0 for row in metrics))
+        self.assertTrue(all(row.process_exit_ns == 0 for row in metrics))
 
 
 if __name__ == "__main__":

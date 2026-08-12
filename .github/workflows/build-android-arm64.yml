@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ master ]
   workflow_dispatch:
+  workflow_call:
+    outputs:
+      version:
+        description: Product version read from VERSION
+        value: ${{ jobs.build-android-arm64.outputs.version }}
 
 permissions:
   contents: read
@@ -13,17 +18,19 @@ permissions:
 jobs:
   build-android-arm64:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.product.outputs.version }}
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Read product version
         id: product
         run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
 
       - name: Set up arm64 emulation
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
         with:
           platforms: linux/arm64
 
@@ -72,10 +79,21 @@ jobs:
               make BPFTOOL=/tmp/bpftool/src/bpftool \
                 TARGET_PLATFORM=android-arm64 BUILD_TYPE=dual pack
 
+              gcc -O2 -Wall -Wextra -static \
+                tests/android/connect_workload.c \
+                -o output/anettrace-connect-workload
+
               file src/anettrace | tee output/anettrace.file.txt
               readelf -h src/anettrace > output/anettrace.elf-header.txt
               readelf -l src/anettrace > output/anettrace.program-headers.txt
               readelf -d src/anettrace > output/anettrace.dynamic.txt
+
+              file output/anettrace-connect-workload | \
+                tee output/anettrace-connect-workload.file.txt
+              readelf -h output/anettrace-connect-workload | \
+                grep -q "Machine:.*AArch64"
+              ! readelf -l output/anettrace-connect-workload | grep -q INTERP
+              ! readelf -d output/anettrace-connect-workload | grep -q NEEDED
 
               grep -q "Machine:.*AArch64" output/anettrace.elf-header.txt
               ! grep -q INTERP output/anettrace.program-headers.txt
@@ -145,7 +163,8 @@ jobs:
               archive="output/anettrace-$(cat VERSION)-android-arm64-dual.tar.bz2"
               test -f "${archive}"
               sha256sum "${archive}" > "${archive}.sha256"
-              sha256sum src/anettrace "${archive}" > output/SHA256SUMS
+              sha256sum src/anettrace "${archive}" \
+                output/anettrace-connect-workload > output/SHA256SUMS
               {
                 echo "source_commit=${GITHUB_SHA}"
                 echo "upstream_commit=a9f133477b02728e2430f7db9249d556b7162b84"
@@ -157,7 +176,7 @@ jobs:
             '
 
       - name: Upload Android arm64 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: anettrace-${{ steps.product.outputs.version }}-android-arm64-dual
           if-no-files-found: error
@@ -168,9 +187,11 @@ jobs:
             output/SHA256SUMS
             output/build-metadata.txt
             output/anettrace.*.txt
+            output/anettrace-connect-workload
+            output/anettrace-connect-workload.file.txt
 
       - name: Download uploaded artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: anettrace-${{ steps.product.outputs.version }}-android-arm64-dual
           path: downloaded
@@ -186,5 +207,8 @@ jobs:
           readelf -h src/anettrace | grep -q 'Machine:.*AArch64'
           ! readelf -l src/anettrace | grep -q INTERP
           ! readelf -d src/anettrace | grep -q NEEDED
+          file output/anettrace-connect-workload | grep -q 'ARM aarch64'
+          ! readelf -l output/anettrace-connect-workload | grep -q INTERP
+          ! readelf -d output/anettrace-connect-workload | grep -q NEEDED
           tar -tjf "${archive}" | \
             grep -q "^anettrace-${version}-android-arm64-dual/anettrace$"

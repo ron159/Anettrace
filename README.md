@@ -22,6 +22,8 @@ Anettrace 是面向 Linux 与已 root Android 设备的 eBPF 网络诊断工具�
   应用层收发字节。
 - **Perfetto 联合时间线**：记录 socket 创建/状态、TCP 双向与 UDP DNS/53 双向路径、应用
   `recvmsg` 耗时/字节数，并与 Perfetto 线程调度状态合并；不保存报文 payload。
+- **TCP 主动建连根因诊断**：按应用 UID 关联 `connect()`、Socket 状态、RST、重传、drop、
+  RTT 和调度证据，生成受约束的自动结论、公开 JSON 报告与同一份 Perfetto 时间线。
 
 ## 常用示例
 
@@ -56,6 +58,27 @@ sudo ./src/anettrace --traffic --proto tcp --uid 1000 --interval 2
 
 `--traffic` 显示 `APP_TX_KB/APP_RX_KB`，统计的是应用 send/recv 成功返回的 payload，不等同于
 Wireshark 的链路层字节数。
+
+### Android：一键诊断 TCP 主动建连
+
+使用与当前源码 commit 匹配的 Android arm64 dual 二进制和 Trace Processor，在主机执行：
+
+```shell
+python3 tools/diagnose_android_connect.py \
+  --package com.example.app \
+  --binary /path/to/anettrace-0.5.0-android-arm64-dual \
+  --trace-processor /path/to/trace_processor_shell \
+  --out output/connect-report
+```
+
+默认最长 120 秒、最大 512 MiB，使用 `sched` profile。设备的 ADB shell 必须已经是 root；工具
+不会自动执行 `adb root`、`su` 或 Magisk 命令。输出目录包含 `report.md`、`report.json`、
+`manifest.json`、`trace.pftrace`、`session.log` 和 `SHA256SUMS`。
+
+报告默认保留诊断所需的 IP、端口、UID/TID 和匿名 Socket ID，但不持久化包名、设备序列号、
+payload、URL、Header、SNI 或 DNS 内容。只有显式添加 `--include-package` 才会写入包名和
+shared UID 候选。完整 outcome、能力门控和隐私契约见
+[`docs/connect-diagnostics.md`](docs/connect-diagnostics.md)。
 
 ### Android：直接抓取系统 Trace 与网络事件
 
@@ -279,7 +302,7 @@ make BPFTOOL=/absolute/path/to/bpftool \
 默认归档为：
 
 ```text
-output/anettrace-0.4.0-android-arm64-dual.tar.bz2
+output/anettrace-0.5.0-android-arm64-dual.tar.bz2
 ```
 
 CI 中的完整依赖安装、静态链接检查和校验和步骤见

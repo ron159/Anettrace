@@ -42,6 +42,7 @@ enum native_track_kind {
 	NATIVE_TRACK_THREAD,
 	NATIVE_TRACK_SOCKET,
 	NATIVE_TRACK_FLOW,
+	NATIVE_TRACK_CONNECT,
 	NATIVE_TRACK_GLOBAL,
 };
 
@@ -387,6 +388,28 @@ static struct native_track *native_socket_track(u64 socket_id, u32 tgid,
 	return track;
 }
 
+static struct native_track *native_connect_track(u64 attempt_id, u32 tgid,
+					   u32 tid, const char *task)
+{
+	u64 uuid = native_uuid("connect", attempt_id, 0);
+	struct native_track *track = native_find_track(uuid);
+	struct native_track *thread;
+	char name[32];
+
+	if (track)
+		return track;
+	thread = native_thread_track(tgid, tid, task);
+	if (!thread)
+		return NULL;
+	snprintf(name, sizeof(name), "connect %08llx",
+		 attempt_id & 0xffffffffULL);
+	track = native_add_track(uuid, attempt_id, NATIVE_TRACK_CONNECT);
+	if (track)
+		native_descriptor(uuid, name, thread->uuid, NATIVE_TRACK_CONNECT,
+				  tgid, tid);
+	return track;
+}
+
 static struct native_track *native_global_track(void)
 {
 	u64 uuid = native_uuid("global", 0, 0);
@@ -674,6 +697,17 @@ static void native_annotation_uint(struct proto_buffer *event,
 
 	proto_string(&annotation, 10, name);
 	proto_uint(&annotation, 3, value);
+	proto_message(event, 4, &annotation);
+	proto_free(&annotation);
+}
+
+static void native_annotation_int(struct proto_buffer *event,
+				  const char *name, s64 value)
+{
+	struct proto_buffer annotation = {};
+
+	proto_string(&annotation, 10, name);
+	proto_uint(&annotation, 4, (u64)value);
 	proto_message(event, 4, &annotation);
 	proto_free(&annotation);
 }
@@ -1490,6 +1524,7 @@ static void native_export_packet_event(const detail_event_t *detail,
 					trace_t *trace, int cpu)
 {
 	const event_t *event = (const void *)detail;
+	const detail_drop_event_t *drop = (const void *)detail;
 	const packet_t *pkt = &event->pkt;
 	u64 id = packet_id(pkt, event->key);
 	u64 flow_id = packet_flow_id(pkt);
@@ -1553,6 +1588,11 @@ static void native_export_packet_event(const detail_event_t *detail,
 	native_annotation_uint(&track_event, "tcp_seq", pkt->l4.tcp.seq);
 	native_annotation_uint(&track_event, "tcp_ack", pkt->l4.tcp.ack);
 	native_annotation_uint(&track_event, "tcp_flags", pkt->l4.tcp.flags);
+	if (dropped && !strcmp(trace->name, "kfree_skb")) {
+		native_annotation_uint(&track_event, "drop_reason", drop->reason);
+		native_annotation_id(&track_event, "drop_location_id",
+			object_id("drop_location", drop->location));
+	}
 	native_event_write(pkt->ts, &track_event);
 	proto_free(&track_event);
 }
@@ -1918,6 +1958,8 @@ static const char *connect_event_name(u16 kind)
 		return "connect syscall returned";
 	case CONNECT_EVENT_SO_ERROR:
 		return "connect SO_ERROR";
+	case CONNECT_EVENT_CANCEL:
+		return "connect cancelled";
 	default:
 		return "connect event";
 	}
@@ -1986,6 +2028,15 @@ static void export_connect_event(const connect_event_t *event, int cpu)
 			"\"error\":%lld,\"cpu\":%d}\n",
 			PERFETTO_SCHEMA, event->ts, attempt_id, event->result, cpu);
 		break;
+	case CONNECT_EVENT_CANCEL:
+		fprintf(export_file,
+			"{\"schema\":\"%s\",\"type\":\"connect_cancel\","
+			"\"ts_ns\":%llu,\"attempt_id\":\"%016llx\","
+			"\"socket_instance_id\":\"%016llx\","
+			"\"exact\":true,\"reason\":\"socket_close\","
+			"\"cpu\":%d}\n",
+			PERFETTO_SCHEMA, event->ts, attempt_id, socket_id, cpu);
+		break;
 	default:
 		break;
 	}
@@ -1997,32 +2048,68 @@ static void native_export_connect_event(const connect_event_t *connect, int cpu)
 	u64 socket_id = connect->socket_key ?
 		socket_instance_id(connect->socket_key,
 				   connect->socket_generation) : 0;
-	struct native_track *thread;
+	struct native_track *track;
 	struct proto_buffer event = {};
+	char remote[INET6_ADDRSTRLEN], local[INET6_ADDRSTRLEN];
+	char peer[INET6_ADDRSTRLEN];
+	bool terminal = false;
 
-	thread = native_thread_track(connect->tgid, connect->tid, connect->task);
-	if (!thread)
+	track = native_connect_track(attempt_id, connect->tgid, connect->tid,
+				     connect->task);
+	if (!track)
 		return;
-	native_event_start(&event, 3, thread->uuid,
+	native_event_start(&event, connect->kind == CONNECT_EVENT_START ? 1 : 3,
+			   track->uuid,
 			   connect_event_name(connect->kind), "anettrace.connect");
 	native_event_flow(&event, attempt_id, false);
+	native_event_correlation(&event, attempt_id);
 	native_annotation_id(&event, "attempt_id", attempt_id);
 	if (socket_id)
 		native_annotation_id(&event, "socket_instance_id", socket_id);
 	native_annotation_uint(&event, "uid", connect->uid);
 	native_annotation_uint(&event, "tid", connect->tid);
+	native_annotation_uint(&event, "tgid", connect->tgid);
 	native_annotation_uint(&event, "fd", connect->fd);
 	native_annotation_uint(&event, "cpu", cpu);
-	if (connect->kind == CONNECT_EVENT_RESULT) {
+	connect_remote_address(connect, remote, sizeof(remote));
+	if (connect->kind == CONNECT_EVENT_START) {
+		track->active = true;
+		native_annotation_string(&event, "remote_addr", remote);
+		native_annotation_uint(&event, "remote_port", connect->remote_port);
+	} else if (connect->kind == CONNECT_EVENT_SOCKET) {
+		local[0] = '\0';
+		peer[0] = '\0';
+		socket_addresses(&connect->ske, local, sizeof(local), peer,
+				 sizeof(peer));
+		native_annotation_string(&event, "local_addr", local);
+		native_annotation_uint(&event, "local_port",
+				       ntohs(connect->ske.l4.min.sport));
+		native_annotation_string(&event, "remote_addr",
+					 remote[0] ? remote : peer);
+		native_annotation_uint(&event, "remote_port", connect->remote_port);
+	} else if (connect->kind == CONNECT_EVENT_RESULT) {
+		native_annotation_int(&event, "result", connect->result);
 		native_annotation_uint(&event, "error",
 				       connect->result < 0 ? -connect->result : 0);
 		native_annotation_bool(&event, "async_pending",
 			connect->flags & CONNECT_EVENT_ASYNC_PENDING);
+		terminal = !(connect->flags & CONNECT_EVENT_ASYNC_PENDING);
 	} else if (connect->kind == CONNECT_EVENT_SO_ERROR) {
 		native_annotation_uint(&event, "error", connect->result);
+		terminal = connect->result != EINPROGRESS &&
+			   connect->result != EALREADY;
+	} else if (connect->kind == CONNECT_EVENT_CANCEL) {
+		native_annotation_bool(&event, "exact", true);
+		native_annotation_string(&event, "reason", "socket_close");
+		terminal = true;
 	}
 	native_event_write(connect->ts, &event);
 	proto_free(&event);
+	if (terminal && track->active) {
+		native_slice(connect->ts, track->uuid, 2, NULL,
+			     "anettrace.connect", attempt_id, true);
+		track->active = false;
+	}
 }
 
 void perfetto_export_event(const void *data, int cpu, u32 size)
@@ -2212,6 +2299,15 @@ void perfetto_export_close(u64 event_count)
 		for (i = 0; i < native_track_count; i++)
 			if (native_tracks[i].kind == NATIVE_TRACK_SOCKET)
 				native_close_socket(&native_tracks[i], end_ts);
+		for (i = 0; i < native_track_count; i++) {
+			struct native_track *track = &native_tracks[i];
+
+			if (track->kind != NATIVE_TRACK_CONNECT || !track->active)
+				continue;
+			native_slice(end_ts, track->uuid, 2, NULL,
+				     "anettrace.connect", track->object, true);
+			track->active = false;
+		}
 		native_export_meta(end_ts, "trace_end", -1, event_count,
 				   "event_count", exported_events,
 				   "exported_events", lost_events,

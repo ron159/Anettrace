@@ -1,0 +1,114 @@
+name: Release v-tag
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux-ci:
+    uses: ./.github/workflows/c-cpp.yml
+    permissions:
+      contents: read
+
+  android-ci:
+    uses: ./.github/workflows/build-android-arm64.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: [linux-ci, android-ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout tag source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Validate immutable release identity
+        run: |
+          version="$(cat VERSION)"
+          test "${GITHUB_REF_TYPE}" = tag
+          test "${GITHUB_REF_NAME}" = "v${version}"
+          test "$(git rev-list -n 1 "${GITHUB_REF_NAME}")" = "${GITHUB_SHA}"
+          git fetch --no-tags origin master
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/master
+
+      - name: Download verified Android build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: anettrace-${{ needs.android-ci.outputs.version }}-android-arm64-dual
+          path: downloaded
+
+      - name: Package release assets
+        run: |
+          version="$(cat VERSION)"
+          mkdir release-assets
+          cp "downloaded/output/anettrace-${version}-android-arm64-dual.tar.bz2" \
+            release-assets/
+          install -m 0755 downloaded/output/anettrace-connect-workload \
+            "release-assets/anettrace-${version}-connect-workload-android-arm64"
+          bash script/package-connect-diagnostics-release.sh \
+            release-assets downloaded/src/anettrace
+          commit_time="$(git show -s --format=%cI HEAD)"
+          python3 tools/generate_release_sbom.py \
+            --version "${version}" \
+            --commit "${GITHUB_SHA}" \
+            --timestamp "${commit_time}" \
+            --output "release-assets/anettrace-${version}-sbom.cdx.json" \
+            "release-assets/anettrace-${version}-android-arm64-dual" \
+            "release-assets/anettrace-${version}-android-arm64-dual.tar.bz2" \
+            "release-assets/anettrace-${version}-connect-workload-android-arm64" \
+            "release-assets/anettrace-${version}-host-tools.tar.bz2"
+          (
+            cd release-assets
+            sha256sum \
+              "anettrace-${version}-android-arm64-dual" \
+              "anettrace-${version}-android-arm64-dual.tar.bz2" \
+              "anettrace-${version}-connect-workload-android-arm64" \
+              "anettrace-${version}-host-tools.tar.bz2" \
+              "anettrace-${version}-sbom.cdx.json" > SHA256SUMS
+          )
+          bash script/verify-connect-diagnostics-release.sh release-assets
+
+      - name: Create Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "release already exists: ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          gh release create "${GITHUB_REF_NAME}" \
+            release-assets/* \
+            --draft \
+            --title "Anettrace ${GITHUB_REF_NAME}" \
+            --notes-file "docs/releases/${GITHUB_REF_NAME}.md" \
+            --verify-tag
+
+      - name: Download and verify Draft Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir downloaded-release
+          gh release download "${GITHUB_REF_NAME}" --dir downloaded-release
+          bash script/verify-connect-diagnostics-release.sh downloaded-release
+          for asset in release-assets/*; do
+            cmp "$asset" "downloaded-release/$(basename "$asset")"
+          done
+
+      - name: Publish verified Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "${GITHUB_REF_NAME}" --draft=false --latest

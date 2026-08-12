@@ -83,6 +83,8 @@ typedef struct trace {
 	bool	def;
 	/* if the BPF program is custom of this trace */
 	bool	custom;
+	/* A connect diagnostic cannot produce valid verdicts without this trace. */
+	bool	connect_required;
 	int	monitor;
 	int	index;
 	int	arg_count;

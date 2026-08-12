@@ -128,6 +128,7 @@ enum connect_event_kind {
 	CONNECT_EVENT_SOCKET,
 	CONNECT_EVENT_RESULT,
 	CONNECT_EVENT_SO_ERROR,
+	CONNECT_EVENT_CANCEL,
 };
 
 typedef struct {

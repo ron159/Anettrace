@@ -122,6 +122,13 @@ struct {
 } m_perfetto_socket_generation SEC(".maps");
 
 struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(key_size, sizeof(u32));
+	__uint(value_size, sizeof(u32));
+	__uint(max_entries, 1);
+} m_perfetto_socket_generation_counter SEC(".maps");
+
+struct {
 #ifdef BPF_MAP_TYPE_LRU_HASH
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 #else
@@ -172,6 +179,17 @@ struct {
 	__uint(value_size, sizeof(connect_getsockopt_t));
 	__uint(max_entries, 16384);
 } m_connect_getsockopt SEC(".maps");
+
+struct {
+#ifdef BPF_MAP_TYPE_LRU_HASH
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+#else
+	__uint(type, BPF_MAP_TYPE_HASH);
+#endif
+	__uint(key_size, sizeof(u64));
+	__uint(value_size, sizeof(connect_pending_t));
+	__uint(max_entries, 16384);
+} m_connect_socket SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -405,23 +423,28 @@ static __always_inline u32 perfetto_socket_generation(struct sock *sk,
 						       bool created)
 {
 	u64 key = (u64)(void *)sk;
+	u32 counter_key = 0;
+	u32 *counter;
 	u32 *stored;
-	u32 generation = 1;
+	u32 generation;
 
 	if (!sk)
 		return 0;
 	stored = bpf_map_lookup_elem(&m_perfetto_socket_generation, &key);
-	if (stored) {
-		generation = *stored;
-		if (created) {
-			generation++;
-			if (!generation)
-				generation = 1;
-		}
-	}
-	if (!stored || created)
-		bpf_map_update_elem(&m_perfetto_socket_generation, &key,
-				    &generation, BPF_ANY);
+	if (stored && !created)
+		return *stored;
+	counter = bpf_map_lookup_elem(&m_perfetto_socket_generation_counter,
+				      &counter_key);
+	if (!counter)
+		return 1;
+	generation = __sync_fetch_and_add(counter, 1) + 1;
+	if (!generation)
+		generation = __sync_fetch_and_add(counter, 1) + 1;
+	bpf_map_update_elem(&m_perfetto_socket_generation, &key,
+			    &generation, created ? BPF_ANY : BPF_NOEXIST);
+	stored = bpf_map_lookup_elem(&m_perfetto_socket_generation, &key);
+	if (stored)
+		return *stored;
 	return generation;
 }
 
@@ -437,10 +460,8 @@ static __always_inline bool perfetto_resolve_socket_owner(
 		return false;
 	key = (u64)(void *)sk;
 	sk_uid = _C(sk, sk_uid.val);
-	owner->socket_generation = perfetto_socket_generation(sk, false);
 	cached = bpf_map_lookup_elem(&m_perfetto_socket_owner, &key);
-	if (cached && cached->uid == sk_uid &&
-	    cached->socket_generation == owner->socket_generation) {
+	if (cached && cached->uid == sk_uid) {
 		*owner = *cached;
 		if (trust_current && uid == sk_uid && !owner->tid) {
 			owner->tid = tid;
@@ -451,6 +472,7 @@ static __always_inline bool perfetto_resolve_socket_owner(
 	}
 
 	owner->socket_key = key;
+	owner->socket_generation = perfetto_socket_generation(sk, false);
 	owner->uid = sk_uid;
 	if (trust_current && uid == sk_uid) {
 		owner->tid = tid;
@@ -1288,6 +1310,19 @@ static __always_inline void connect_event_init(connect_event_t *event,
 	bpf_get_current_comm(event->task, sizeof(event->task));
 }
 
+static __always_inline void connect_forget(const connect_pending_t *pending)
+{
+	connect_fd_key_t fd_key = {
+		.tgid = pending->tgid,
+		.fd = pending->fd,
+	};
+	u64 socket_key = pending->socket_key;
+
+	bpf_map_delete_elem(&m_connect_fd, &fd_key);
+	if (socket_key)
+		bpf_map_delete_elem(&m_connect_socket, &socket_key);
+}
+
 SEC("tp/raw_syscalls/sys_enter")
 int TRACE_NAME(connect_sys_enter)(struct trace_event_raw_sys_enter *ctx)
 {
@@ -1356,7 +1391,6 @@ int TRACE_NAME(connect_sys_exit)(struct trace_event_raw_sys_exit *ctx)
 	if (syscall_id == args->getsockopt_syscall_nr) {
 		connect_getsockopt_t *get;
 		connect_event_t event = {};
-		connect_fd_key_t fd_key;
 		int so_error = 0;
 
 		get = bpf_map_lookup_elem(&m_connect_getsockopt, &pid_tgid);
@@ -1370,9 +1404,8 @@ int TRACE_NAME(connect_sys_exit)(struct trace_event_raw_sys_exit *ctx)
 			event.result = so_error;
 			EVENT_OUTPUT(ctx, event);
 			args->event_count++;
-			fd_key.tgid = get->pending.tgid;
-			fd_key.fd = get->pending.fd;
-			bpf_map_delete_elem(&m_connect_fd, &fd_key);
+			if (so_error != 115 && so_error != 114)
+				connect_forget(&get->pending);
 		}
 		bpf_map_delete_elem(&m_connect_getsockopt, &pid_tgid);
 		return 0;
@@ -1380,7 +1413,6 @@ int TRACE_NAME(connect_sys_exit)(struct trace_event_raw_sys_exit *ctx)
 	if (syscall_id == args->connect_syscall_nr) {
 		connect_pending_t *pending;
 		connect_event_t event = {};
-		connect_fd_key_t fd_key;
 		bool async_pending;
 
 		pending = bpf_map_lookup_elem(&m_connect_pending, &pid_tgid);
@@ -1393,13 +1425,62 @@ int TRACE_NAME(connect_sys_exit)(struct trace_event_raw_sys_exit *ctx)
 			event.flags |= CONNECT_EVENT_ASYNC_PENDING;
 		EVENT_OUTPUT(ctx, event);
 		args->event_count++;
-		if (!async_pending) {
-			fd_key.tgid = pending->tgid;
-			fd_key.fd = pending->fd;
-			bpf_map_delete_elem(&m_connect_fd, &fd_key);
-		}
+		if (!async_pending)
+			connect_forget(pending);
 		bpf_map_delete_elem(&m_connect_pending, &pid_tgid);
 	}
+	return 0;
+}
+
+SEC("tp/tcp/tcp_retransmit_skb")
+int TRACE_NAME(connect_tcp_retransmit)(
+	struct trace_event_raw_tcp_event_sk_skb *ctx)
+{
+	context_info_t info = {
+		.func = INDEX_connect_tcp_retransmit,
+		.ctx = ctx,
+		.args = (void *)CONFIG(),
+		.sk = (struct sock *)_(ctx->skaddr),
+	};
+
+	if (pre_handle_entry(&info, INDEX_connect_tcp_retransmit))
+		return 0;
+	handle_entry_finish(&info, default_handle_entry(&info));
+	return 0;
+}
+
+SEC("kprobe/tcp_close")
+int TRACE_NAME(tcp_close)(struct pt_regs *ctx)
+{
+	bpf_args_t *args = (void *)CONFIG();
+	struct sock *sk = ctx_get_arg(ctx, 0);
+	u64 socket_key = (u64)(void *)sk;
+	connect_pending_t *pending;
+	connect_event_t event = {};
+	u8 state = sk ? _C(sk, __sk_common.skc_state) : TCP_CLOSE;
+	context_info_t info = {
+		.func = INDEX_tcp_close,
+		.ctx = ctx,
+		.args = args,
+		.sk = sk,
+	};
+
+	if (args->ready && args->perfetto && args->connect_diagnostics && sk) {
+		pending = bpf_map_lookup_elem(&m_connect_socket, &socket_key);
+		if (pending) {
+			if (state == TCP_SYN_SENT || state == TCP_SYN_RECV ||
+			    state == TCP_CLOSE) {
+				connect_event_init(&event, pending,
+						   CONNECT_EVENT_CANCEL);
+				EVENT_OUTPUT(ctx, event);
+				args->event_count++;
+			}
+			connect_forget(pending);
+		}
+	}
+	if (pre_handle_entry(&info, INDEX_tcp_close))
+		return 0;
+	handle_entry_finish(&info, default_handle_entry(&info));
 	return 0;
 }
 
@@ -1432,6 +1513,8 @@ int TRACE_NAME(inet_stream_connect)(struct pt_regs *ctx)
 	fd_key.fd = updated.fd;
 	bpf_map_update_elem(&m_connect_pending, &pid_tgid, &updated, BPF_ANY);
 	bpf_map_update_elem(&m_connect_fd, &fd_key, &updated, BPF_ANY);
+	bpf_map_update_elem(&m_connect_socket, &updated.socket_key, &updated,
+			    BPF_ANY);
 	owner.socket_key = updated.socket_key;
 	owner.socket_generation = updated.socket_generation;
 	owner.tid = updated.tid;

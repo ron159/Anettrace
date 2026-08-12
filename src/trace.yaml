@@ -508,21 +508,30 @@ children:
     - name: connect_sys_enter
       tp: raw_syscalls/sys_enter
       custom: true
+      connect_required: true
       default: false
     - name: connect_sys_exit
       tp: raw_syscalls/sys_exit
       custom: true
+      connect_required: true
+      default: false
+    - name: connect_tcp_retransmit/0
+      tp: tcp/tcp_retransmit_skb
+      custom: true
       default: false
     - name: inet_stream_connect/0
       custom: true
+      connect_required: true
       default: false
     - name: sk_alloc/0
       custom: true
+      connect_required: true
       default: false
     - name: inet_sock_set_state/0
       tp: sock/inet_sock_set_state
       skoffset: 8
       custom: true
+      connect_required: true
       default: false
     - name: inet_listen/0
       custom: true
@@ -532,6 +541,8 @@ children:
         msg: TCP socket begin to listen
     - tcp_v4_destroy_sock/0
     - name: tcp_close/0
+      custom: true
+      connect_required: true
       rules:
       - exp: any
         level: info
