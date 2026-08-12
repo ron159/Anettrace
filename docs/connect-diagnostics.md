@@ -142,9 +142,12 @@ collector. The default Perfetto profile is `sched`; the broader `full` profile
 is opt-in.
 
 Each run uses a unique device directory. After verified pull and hashing, the
-directory is removed unless `--keep-device-artifacts` is explicit. The command
-does not automatically run `adb root`, `su`, or Magisk commands, and it does not
-stop another tracing session. Unsafe trace-resource conflicts fail preflight.
+directory is removed unless `--keep-device-artifacts` is explicit. The device
+shell must run as root. If adbd itself is not root, the user may explicitly pass
+a trusted wrapper such as `--root-command 'su -c'`; that wrapper is applied to
+device shell operations and root-owned file transfer staging. The command never
+guesses or automatically runs `adb root`, `su`, or Magisk, and it does not stop
+another tracing session. Unsafe trace-resource conflicts fail preflight.
 
 The collector binary is supplied with `--binary` or by the matching release
 bundle. Its architecture, version, Git commit and SHA-256 are recorded before

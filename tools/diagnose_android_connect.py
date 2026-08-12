@@ -83,10 +83,39 @@ def run(command: Sequence[str], *, check: bool = True) -> subprocess.CompletedPr
 
 
 def repository_commit() -> str | None:
+    identity = ROOT / "SOURCE_COMMIT"
+    if identity.is_file():
+        try:
+            value = identity.read_text(encoding="utf-8").strip()
+        except OSError as error:
+            raise DiagnosticError(f"cannot read SOURCE_COMMIT: {error}") from error
+        if not re.fullmatch(r"[0-9a-f]{40}", value):
+            raise DiagnosticError("SOURCE_COMMIT is not a full Git object ID")
+        return value
     result = run(
         ["git", "-C", str(ROOT), "rev-parse", "--verify", "HEAD"], check=False
     )
-    return result.stdout.strip() if result.returncode == 0 else None
+    value = result.stdout.strip() if result.returncode == 0 else ""
+    if not re.fullmatch(r"[0-9a-f]{40}", value):
+        return None
+    status = run(
+        [
+            "git",
+            "-C",
+            str(ROOT),
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+        ],
+        check=False,
+    )
+    if status.returncode != 0:
+        return None
+    if status.stdout.strip():
+        raise DiagnosticError(
+            "host tools checkout has tracked changes; commit and rebuild first"
+        )
+    return value
 
 
 def resolve_trace_processor(explicit: Path | None) -> Path:
@@ -240,12 +269,13 @@ def device_preflight(
     package: str,
     include_package: bool,
     profile: str,
+    source_commit: str | None = None,
 ) -> tuple[dict[str, Any], int, list[str], int, list[str]]:
     if adb.run("get-state").stdout.strip() != "device":
         raise DiagnosticError("Android device is not ready")
     if device_value(adb, "id -u") != "0":
         raise DiagnosticError(
-            "adb shell must already be root; automatic privilege escalation is disabled"
+            "device shell must run as root; use an explicit --root-command if needed"
         )
 
     current_tracer = device_value(adb, "cat /sys/kernel/tracing/current_tracer")
@@ -407,8 +437,10 @@ def device_preflight(
             raise DiagnosticError(
                 f"device binary version does not match VERSION {VERSION}"
             )
-        commit = repository_commit()
-        if commit and f"commit {commit}" not in version_text:
+        commit = source_commit or repository_commit()
+        if not commit:
+            raise DiagnosticError("host tools have no verifiable source commit identity")
+        if f"commit {commit}" not in version_text:
             raise DiagnosticError("device binary Git commit does not match this checkout")
     finally:
         adb.shell(f"rm -rf {shlex.quote(remote_dir)}", check=False)
@@ -459,6 +491,8 @@ def capture_args(
     ]
     if args.device:
         values.extend(("--device", args.device))
+    if args.root_command:
+        values.extend(("--root-command", args.root_command))
     if args.keep_device_artifacts:
         values.append("--keep-remote")
     if args.resource_sample_interval:
@@ -560,11 +594,13 @@ def recovery_paths(session_id: str) -> tuple[str, ...]:
 
 def recover_session(args: argparse.Namespace) -> str:
     remote_dir, remote_config, remote_trace = recovery_paths(args.recover_session)
-    adb = CAPTURE.Adb(args.adb, args.device)
+    adb = CAPTURE.Adb(args.adb, args.device, args.root_command)
     if adb.run("get-state").stdout.strip() != "device":
         raise DiagnosticError("Android device is not ready")
     if device_value(adb, "id -u") != "0":
-        raise DiagnosticError("adb shell must already be root")
+        raise DiagnosticError(
+            "device shell must run as root; use an explicit --root-command if needed"
+        )
 
     if args.recover_action == "cleanup":
         adb.shell(f"rm -rf {shlex.quote(remote_dir)}")
@@ -648,17 +684,22 @@ def diagnose(args: argparse.Namespace) -> Path:
     capture_manifest: dict[str, Any] = {}
     connect_metrics: dict[str, Any] = {}
     analysis_warnings: list[str] = []
+    source_commit: str | None = None
 
     try:
+        source_commit = repository_commit()
+        if not source_commit:
+            raise DiagnosticError("host tools have no verifiable source commit identity")
         trace_processor = resolve_trace_processor(args.trace_processor)
         inputs = validate_local_inputs(args.binary.resolve(), trace_processor)
-        adb = CAPTURE.Adb(args.adb, args.device)
+        adb = CAPTURE.Adb(args.adb, args.device, args.root_command)
         device, uid, candidates, candidate_count, missing_optional = device_preflight(
             adb,
             args.binary.resolve(),
             args.package,
             args.include_package,
             args.profile,
+            source_commit,
         )
         requested_status = (
             "degraded" if candidate_count > 1 or missing_optional else "valid"
@@ -749,7 +790,7 @@ def diagnose(args: argparse.Namespace) -> Path:
         "schema_version": MANIFEST_SCHEMA,
         "report_id": report_id,
         "product_version": VERSION,
-        "source_commit": repository_commit(),
+        "source_commit": source_commit,
         "started_at_utc": started,
         "ended_at_utc": utc_now(),
         "status": report["status"],
@@ -808,6 +849,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", help="adb device selector; never persisted")
     parser.add_argument("--adb", default="adb")
     parser.add_argument(
+        "--root-command",
+        help="explicit trusted device-shell prefix, for example 'su -c'",
+    )
+    parser.add_argument(
         "--recover-session",
         help="inspect, pull, or clean a 12-hex interrupted capture session",
     )
@@ -828,6 +873,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("max report size must be positive")
     if args.resource_sample_interval is not None and args.resource_sample_interval <= 0:
         parser.error("resource sample interval must be positive")
+    if args.root_command is not None and (
+        not args.root_command.strip()
+        or any(character in args.root_command for character in "\r\n\0")
+    ):
+        parser.error("root command must be one non-empty shell prefix")
     if args.recover_session:
         if args.recover_action == "pull" and args.out is None:
             parser.error("--out is required with --recover-action pull")

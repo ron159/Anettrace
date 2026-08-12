@@ -21,6 +21,11 @@ if [[ ! -f "$android_binary" ]]; then
 	echo "Android binary not found: $android_binary" >&2
 	exit 1
 fi
+if ! git -C "$root" diff --quiet || \
+	! git -C "$root" diff --cached --quiet; then
+	echo "release packaging requires a clean tracked checkout" >&2
+	exit 1
+fi
 
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
@@ -29,10 +34,12 @@ trap 'rm -rf -- "$staging_root"' EXIT
 
 host_name="anettrace-${version}-host-tools"
 host_root="$staging_root/$host_name"
+source_commit="$(git -C "$root" rev-parse --verify 'HEAD^{commit}')"
 mkdir -p "$host_root/docs" "$host_root/schemas" \
 	"$host_root/tools/perfetto_sql"
 
 cp "$root/VERSION" "$root/README.md" "$root/LICENSE" "$host_root/"
+printf '%s\n' "$source_commit" > "$host_root/SOURCE_COMMIT"
 cp "$root/docs/connect-diagnostics.md" "$host_root/docs/"
 cp "$root/schemas/connect-diagnostics-v1.schema.json" "$host_root/schemas/"
 cp "$root/tools/anettrace_to_perfetto.py" \

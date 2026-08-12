@@ -198,6 +198,10 @@ require_text 'sched/sched_waking' tools/capture_android_trace.py
 require_text 'android.surfaceflinger.frametimeline' tools/capture_android_trace.py
 require_text 'simpleperf' tools/capture_android_trace.py
 require_text 'session-manifest.json' tools/capture_android_trace.py
+require_text '/proc/{process.pid}/cmdline' tools/capture_android_trace.py
+require_text 'processes_verified' tools/capture_android_trace.py
+require_text 'remote process or artifact cleanup could not be verified' \
+	tools/capture_android_trace.py
 require_text 'merge_trace_with_anettrace.py' tools/capture_android_trace.py
 require_text 'clock_sync_failure_no_path' \
 	tools/perfetto_sql/anettrace_integrity.sql
@@ -212,6 +216,13 @@ require_text 'anettrace.connect-diagnostics.v1' \
 	schemas/connect-diagnostics-v1.schema.json
 require_text 'connect_attempt_start' tools/connect_diagnostics.py
 require_text 'runtime download is disabled' tools/diagnose_android_connect.py
+require_text 'SOURCE_COMMIT' tools/diagnose_android_connect.py
+require_text 'commit and rebuild first' tools/diagnose_android_connect.py
+require_text 'SOURCE_COMMIT' script/package-connect-diagnostics-release.sh
+require_text 'release packaging requires a clean tracked checkout' \
+	script/package-connect-diagnostics-release.sh
+require_text '--root-command' tools/diagnose_android_connect.py
+require_text 'wrap_device_shell' tools/capture_android_trace.py
 require_text '--recover-session' tools/diagnose_android_connect.py
 require_text '--external-command' tools/diagnose_android_connect.py
 require_text 'TCP_USER_TIMEOUT' tests/android/connect_workload.c
@@ -223,12 +234,20 @@ require_text 'workload_cleanup_verified' tools/soak_android_connect.py
 require_text 'resource_sampling' tools/capture_android_trace.py
 require_text 'connect_diagnostics.sql' docs/connect-diagnostics.md
 require_text 'CycloneDX' tools/generate_release_sbom.py
+require_text 'commit must be a full lowercase Git object ID' \
+	tools/generate_release_sbom.py
+require_text 'commit ${expected_commit}' \
+	script/verify-connect-diagnostics-release.sh
 require_text 'gh release create "${GITHUB_REF_NAME}"' \
+	.github/workflows/release.yml
+require_text 'resuming immutable Draft Release' \
 	.github/workflows/release.yml
 require_text 'gh release download "${GITHUB_REF_NAME}"' \
 	.github/workflows/release.yml
-require_text 'gh release edit "${GITHUB_REF_NAME}" --draft=false --latest' \
+require_text 'gh release edit "${GITHUB_REF_NAME}"' \
 	.github/workflows/release.yml
+require_text '--draft=false' .github/workflows/release.yml
+require_text '--latest' .github/workflows/release.yml
 require_text 'uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' \
 	.github/workflows/release.yml
 

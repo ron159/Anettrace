@@ -38,6 +38,26 @@ class SoakContractTest(unittest.TestCase):
         self.assertEqual(args.baseline_seconds, 30)
         self.assertEqual(args.resource_sample_interval, 5)
 
+    def test_external_command_uses_explicit_root_command(self) -> None:
+        args = MODULE.parse_args(
+            [
+                "--package",
+                "com.example.app",
+                "--binary",
+                "/tmp/anettrace",
+                "--workload",
+                "/tmp/workload",
+                "--trace-processor",
+                "/tmp/tp",
+                "--out",
+                "/tmp/soak",
+                "--root-command",
+                "su -c",
+            ]
+        )
+        command = MODULE.external_command(args, "echo test")
+        self.assertEqual(command[-1], "su -c 'echo test'")
+
     def test_traced_workload_records_the_actual_child_pid(self) -> None:
         traced_workload = MODULE.workload_script(
             "/data/local/tmp/session/connect-workload",

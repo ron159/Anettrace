@@ -73,8 +73,9 @@ python3 -m venv /tmp/anettrace-connect-venv
   --out output/connect-report
 ```
 
-默认最长 120 秒、最大 512 MiB，使用 `sched` profile。设备的 ADB shell 必须已经是 root；工具
-不会自动执行 `adb root`、`su` 或 Magisk 命令。输出目录包含 `report.md`、`report.json`、
+默认最长 120 秒、最大 512 MiB，使用 `sched` profile。设备 shell 必须以 root 运行；若 adbd
+本身不是 root，只能显式传入受信任的包装前缀，例如 `--root-command 'su -c'`。工具不会自动尝试
+`adb root`、`su` 或 Magisk。输出目录包含 `report.md`、`report.json`、
 `manifest.json`、`trace.pftrace`、`session.log` 和 `SHA256SUMS`。
 
 报告默认保留诊断所需的 IP、端口、UID/TID 和匿名 Socket ID，但不持久化包名、设备序列号、

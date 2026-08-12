@@ -48,6 +48,32 @@ class PerfettoProfileTest(unittest.TestCase):
 
 
 class CliContractTest(unittest.TestCase):
+    def test_explicit_root_command_wraps_device_shell_only(self) -> None:
+        adb = MODULE.Adb("adb", "device", "su -c")
+        with mock.patch.object(MODULE, "run_command") as run_command:
+            run_command.return_value = MODULE.subprocess.CompletedProcess(
+                [], 0, "", ""
+            )
+            adb.shell("id -u")
+        command = run_command.call_args.args[0]
+        self.assertEqual(command[:4], ["adb", "-s", "device", "shell"])
+        self.assertEqual(command[4], "su -c 'id -u'")
+
+    def test_explicit_root_command_stages_push_and_pull(self) -> None:
+        adb = MODULE.Adb("adb", None, "su -c")
+        with mock.patch.object(MODULE, "run_command") as run_command:
+            run_command.return_value = MODULE.subprocess.CompletedProcess(
+                [], 0, "", ""
+            )
+            adb.push(Path("/tmp/source"), "/data/root/destination")
+            adb.pull("/data/root/source", Path("/tmp/destination"))
+        commands = [call.args[0] for call in run_command.call_args_list]
+        self.assertEqual(commands[0][:2], ["adb", "push"])
+        self.assertIn("su -c", commands[1][-1])
+        self.assertEqual(commands[3][0:2], ["adb", "shell"])
+        self.assertIn("chown 2000:2000", commands[3][-1])
+        self.assertEqual(commands[4][0:2], ["adb", "pull"])
+
     def test_profile_duration_defaults(self) -> None:
         full = MODULE.parse_args(["--uid", "10000", "--profile", "full"])
         long_capture = MODULE.parse_args(["--uid", "10000", "--profile", "long"])
@@ -136,7 +162,12 @@ class OutputValidationTest(unittest.TestCase):
 class FailureManifestTest(unittest.TestCase):
     def test_preflight_failure_still_writes_manifest(self) -> None:
         class FakeAdb:
-            def __init__(self, _executable: str, _serial: str | None):
+            def __init__(
+                self,
+                _executable: str,
+                _serial: str | None,
+                _root_command: str | None = None,
+            ):
                 pass
 
             def shell(self, _script: str, *, check: bool = True):
@@ -170,11 +201,52 @@ class FailureManifestTest(unittest.TestCase):
 
 
 class SuccessfulCaptureTest(unittest.TestCase):
+    def test_remote_signal_requires_matching_session_identity(self) -> None:
+        process = MODULE.RemoteProcess(
+            name="anettrace",
+            pid=200,
+            log_path="/data/local/tmp/session/anettrace.log",
+            identity="/data/local/tmp/session",
+        )
+        adb = mock.Mock()
+        adb.shell.return_value = MODULE.subprocess.CompletedProcess([], 1, "", "")
+        MODULE.signal_remote(adb, process, "TERM")
+        self.assertEqual(adb.shell.call_count, 1)
+        self.assertIn("/proc/200/cmdline", adb.shell.call_args.args[0])
+
+    def test_remote_stop_escalates_only_while_identity_matches(self) -> None:
+        process = MODULE.RemoteProcess(
+            name="anettrace",
+            pid=200,
+            log_path="/data/local/tmp/session/anettrace.log",
+            identity="/data/local/tmp/session",
+        )
+        adb = mock.Mock()
+        with mock.patch.object(
+            MODULE,
+            "remote_alive",
+            side_effect=[True, True, True],
+        ), mock.patch.object(
+            MODULE, "wait_remote", side_effect=[False, True]
+        ), mock.patch.object(MODULE, "signal_remote") as signal_remote:
+            self.assertTrue(
+                MODULE.stop_remote(adb, process, "INT", timeout_s=0.01)
+            )
+        self.assertEqual(
+            signal_remote.call_args_list,
+            [mock.call(adb, process, "INT"), mock.call(adb, process, "KILL")],
+        )
+
     def test_mock_device_capture_records_outputs_and_metadata(self) -> None:
         class FakeAdb:
             next_pid = 200
 
-            def __init__(self, _executable: str, _serial: str | None):
+            def __init__(
+                self,
+                _executable: str,
+                _serial: str | None,
+                _root_command: str | None = None,
+            ):
                 self.alive: dict[int, bool] = {}
 
             @staticmethod
@@ -203,7 +275,9 @@ class SuccessfulCaptureTest(unittest.TestCase):
                     FakeAdb.next_pid += 1
                     self.alive[pid] = True
                     return self.result(stdout=f"{pid}\n")
-                match = MODULE.re.fullmatch(r"kill -0 ([0-9]+)", script)
+                match = MODULE.re.match(
+                    r"test -r /proc/([0-9]+)/cmdline && ", script
+                )
                 if match:
                     return self.result(0 if self.alive.get(int(match.group(1)), False) else 1)
                 match = MODULE.re.fullmatch(r"kill -(?:INT|TERM) ([0-9]+)", script)
@@ -257,10 +331,27 @@ class SuccessfulCaptureTest(unittest.TestCase):
             self.assertEqual(manifest["anettrace"]["lost_events"], 0)
             self.assertIn("--trace-detail", manifest["commands"]["anettrace"])
             self.assertTrue(manifest["cleanup"]["verified"])
+            self.assertTrue(manifest["cleanup"]["processes_verified"])
+            self.assertEqual(manifest["cleanup"]["remaining_processes"], [])
             self.assertEqual(manifest["cleanup"]["remaining"], [])
             output_names = {record["path"] for record in manifest["outputs"]}
             self.assertIn("anettrace-events.jsonl", output_names)
             self.assertIn("system.pftrace", output_names)
+
+            failed_output = root / "failed-cleanup"
+            args.out = failed_output
+            with mock.patch.object(MODULE, "Adb", FakeAdb), mock.patch.object(
+                MODULE, "stop_remote", return_value=False
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.CaptureError, "cleanup could not be verified"
+                ):
+                    MODULE.capture(args)
+            failed_manifest = MODULE.json.loads(
+                (failed_output / "session-manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(failed_manifest["status"], "failed")
+            self.assertFalse(failed_manifest["cleanup"]["verified"])
 
 
 if __name__ == "__main__":

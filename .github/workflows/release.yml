@@ -81,20 +81,30 @@ jobs:
           )
           bash script/verify-connect-diagnostics-release.sh release-assets
 
-      - name: Create Draft Release
+      - name: Create or resume Draft Release
+        id: draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            echo "release already exists: ${GITHUB_REF_NAME}" >&2
+          existing_draft="$(
+            gh release view "${GITHUB_REF_NAME}" --json isDraft \
+              --jq '.isDraft' 2>/dev/null || true
+          )"
+          if [[ -z "${existing_draft}" ]]; then
+            gh release create "${GITHUB_REF_NAME}" \
+              release-assets/* \
+              --draft \
+              --title "Anettrace ${GITHUB_REF_NAME}" \
+              --notes-file "docs/releases/${GITHUB_REF_NAME}.md" \
+              --verify-tag
+            echo "created=true" >> "${GITHUB_OUTPUT}"
+          elif [[ "${existing_draft}" = true ]]; then
+            echo "resuming immutable Draft Release ${GITHUB_REF_NAME}"
+            echo "created=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "release is already published: ${GITHUB_REF_NAME}" >&2
             exit 1
           fi
-          gh release create "${GITHUB_REF_NAME}" \
-            release-assets/* \
-            --draft \
-            --title "Anettrace ${GITHUB_REF_NAME}" \
-            --notes-file "docs/releases/${GITHUB_REF_NAME}.md" \
-            --verify-tag
 
       - name: Download and verify Draft Release assets
         env:
@@ -103,12 +113,18 @@ jobs:
           mkdir downloaded-release
           gh release download "${GITHUB_REF_NAME}" --dir downloaded-release
           bash script/verify-connect-diagnostics-release.sh downloaded-release
-          for asset in release-assets/*; do
-            cmp "$asset" "downloaded-release/$(basename "$asset")"
-          done
+          if [[ "${{ steps.draft.outputs.created }}" = true ]]; then
+            for asset in release-assets/*; do
+              cmp "$asset" "downloaded-release/$(basename "$asset")"
+            done
+          fi
 
       - name: Publish verified Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release edit "${GITHUB_REF_NAME}" --draft=false --latest
+          gh release edit "${GITHUB_REF_NAME}" \
+            --title "Anettrace ${GITHUB_REF_NAME}" \
+            --notes-file "docs/releases/${GITHUB_REF_NAME}.md" \
+            --draft=false \
+            --latest

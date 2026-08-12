@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
@@ -41,8 +42,10 @@ def build_sbom(
 ) -> dict[str, object]:
     if not assets:
         raise ValueError("at least one release asset is required")
-    if not version or not commit:
-        raise ValueError("version and commit are required")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise ValueError("version must use MAJOR.MINOR.PATCH")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("commit must be a full lowercase Git object ID")
 
     components: list[dict[str, object]] = []
     dependencies: list[str] = []

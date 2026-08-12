@@ -76,6 +76,32 @@ class AndroidAcceptanceContractTest(unittest.TestCase):
         self.assertIn("echo $$", command[-1])
         self.assertIn("success.pid", command[-1])
 
+    def test_workload_uses_explicit_root_command(self) -> None:
+        args = MODULE.parse_args(
+            [
+                "--package",
+                "com.example.app",
+                "--binary",
+                "/tmp/anettrace",
+                "--workload",
+                "/tmp/workload",
+                "--trace-processor",
+                "/tmp/tp",
+                "--out",
+                "/tmp/acceptance",
+                "--root-command",
+                "su -c",
+            ]
+        )
+        command = MODULE.external_workload_command(
+            args,
+            "/data/local/tmp/session/connect-workload",
+            "/data/local/tmp/session/success.pid",
+            10123,
+            "success",
+        )
+        self.assertTrue(command[-1].startswith("su -c "))
+
     def test_workload_cleanup_only_signals_matching_process(self) -> None:
         adb = mock.Mock()
         with mock.patch.object(MODULE.DIAGNOSE, "device_value", return_value="123"):

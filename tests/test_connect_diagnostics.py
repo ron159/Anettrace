@@ -67,6 +67,86 @@ class ConnectDiagnosticsContractTest(unittest.TestCase):
         self.assertEqual(attempt["outcome"], "kernel_drop")
         self.assertEqual(attempt["errno"]["name"], "ETIMEDOUT")
 
+    def test_recovered_syn_drop_remains_a_successful_connect(self) -> None:
+        records = [
+            self.records[0],
+            {
+                "schema": MODULE.EVENT_SCHEMA,
+                "type": "connect_attempt_start",
+                "ts_ns": 2_000_000_000,
+                "attempt_id": "00000000000000da",
+                "uid": 10000,
+                "tid": 200,
+                "tgid": 200,
+                "fd": 20,
+            },
+            {
+                "schema": MODULE.EVENT_SCHEMA,
+                "type": "connect_socket",
+                "ts_ns": 2_000_010_000,
+                "attempt_id": "00000000000000da",
+                "socket_instance_id": "00000000000000db",
+            },
+            {
+                "schema": MODULE.EVENT_SCHEMA,
+                "type": "connect_drop",
+                "ts_ns": 2_000_020_000,
+                "socket_instance_id": "00000000000000db",
+                "exact": True,
+            },
+            {
+                "schema": MODULE.EVENT_SCHEMA,
+                "type": "connect_retransmit",
+                "ts_ns": 2_001_000_000,
+                "socket_instance_id": "00000000000000db",
+            },
+            {
+                "schema": MODULE.EVENT_SCHEMA,
+                "type": "connect_attempt_end",
+                "ts_ns": 2_002_000_000,
+                "attempt_id": "00000000000000da",
+                "result": 0,
+                "error": 0,
+            },
+            {
+                "schema": MODULE.EVENT_SCHEMA,
+                "type": "trace_end",
+                "ts_ns": 2_003_000_000,
+                "lost_events": 0,
+            },
+        ]
+        report = MODULE.analyze_records(
+            records, report_id="0123456789abcdef", uid=10000
+        )
+        attempt = report["attempts"][0]
+        self.assertEqual(attempt["outcome"], "success")
+        self.assertEqual(attempt["evidence_strength"], "direct")
+        self.assertEqual(
+            attempt["contributing_factors"],
+            ["tcp_retransmission", "connect_syn_drop"],
+        )
+
+    def test_syn_drop_does_not_override_direct_peer_refusal(self) -> None:
+        records = [dict(record) for record in self.records]
+        end = next(
+            record
+            for record in records
+            if record.get("type") == "connect_attempt_end"
+            and record.get("attempt_id") == "0000000000000006"
+        )
+        end.update(
+            {
+                "result": -MODULE.LINUX_ECONNREFUSED,
+                "error": MODULE.LINUX_ECONNREFUSED,
+            }
+        )
+        report = MODULE.analyze_records(
+            records, report_id="0123456789abcdef", uid=10000
+        )
+        attempt = report["attempts"][5]
+        self.assertEqual(attempt["outcome"], "peer_refused")
+        self.assertIn("connect_syn_drop", attempt["contributing_factors"])
+
     def test_existing_socket_and_packet_events_become_connect_evidence(self) -> None:
         records = [
             self.records[0],

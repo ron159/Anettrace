@@ -55,6 +55,25 @@ class ReleaseAssetTest(unittest.TestCase):
                 expected,
             )
 
+    def test_sbom_rejects_non_release_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            asset = Path(directory) / "asset"
+            asset.write_bytes(b"anettrace")
+            with self.assertRaisesRegex(ValueError, "MAJOR.MINOR.PATCH"):
+                MODULE.build_sbom(
+                    [asset],
+                    version="v0.5.0",
+                    commit="a" * 40,
+                    timestamp="2026-08-12T00:00:00Z",
+                )
+            with self.assertRaisesRegex(ValueError, "full lowercase"):
+                MODULE.build_sbom(
+                    [asset],
+                    version="0.5.0",
+                    commit="A" * 40,
+                    timestamp="2026-08-12T00:00:00Z",
+                )
+
     def test_release_packager_contains_public_contract_and_host_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -76,6 +95,7 @@ class ReleaseAssetTest(unittest.TestCase):
             prefix = f"anettrace-{version}-host-tools"
             required = {
                 f"{prefix}/VERSION",
+                f"{prefix}/SOURCE_COMMIT",
                 f"{prefix}/LICENSE",
                 f"{prefix}/docs/connect-diagnostics.md",
                 f"{prefix}/schemas/connect-diagnostics-v1.schema.json",
@@ -95,6 +115,17 @@ class ReleaseAssetTest(unittest.TestCase):
             android = root / "assets" / f"anettrace-{version}-android-arm64-dual"
             self.assertEqual(android.read_bytes(), b"fixture")
             self.assertEqual(android.stat().st_mode & 0o777, 0o755)
+            with tarfile.open(archive, "r:bz2") as package:
+                commit = package.extractfile(f"{prefix}/SOURCE_COMMIT")
+                assert commit is not None
+                expected_commit = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=ROOT,
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                ).stdout.strip()
+                self.assertEqual(commit.read().decode().strip(), expected_commit)
 
     def test_release_notes_are_chinese_and_versioned(self) -> None:
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()

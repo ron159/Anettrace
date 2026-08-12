@@ -11,6 +11,7 @@ fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 asset_dir="$(cd "$1" && pwd)"
 version="$(tr -d '[:space:]' < "$root/VERSION")"
+expected_commit="$(git -C "$root" rev-parse --verify 'HEAD^{commit}')"
 android_binary="anettrace-${version}-android-arm64-dual"
 android_archive="${android_binary}.tar.bz2"
 host_archive="anettrace-${version}-host-tools.tar.bz2"
@@ -37,7 +38,9 @@ file "$asset_dir/$android_binary" | grep -Eiq 'ARM aarch64|AArch64'
 readelf -h "$asset_dir/$android_binary" | grep -q 'Machine:.*AArch64'
 ! readelf -l "$asset_dir/$android_binary" | grep -q INTERP
 ! readelf -d "$asset_dir/$android_binary" | grep -q NEEDED
-strings "$asset_dir/$android_binary" | grep -Fq "Anettrace ${version}"
+strings "$asset_dir/$android_binary" > "$staging_root/android.strings"
+grep -F "Anettrace ${version}" "$staging_root/android.strings" >/dev/null
+grep -F "commit ${expected_commit}" "$staging_root/android.strings" >/dev/null
 file "$asset_dir/$connect_workload" | grep -Eiq 'ARM aarch64|AArch64'
 readelf -h "$asset_dir/$connect_workload" | grep -q 'Machine:.*AArch64'
 ! readelf -l "$asset_dir/$connect_workload" | grep -q INTERP
@@ -52,7 +55,7 @@ cmp "$asset_dir/$android_binary" "$staging_root/$android_member"
 host_prefix="anettrace-${version}-host-tools"
 host_members="$(tar -tjf "$asset_dir/$host_archive")"
 for member in \
-	VERSION README.md LICENSE docs/connect-diagnostics.md \
+	VERSION SOURCE_COMMIT README.md LICENSE docs/connect-diagnostics.md \
 	schemas/connect-diagnostics-v1.schema.json \
 	tools/anettrace_to_perfetto.py tools/capture_android_trace.py \
 	tools/connect_diagnostics.py tools/diagnose_android_connect.py \
@@ -65,8 +68,10 @@ for member in \
 done
 test "$(tar -xOf "$asset_dir/$host_archive" "$host_prefix/VERSION" | \
 	tr -d '[:space:]')" = "$version"
+test "$(tar -xOf "$asset_dir/$host_archive" "$host_prefix/SOURCE_COMMIT" | \
+	tr -d '[:space:]')" = "$expected_commit"
 
-python3 - "$asset_dir" "$version" <<'PY'
+python3 - "$asset_dir" "$version" "$expected_commit" <<'PY'
 import hashlib
 import json
 import sys
@@ -74,12 +79,27 @@ from pathlib import Path
 
 asset_dir = Path(sys.argv[1])
 version = sys.argv[2]
+expected_commit = sys.argv[3]
 sbom = json.loads(
     (asset_dir / f"anettrace-{version}-sbom.cdx.json").read_text(encoding="utf-8")
 )
 assert sbom["bomFormat"] == "CycloneDX"
 assert sbom["specVersion"] == "1.6"
 assert sbom["metadata"]["component"]["version"] == version
+
+
+def property_value(item, name):
+    matches = [
+        prop["value"] for prop in item.get("properties", [])
+        if prop.get("name") == name
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+assert property_value(
+    sbom["metadata"]["component"], "anettrace:source-commit"
+) == expected_commit
 components = {item["name"]: item for item in sbom["components"]}
 expected = {
     f"anettrace-{version}-android-arm64-dual",
@@ -91,4 +111,7 @@ assert set(components) == expected
 for name, component in components.items():
     digest = hashlib.sha256((asset_dir / name).read_bytes()).hexdigest()
     assert component["hashes"] == [{"alg": "SHA-256", "content": digest}]
+    assert property_value(
+        component, "anettrace:release:source-commit"
+    ) == expected_commit
 PY

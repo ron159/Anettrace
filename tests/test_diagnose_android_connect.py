@@ -57,6 +57,24 @@ class CliContractTest(unittest.TestCase):
         self.assertTrue(capture.redact_device_metadata)
         self.assertEqual(capture.max_device_file_mib, 256)
 
+    def test_root_command_is_explicitly_forwarded_to_capture(self) -> None:
+        args = MODULE.parse_args(
+            [
+                "--package",
+                "com.example.app",
+                "--binary",
+                "/tmp/anettrace",
+                "--out",
+                "/tmp/report",
+                "--root-command",
+                "su -c",
+            ]
+        )
+        capture = MODULE.capture_args(
+            args, 10000, Path("/tmp/capture"), Path("/tmp/trace_processor")
+        )
+        self.assertEqual(capture.root_command, "su -c")
+
     def test_external_workload_is_forwarded_without_shell_parsing(self) -> None:
         args = MODULE.parse_args(
             [
@@ -97,6 +115,29 @@ class CliContractTest(unittest.TestCase):
 
 
 class PrivacyAndFailureTest(unittest.TestCase):
+    def test_release_source_commit_identity_is_strict(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            identity = Path(directory) / "SOURCE_COMMIT"
+            identity.write_text("not-a-commit\n", encoding="utf-8")
+            with mock.patch.object(MODULE, "ROOT", Path(directory)):
+                with self.assertRaisesRegex(MODULE.DiagnosticError, "full Git"):
+                    MODULE.repository_commit()
+
+    def test_source_checkout_identity_rejects_tracked_changes(self) -> None:
+        completed = MODULE.subprocess.CompletedProcess
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            MODULE, "ROOT", Path(directory)
+        ), mock.patch.object(
+            MODULE,
+            "run",
+            side_effect=[
+                completed([], 0, "a" * 40 + "\n", ""),
+                completed([], 0, " M tools/diagnose_android_connect.py\n", ""),
+            ],
+        ):
+            with self.assertRaisesRegex(MODULE.DiagnosticError, "tracked changes"):
+                MODULE.repository_commit()
+
     def test_shared_uid_query_is_scoped_to_target_uid(self) -> None:
         adb = mock.Mock()
         adb.shell.side_effect = [

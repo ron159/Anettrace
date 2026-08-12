@@ -103,6 +103,7 @@ class RemoteProcess:
     name: str
     pid: int
     log_path: str
+    identity: str
 
 
 def _field_lines(name: str, values: Iterable[str], indent: int) -> str:
@@ -254,10 +255,16 @@ def run_command(
 
 
 class Adb:
-    def __init__(self, executable: str, serial: str | None):
+    def __init__(
+        self,
+        executable: str,
+        serial: str | None,
+        root_command: str | None = None,
+    ):
         self.base = [executable]
         if serial:
             self.base.extend(["-s", serial])
+        self.root_command = root_command
 
     def run(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         return run_command([*self.base, *args], check=check)
@@ -265,13 +272,45 @@ class Adb:
     def shell(self, script: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
         # Pass one command argument to adb.  adb invokes the device shell itself;
         # adding a second `sh -c` loses quoting on some Windows adb builds.
-        return self.run("shell", script, check=check)
+        return self.run(
+            "shell",
+            wrap_device_shell(script, self.root_command),
+            check=check,
+        )
 
     def push(self, source: Path, destination: str) -> None:
-        self.run("push", str(source), destination)
+        if not self.root_command:
+            self.run("push", str(source), destination)
+            return
+        staging = f"{REMOTE_ROOT}/.anettrace-push-{uuid.uuid4().hex}"
+        self.run("push", str(source), staging)
+        try:
+            self.shell(
+                f"cp {shlex.quote(staging)} {shlex.quote(destination)}"
+            )
+        finally:
+            self.run("shell", f"rm -f {shlex.quote(staging)}", check=False)
 
     def pull(self, source: str, destination: Path) -> None:
-        self.run("pull", source, str(destination))
+        if not self.root_command:
+            self.run("pull", source, str(destination))
+            return
+        staging = f"{REMOTE_ROOT}/.anettrace-pull-{uuid.uuid4().hex}"
+        try:
+            self.shell(
+                f"cp {shlex.quote(source)} {shlex.quote(staging)} && "
+                f"chown 2000:2000 {shlex.quote(staging)} && "
+                f"chmod 0600 {shlex.quote(staging)}"
+            )
+            self.run("pull", staging, str(destination))
+        finally:
+            self.shell(f"rm -f {shlex.quote(staging)}", check=False)
+
+
+def wrap_device_shell(script: str, root_command: str | None) -> str:
+    if not root_command:
+        return script
+    return f"{root_command} {shlex.quote(script)}"
 
 
 def start_remote(adb: Adb, name: str, command: str, remote_dir: str) -> RemoteProcess:
@@ -280,15 +319,26 @@ def start_remote(adb: Adb, name: str, command: str, remote_dir: str) -> RemotePr
     output = adb.shell(script).stdout.strip().replace("\r", "")
     if not re.fullmatch(r"[1-9][0-9]*", output):
         raise CaptureError(f"failed to start {name}: {output or 'no pid returned'}")
-    return RemoteProcess(name=name, pid=int(output), log_path=log_path)
+    return RemoteProcess(
+        name=name,
+        pid=int(output),
+        log_path=log_path,
+        identity=remote_dir,
+    )
 
 
 def remote_alive(adb: Adb, process: RemoteProcess) -> bool:
-    return adb.shell(f"kill -0 {process.pid}", check=False).returncode == 0
+    script = (
+        f"test -r /proc/{process.pid}/cmdline && "
+        f"tr '\\000' ' ' < /proc/{process.pid}/cmdline | "
+        f"grep -Fq -- {shlex.quote(process.identity)}"
+    )
+    return adb.shell(script, check=False).returncode == 0
 
 
 def signal_remote(adb: Adb, process: RemoteProcess, signal_name: str) -> None:
-    adb.shell(f"kill -{signal_name} {process.pid}", check=False)
+    if remote_alive(adb, process):
+        adb.shell(f"kill -{signal_name} {process.pid}", check=False)
 
 
 def wait_remote(adb: Adb, process: RemoteProcess, timeout_s: float) -> bool:
@@ -298,6 +348,22 @@ def wait_remote(adb: Adb, process: RemoteProcess, timeout_s: float) -> bool:
             return True
         time.sleep(0.1)
     return not remote_alive(adb, process)
+
+
+def stop_remote(
+    adb: Adb,
+    process: RemoteProcess,
+    signal_name: str,
+    *,
+    timeout_s: float = 2.0,
+) -> bool:
+    if not remote_alive(adb, process):
+        return True
+    signal_remote(adb, process, signal_name)
+    if wait_remote(adb, process, timeout_s):
+        return True
+    signal_remote(adb, process, "KILL")
+    return wait_remote(adb, process, 2.0)
 
 
 def remote_file_exists(adb: Adb, path: str) -> bool:
@@ -580,6 +646,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--anettrace", type=Path, default=ROOT / "src" / "anettrace")
     parser.add_argument("--device", help="adb device serial")
     parser.add_argument("--adb", default="adb", help="adb executable")
+    parser.add_argument(
+        "--root-command",
+        help="explicit trusted device-shell prefix, for example 'su -c'",
+    )
     parser.add_argument("--perfetto-config", type=Path, help="custom Perfetto textproto config")
     parser.add_argument(
         "--trace-processor",
@@ -639,6 +709,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("invalid Android package name")
     if args.external_command == []:
         parser.error("--external-command needs a command")
+    if args.root_command is not None and (
+        not args.root_command.strip()
+        or any(character in args.root_command for character in "\r\n\0")
+    ):
+        parser.error("root command must be one non-empty shell prefix")
 
     args.duration = args.duration or DEFAULT_DURATIONS[args.profile]
     if args.out is None:
@@ -693,6 +768,8 @@ def capture(args: argparse.Namespace) -> Path:
         "cleanup": {
             "requested": not args.keep_remote,
             "verified": False,
+            "processes_verified": False,
+            "remaining_processes": [],
             "remaining": [],
         },
         "resource_sampling": None,
@@ -705,7 +782,7 @@ def capture(args: argparse.Namespace) -> Path:
         previous_handlers[signum] = signal.getsignal(signum)
         signal.signal(signum, request_stop)
 
-    adb = Adb(args.adb, args.device)
+    adb = Adb(args.adb, args.device, args.root_command)
     anettrace_process: RemoteProcess | None = None
     companion_processes: list[RemoteProcess] = []
     interrupted = False
@@ -727,7 +804,9 @@ def capture(args: argparse.Namespace) -> Path:
         if adb.run("get-state").stdout.strip() != "device":
             raise CaptureError("Android device is not ready")
         if device_value(adb, "id -u") != "0":
-            raise CaptureError("adb shell must be root")
+            raise CaptureError(
+                "device shell must run as root; use an explicit --root-command if needed"
+            )
 
         if args.redact_device_metadata:
             manifest["device"] = {
@@ -979,15 +1058,28 @@ def capture(args: argparse.Namespace) -> Path:
         errors.append(str(exc))
         raise CaptureError(str(exc)) from exc
     finally:
+        cleanup_error: str | None = None
+        remaining_processes: list[str] = []
         try:
-            if anettrace_process and remote_alive(adb, anettrace_process):
-                signal_remote(adb, anettrace_process, "INT")
-                wait_remote(adb, anettrace_process, 2.0)
+            if anettrace_process and not stop_remote(
+                adb, anettrace_process, "INT"
+            ):
+                remaining_processes.append(anettrace_process.name)
             for process in companion_processes:
-                if remote_alive(adb, process):
-                    signal_remote(adb, process, "TERM")
+                if not stop_remote(adb, process, "TERM"):
+                    remaining_processes.append(process.name)
         except CaptureError as exc:
             warnings.append(f"remote process cleanup failed: {exc}")
+            remaining_processes.append("cleanup_check_failed")
+        manifest["cleanup"]["remaining_processes"] = sorted(
+            set(remaining_processes)
+        )
+        manifest["cleanup"]["processes_verified"] = not remaining_processes
+        if remaining_processes:
+            warnings.append(
+                "remote process cleanup is incomplete: "
+                + ", ".join(sorted(set(remaining_processes)))
+            )
         if external_process:
             stop_external(external_process)
 
@@ -1046,7 +1138,10 @@ def capture(args: argparse.Namespace) -> Path:
                         == 0
                     ]
                     manifest["cleanup"]["remaining"] = remaining
-                    manifest["cleanup"]["verified"] = not remaining
+                    manifest["cleanup"]["verified"] = (
+                        not remaining
+                        and manifest["cleanup"]["processes_verified"]
+                    )
                 if manifest["cleanup"]["remaining"]:
                     warnings.append(
                         "remote artifact cleanup is incomplete: "
@@ -1055,7 +1150,18 @@ def capture(args: argparse.Namespace) -> Path:
             except CaptureError as exc:
                 warnings.append(f"remote directory cleanup failed: {exc}")
         elif not args.keep_remote:
-            manifest["cleanup"]["verified"] = True
+            manifest["cleanup"]["verified"] = manifest["cleanup"][
+                "processes_verified"
+            ]
+
+        if (
+            status == "success"
+            and not args.keep_remote
+            and not manifest["cleanup"]["verified"]
+        ):
+            cleanup_error = "remote process or artifact cleanup could not be verified"
+            errors.append(cleanup_error)
+            status = "failed"
 
         manifest["status"] = status
         manifest["ended_at_utc"] = utc_now()
@@ -1070,6 +1176,8 @@ def capture(args: argparse.Namespace) -> Path:
         )
         for signum, previous in previous_handlers.items():
             signal.signal(signum, previous)
+        if cleanup_error:
+            raise CaptureError(cleanup_error)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

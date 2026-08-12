@@ -86,7 +86,12 @@ def external_command(args: argparse.Namespace, script: str) -> list[str]:
     command = [args.adb]
     if args.device:
         command.extend(("-s", args.device))
-    command.extend(("shell", script))
+    command.extend(
+        (
+            "shell",
+            DIAGNOSE.CAPTURE.wrap_device_shell(script, args.root_command),
+        )
+    )
     return command
 
 
@@ -140,11 +145,13 @@ def validate_soak_report(
 def run_soak(args: argparse.Namespace) -> Path:
     output = DIAGNOSE.prepare_output_dir(args.out)
     ACCEPTANCE.validate_workload(args.workload.resolve())
-    adb = DIAGNOSE.CAPTURE.Adb(args.adb, args.device)
+    adb = DIAGNOSE.CAPTURE.Adb(args.adb, args.device, args.root_command)
     if adb.run("get-state").stdout.strip() != "device":
         raise SoakError("Android device is not ready")
     if DIAGNOSE.device_value(adb, "id -u") != "0":
-        raise SoakError("adb shell must already be root")
+        raise SoakError(
+            "device shell must run as root; use an explicit --root-command if needed"
+        )
     uid, _, _ = DIAGNOSE.resolve_package(adb, args.package, False)
     if uid == 0:
         raise SoakError("soak workload requires a non-root package UID")
@@ -209,6 +216,8 @@ def run_soak(args: argparse.Namespace) -> Path:
         ]
         if args.device:
             diagnose_argv.extend(("--device", args.device))
+        if args.root_command:
+            diagnose_argv.extend(("--root-command", args.root_command))
         if args.include_package:
             diagnose_argv.append("--include-package")
         diagnose_argv.append("--external-command")
@@ -291,6 +300,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--device")
     parser.add_argument("--adb", default="adb")
+    parser.add_argument(
+        "--root-command",
+        help="explicit trusted device-shell prefix, for example 'su -c'",
+    )
     parser.add_argument("--duration", type=int, default=1800)
     parser.add_argument("--baseline-seconds", type=int, default=30)
     parser.add_argument("--interval-ms", type=int, default=250)
@@ -307,6 +320,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("workload and resource sample intervals must be positive")
     if args.max_report_mib <= 0:
         parser.error("max report size must be positive")
+    if args.root_command is not None and (
+        not args.root_command.strip()
+        or any(character in args.root_command for character in "\r\n\0")
+    ):
+        parser.error("root command must be one non-empty shell prefix")
     return args
 
 

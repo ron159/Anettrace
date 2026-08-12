@@ -186,8 +186,13 @@ class Attempt:
         if report_status == "invalid":
             return "incomplete_or_unknown", "insufficient"
 
-        if self.exact_drop:
-            return "kernel_drop", "direct"
+        # A connect that reached its terminal success condition stays successful.
+        # Earlier SYN drops or retransmissions explain latency, but they do not
+        # turn a recovered connection into a failed connect attempt.
+        if self.result == 0:
+            return "success", "direct"
+        if self.async_pending and self.so_error == 0 and self.established:
+            return "success", "correlated"
 
         effective_error = self.effective_error()
         if effective_error in LOCAL_REJECTION_ERRNOS:
@@ -199,6 +204,8 @@ class Attempt:
         if self.reset_while_connecting:
             return "peer_refused", "correlated"
         if effective_error == LINUX_ETIMEDOUT:
+            if self.exact_drop:
+                return "kernel_drop", "direct"
             return "timeout_no_response", "direct"
         if effective_error in INTERRUPTED_ERRNOS:
             return "interrupted_or_cancelled", "direct"
@@ -207,11 +214,8 @@ class Attempt:
 
         if self.cancelled:
             return "interrupted_or_cancelled", "correlated"
-        if self.result == 0:
-            return "success", "direct"
-        if self.async_pending and self.so_error == 0 and self.established:
-            return "success", "correlated"
-
+        if self.exact_drop:
+            return "kernel_drop", "direct"
         if self.ended_ns is None:
             self.ended_ns = trace_end_ns
         return "incomplete_or_unknown", "insufficient"
@@ -245,6 +249,8 @@ class Attempt:
         factors: list[str] = []
         if self.retransmissions:
             factors.append("tcp_retransmission")
+        if self.exact_drop and outcome != "kernel_drop":
+            factors.append("connect_syn_drop")
         if self.rtt_samples:
             factors.append("rtt_observed")
         if self.sched_delays:
