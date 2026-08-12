@@ -1,9 +1,15 @@
 
-export VERSION	?= 0.4.0
+VERSION_FILE	:= $(abspath VERSION)
+VERSION		:= $(strip $(shell cat $(VERSION_FILE)))
+ifeq ($(VERSION),)
+$(error VERSION is empty: $(VERSION_FILE))
+endif
+export VERSION
 RELEASE		?= 1
 UPSTREAM_COMMIT ?= a9f13347
 BUILD_TYPE	?= dual
-export RELEASE UPSTREAM_COMMIT BUILD_TYPE
+BUILD_COMMIT	?= $(shell git rev-parse --verify HEAD 2>/dev/null || echo unknown)
+export RELEASE UPSTREAM_COMMIT BUILD_TYPE BUILD_COMMIT
 
 man-target 	:= script/zh_CN/anettrace.8
 

@@ -18,6 +18,10 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Read product version
+        id: product
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
       - name: Set up arm64 emulation
         uses: docker/setup-qemu-action@v3
         with:
@@ -78,6 +82,8 @@ jobs:
               ! grep -q NEEDED output/anettrace.dynamic.txt
 
               src/anettrace --version
+              src/anettrace --version | grep -q "Anettrace $(cat VERSION)"
+              src/anettrace --version | grep -q "commit ${GITHUB_SHA}"
               src/anettrace -h > /tmp/anettrace-help.txt
               grep -q -- "--uid" /tmp/anettrace-help.txt
               grep -q -- "--traffic" /tmp/anettrace-help.txt
@@ -85,6 +91,7 @@ jobs:
               grep -q -- "--perfetto-events" /tmp/anettrace-help.txt
               grep -q -- "--capture-trace" /tmp/anettrace-help.txt
               grep -q -- "--trace-detail" /tmp/anettrace-help.txt
+              grep -q -- "--connect-diagnostics" /tmp/anettrace-help.txt
               grep -q -- "--trace-profile" /tmp/anettrace-help.txt
               grep -q -- "--duration" /tmp/anettrace-help.txt
               grep -q -- "--output" /tmp/anettrace-help.txt
@@ -135,7 +142,7 @@ jobs:
               grep -q -- "--traffic supports only --proto tcp or --proto udp" \
                 /tmp/anettrace-traffic-proto.txt
 
-              archive=output/anettrace-0.4.0-android-arm64-dual.tar.bz2
+              archive="output/anettrace-$(cat VERSION)-android-arm64-dual.tar.bz2"
               test -f "${archive}"
               sha256sum "${archive}" > "${archive}.sha256"
               sha256sum src/anettrace "${archive}" > output/SHA256SUMS
@@ -152,7 +159,7 @@ jobs:
       - name: Upload Android arm64 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: anettrace-0.4.0-android-arm64-dual
+          name: anettrace-${{ steps.product.outputs.version }}-android-arm64-dual
           if-no-files-found: error
           path: |
             src/anettrace
@@ -165,13 +172,14 @@ jobs:
       - name: Download uploaded artifact
         uses: actions/download-artifact@v4
         with:
-          name: anettrace-0.4.0-android-arm64-dual
+          name: anettrace-${{ steps.product.outputs.version }}-android-arm64-dual
           path: downloaded
 
       - name: Verify downloaded artifact
         run: |
           cd downloaded
-          archive=output/anettrace-0.4.0-android-arm64-dual.tar.bz2
+          version="$(cat ../VERSION)"
+          archive="output/anettrace-${version}-android-arm64-dual.tar.bz2"
           sha256sum --check output/SHA256SUMS
           sha256sum --check "${archive}.sha256"
           file src/anettrace | grep -q 'ARM aarch64'
@@ -179,4 +187,4 @@ jobs:
           ! readelf -l src/anettrace | grep -q INTERP
           ! readelf -d src/anettrace | grep -q NEEDED
           tar -tjf "${archive}" | \
-            grep -q '^anettrace-0.4.0-android-arm64-dual/anettrace$'
+            grep -q "^anettrace-${version}-android-arm64-dual/anettrace$"

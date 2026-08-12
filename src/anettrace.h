@@ -8,6 +8,7 @@
 #define pr_version()							\
 	pr_info("Anettrace " macro_to_str(VERSION)			\
 		" (upstream base " macro_to_str(UPSTREAM_COMMIT)	\
+		", commit " macro_to_str(BUILD_COMMIT)			\
 		", " macro_to_str(BUILD_TYPE) ", "			\
 		macro_to_str(TARGET_PLATFORM) ")\n")
 

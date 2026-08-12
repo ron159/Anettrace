@@ -26,13 +26,16 @@ jobs:
         run: make all
       - name: Check CLI contracts
         run: |
-          ./src/anettrace --version | grep -q 'Anettrace 0.4.0'
+          version="$(cat VERSION)"
+          ./src/anettrace --version | grep -q "Anettrace ${version}"
+          ./src/anettrace --version | grep -q "commit ${GITHUB_SHA}"
           ./src/anettrace -h | grep -q -- '--uid'
           ./src/anettrace -h | grep -q -- '--traffic'
           ./src/anettrace -h | grep -q -- '--interval'
           ./src/anettrace -h | grep -q -- '--perfetto-events'
           ./src/anettrace -h | grep -q -- '--capture-trace'
           ./src/anettrace -h | grep -q -- '--trace-detail'
+          ./src/anettrace -h | grep -q -- '--connect-diagnostics'
           ./src/anettrace -h | grep -q -- '--trace-profile'
           ./src/anettrace -h | grep -q -- '--duration'
           ./src/anettrace -h | grep -q -- '--output'
@@ -85,7 +88,11 @@ jobs:
             -o /tmp/timezone-offset-test
           /tmp/timezone-offset-test
       - name: Run capture orchestrator tests
-        run: python3 -m unittest tests/test_capture_android_trace.py
+        run: |
+          python3 -m unittest \
+            tests/test_capture_android_trace.py \
+            tests/test_connect_diagnostics.py \
+            tests/test_diagnose_android_connect.py
       - name: Run Perfetto conversion contract
         run: |
           python3 -m venv /tmp/perfetto-venv

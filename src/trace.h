@@ -131,6 +131,7 @@ typedef struct trace_args {
 	char *perfetto_events;
 	bool capture_trace;
 	bool trace_detail;
+	bool connect_diagnostics;
 	char *trace_profile;
 	u32 duration;
 	char *output;

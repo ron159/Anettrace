@@ -497,6 +497,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="keep detailed kernel network stages instead of compact stages",
     )
+    target.add_argument(
+        "--connect-diagnostics",
+        action="store_true",
+        help="collect the TCP connect diagnostic event set",
+    )
 
     parser.add_argument(
         "--profile",
@@ -514,6 +519,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--trace-processor",
         type=Path,
         help="Trace Processor CLI used for strict merge validation",
+    )
+    parser.add_argument(
+        "--max-device-file-mib",
+        type=int,
+        help="device-side hard limit for the Anettrace event file",
+    )
+    parser.add_argument(
+        "--redact-device-metadata",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--simpleperf-app", help="also record this Android package")
     parser.add_argument("--simpleperf-pid", type=int, help="also record this process ID")
@@ -537,6 +552,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--uid 0 alone is too broad; add --pid")
     if args.duration is not None and args.duration <= 0:
         parser.error("duration must be a positive integer")
+    if args.max_device_file_mib is not None and args.max_device_file_mib <= 0:
+        parser.error("max device file size must be positive")
     if args.perfetto_config and args.profile == "none":
         parser.error("--perfetto-config cannot be used with --profile none")
     if args.simpleperf_app and args.simpleperf_pid:
@@ -630,17 +647,31 @@ def capture(args: argparse.Namespace) -> Path:
         if device_value(adb, "id -u") != "0":
             raise CaptureError("adb shell must be root")
 
-        manifest["device"] = {
-            "serial": args.device or device_value(adb, "getprop ro.serialno"),
-            "product": device_value(adb, "getprop ro.product.device"),
-            "fingerprint": device_value(adb, "getprop ro.build.fingerprint"),
-            "kernel": device_value(adb, "uname -a"),
-            "boot_id": device_value(adb, "cat /proc/sys/kernel/random/boot_id"),
-        }
+        if args.redact_device_metadata:
+            manifest["device"] = {
+                "product": device_value(adb, "getprop ro.product.device"),
+                "android_release": device_value(
+                    adb, "getprop ro.build.version.release"
+                ),
+                "sdk": device_value(adb, "getprop ro.build.version.sdk"),
+                "architecture": device_value(adb, "uname -m"),
+                "kernel_release": device_value(adb, "uname -r"),
+            }
+        else:
+            manifest["device"] = {
+                "serial": args.device or device_value(adb, "getprop ro.serialno"),
+                "product": device_value(adb, "getprop ro.product.device"),
+                "fingerprint": device_value(adb, "getprop ro.build.fingerprint"),
+                "kernel": device_value(adb, "uname -a"),
+                "boot_id": device_value(adb, "cat /proc/sys/kernel/random/boot_id"),
+            }
 
-        adb.shell(f"mkdir -p {shlex.quote(remote_dir)}")
+        adb.shell(
+            f"mkdir -p {shlex.quote(remote_dir)} && "
+            f"chmod 0700 {shlex.quote(remote_dir)}"
+        )
         adb.push(args.anettrace.resolve(), remote_binary)
-        adb.shell(f"chmod 0755 {shlex.quote(remote_binary)}")
+        adb.shell(f"chmod 0700 {shlex.quote(remote_binary)}")
 
         local_config: Path | None = None
         if args.profile != "none":
@@ -661,17 +692,25 @@ def capture(args: argparse.Namespace) -> Path:
         if args.pid is not None:
             filter_args.extend(["--pid", str(args.pid)])
         trace_mode_args = ["--trace-detail"] if args.trace_detail else []
+        diagnostic_args = ["--connect-diagnostics"] if args.connect_diagnostics else []
         anettrace_parts = [
             remote_binary,
             "--perfetto-events",
             remote_events,
             *trace_mode_args,
+            *diagnostic_args,
             *filter_args,
             "-v",
         ]
         anettrace_command = " ".join(
             shlex.quote(part) for part in anettrace_parts
         )
+        if args.max_device_file_mib:
+            file_blocks = args.max_device_file_mib * 2048
+            anettrace_command = (
+                f"ulimit -f {file_blocks}; exec toybox timeout -s INT "
+                f"{args.duration + 5} {anettrace_command}"
+            )
         commands["anettrace"] = anettrace_parts
         anettrace_process = start_remote(adb, "anettrace", anettrace_command, remote_dir)
         remote_processes.append(anettrace_process)

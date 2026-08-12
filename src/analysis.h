@@ -42,7 +42,7 @@ typedef struct fake_analy_ctx {
 	analy_ctx_t *ctx;
 	struct hlist_node hash;
 	struct list_head list;
-	u32 key;
+	u64 key;
 	u16 refs;
 } fake_analy_ctx_t;
 

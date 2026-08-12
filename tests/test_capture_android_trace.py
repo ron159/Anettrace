@@ -58,6 +58,21 @@ class CliContractTest(unittest.TestCase):
         args = MODULE.parse_args(["--uid", "10000", "--trace-detail"])
         self.assertTrue(args.trace_detail)
 
+    def test_connect_diagnostics_hard_limit_contract(self) -> None:
+        args = MODULE.parse_args(
+            [
+                "--uid",
+                "10000",
+                "--connect-diagnostics",
+                "--max-device-file-mib",
+                "256",
+                "--redact-device-metadata",
+            ]
+        )
+        self.assertTrue(args.connect_diagnostics)
+        self.assertEqual(args.max_device_file_mib, 256)
+        self.assertTrue(args.redact_device_metadata)
+
     def test_uid_zero_needs_exact_tid(self) -> None:
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             MODULE.parse_args(["--uid", "0"])

@@ -418,12 +418,31 @@ static u64 hash_bytes(u64 hash, const void *data, size_t size)
 	return hash;
 }
 
-static u64 object_id(const char *kind, u32 key)
+static u64 object_id(const char *kind, u64 key)
 {
 	u64 hash = 1469598103934665603ULL ^ export_salt;
 
 	hash = hash_bytes(hash, kind, strlen(kind));
 	return hash_bytes(hash, &key, sizeof(key));
+}
+
+static u64 socket_instance_id(u64 key, u32 generation)
+{
+	u64 hash = 1469598103934665603ULL ^ export_salt;
+
+	hash = hash_bytes(hash, "socket", strlen("socket"));
+	hash = hash_bytes(hash, &key, sizeof(key));
+	return hash_bytes(hash, &generation, sizeof(generation));
+}
+
+static u64 detail_socket_instance_id(const detail_event_t *detail)
+{
+	const event_t *event = (const void *)detail;
+	u64 key = detail->owner_socket_key ?: event->key;
+	u32 generation = detail->owner_socket_key ?
+		detail->owner_socket_generation : event->key_generation;
+
+	return socket_instance_id(key, generation);
 }
 
 #ifndef NT_DISABLE_IPV6
@@ -486,7 +505,7 @@ static u64 packet_flow_id(const packet_t *pkt)
 	return forward < reverse ? forward : reverse;
 }
 
-static u64 packet_id(const packet_t *pkt, u32 key)
+static u64 packet_id(const packet_t *pkt, u64 key)
 {
 	u64 hash;
 
@@ -1026,8 +1045,7 @@ static struct flow_state *flow_from_socket(const detail_event_t *detail,
 					   u64 timestamp_ns)
 {
 	const event_t *event = (const void *)detail;
-	u64 socket_id = object_id("socket", detail->owner_socket_key ?:
-					    event->key);
+	u64 socket_id = detail_socket_instance_id(detail);
 	struct flow_state *flow;
 	u64 id;
 
@@ -1082,7 +1100,8 @@ static struct flow_state *flow_from_packet(const detail_event_t *detail,
 	const event_t *event = (const void *)detail;
 	const packet_t *pkt = &event->pkt;
 	u64 socket_id = detail->owner_socket_key ?
-		object_id("socket", detail->owner_socket_key) : 0;
+		socket_instance_id(detail->owner_socket_key,
+				   detail->owner_socket_generation) : 0;
 	struct flow_state *flow;
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
 	u64 id;
@@ -1294,8 +1313,7 @@ static void pending_io_start(const detail_event_t *detail, trace_t *trace,
 	struct native_track *thread;
 	struct pending_io *pending;
 	struct flow_state *flow;
-	u64 socket_id = object_id("socket", detail->owner_socket_key ?:
-					    event->key);
+	u64 socket_id = detail_socket_instance_id(detail);
 	bool tx = trace_is_tx_write(trace);
 
 	pending = pending_io_find(event->func, event->tid);
@@ -1354,7 +1372,7 @@ static void native_export_socket_create(const detail_event_t *detail,
 					 u64 start_ts, int cpu)
 {
 	const event_t *event = (const void *)detail;
-	u64 socket_id = object_id("socket", event->key);
+	u64 socket_id = socket_instance_id(event->key, event->key_generation);
 	struct native_track *thread, *socket;
 	struct proto_buffer allocation = {};
 
@@ -1381,7 +1399,7 @@ static void native_export_socket_state(const detail_event_t *detail,
 					int oldstate, int newstate, int cpu)
 {
 	const event_t *event = (const void *)detail;
-	u64 socket_id = object_id("socket", event->key);
+	u64 socket_id = socket_instance_id(event->key, event->key_generation);
 	struct native_track *socket;
 	struct proto_buffer state = {};
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN], name[64];
@@ -1419,7 +1437,7 @@ static void native_export_socket_event(const detail_event_t *detail,
 					trace_t *trace, int cpu)
 {
 	const event_t *event = (const void *)detail;
-	u64 socket_id = object_id("socket", event->key);
+	u64 socket_id = socket_instance_id(event->key, event->key_generation);
 	struct native_track *thread, *socket;
 	struct proto_buffer track_event = {};
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
@@ -1459,7 +1477,8 @@ static void native_export_socket_event(const detail_event_t *detail,
 				       detail->owner_uid);
 		if (detail->owner_socket_key)
 			native_annotation_id(&track_event, "owner_socket_id",
-				object_id("socket", detail->owner_socket_key));
+				socket_instance_id(detail->owner_socket_key,
+						   detail->owner_socket_generation));
 	}
 	native_event_write(event->ske.ts, &track_event);
 	proto_free(&track_event);
@@ -1518,7 +1537,8 @@ static void native_export_packet_event(const detail_event_t *detail,
 				       detail->owner_uid);
 		if (detail->owner_socket_key)
 			native_annotation_id(&track_event, "owner_socket_id",
-				object_id("socket", detail->owner_socket_key));
+				socket_instance_id(detail->owner_socket_key,
+						   detail->owner_socket_generation));
 	}
 	native_annotation_string(&track_event, "ifname", detail->ifname);
 	native_annotation_uint(&track_event, "ifindex", detail->ifindex);
@@ -1727,7 +1747,8 @@ static void export_socket_create(const detail_event_t *detail, u64 start_ts,
 		"\"tid\":%u,\"tgid\":%u,\"uid\":%u,"
 		"\"task\":\"%s\"}\n",
 		PERFETTO_SCHEMA, start_ts, base->ske.ts,
-		object_id("socket", base->key), cpu, base->tid, base->tgid,
+		socket_instance_id(base->key, base->key_generation), cpu,
+		base->tid, base->tgid,
 		base->uid, task);
 }
 
@@ -1749,7 +1770,8 @@ static void export_socket_state(const detail_event_t *detail, int oldstate,
 		"\"new_state_name\":\"%s\",\"terminal\":%s,"
 		"\"proto_l4\":%u,\"saddr\":\"%s\",\"sport\":%u,"
 		"\"daddr\":\"%s\",\"dport\":%u}\n",
-		PERFETTO_SCHEMA, base->ske.ts, object_id("socket", base->key),
+		PERFETTO_SCHEMA, base->ske.ts,
+		socket_instance_id(base->key, base->key_generation),
 		socket_flow_id(&base->ske), cpu, base->tid, base->tgid,
 		base->uid, task, oldstate, tcp_state_name(oldstate), newstate,
 		tcp_state_name(newstate),
@@ -1762,8 +1784,11 @@ static void export_socket_event(const detail_event_t *detail, trace_t *trace,
 				int cpu)
 {
 	const event_t *event = (const void *)detail;
+	const detail_reset_event_t *reset = (const void *)detail;
+	const detail_rtt_event_t *rtt = (const void *)detail;
 	u64 owner_socket_id = detail->owner_socket_key ?
-		object_id("socket", detail->owner_socket_key) : 0;
+		socket_instance_id(detail->owner_socket_key,
+				   detail->owner_socket_generation) : 0;
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
 	char task[64], ifname[64];
 	const char *stage = trace_event_name(trace, event);
@@ -1784,8 +1809,9 @@ static void export_socket_event(const detail_event_t *detail, trace_t *trace,
 		"\"owner_socket_id\":\"%016llx\","
 		"\"ifname\":\"%s\",\"proto_l4\":%u,"
 		"\"saddr\":\"%s\",\"sport\":%u,"
-		"\"daddr\":\"%s\",\"dport\":%u}\n",
-		PERFETTO_SCHEMA, event->ske.ts, object_id("socket", event->key),
+		"\"daddr\":\"%s\",\"dport\":%u",
+		PERFETTO_SCHEMA, event->ske.ts,
+		socket_instance_id(event->key, event->key_generation),
 		socket_flow_id(&event->ske), stage,
 		terminal ? "true" : "false", cpu, event->tid, event->tgid,
 		event->uid, task, direction_name(detail->direction),
@@ -1794,16 +1820,29 @@ static void export_socket_event(const detail_event_t *detail, trace_t *trace,
 		ifname, event->ske.proto_l4, source,
 		ntohs(event->ske.l4.min.sport), dest,
 		ntohs(event->ske.l4.min.dport));
+	if (!strcmp(trace->name, "tcp_v4_send_reset") ||
+	    !strcmp(trace->name, "tcp_v6_send_reset") ||
+	    !strcmp(trace->name, "tcp_send_active_reset"))
+		fprintf(export_file,
+			",\"state\":%u,\"state_name\":\"%s\",\"reset_reason\":%u",
+			reset->state, tcp_state_name(reset->state), reset->reason);
+	else if (!strcmp(trace->name, "tcp_ack_update_rtt"))
+		fprintf(export_file,
+			",\"first_rtt_us\":%u,\"last_rtt_us\":%u",
+			rtt->first_rtt, rtt->last_rtt);
+	fprintf(export_file, "}\n");
 }
 
 static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 				int cpu)
 {
 	const event_t *event = (const void *)detail;
+	const detail_drop_event_t *drop = (const void *)detail;
 	const packet_t *pkt = &event->pkt;
 	u64 flow_id = packet_flow_id(pkt);
 	u64 owner_socket_id = detail->owner_socket_key ?
-		object_id("socket", detail->owner_socket_key) : 0;
+		socket_instance_id(detail->owner_socket_key,
+				   detail->owner_socket_generation) : 0;
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
 	char task[64], ifname[64], flow_tag[16];
 	const char *stage = trace_event_name(trace, event);
@@ -1833,7 +1872,7 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 		"\"ifindex\":%u,\"netns\":%u,\"proto_l3\":%u,"
 		"\"proto_l4\":%u,\"saddr\":\"%s\",\"sport\":%u,"
 		"\"daddr\":\"%s\",\"dport\":%u,\"mark\":%u,"
-		"\"tcp_seq\":%u,\"tcp_ack\":%u,\"tcp_flags\":%u}\n",
+		"\"tcp_seq\":%u,\"tcp_ack\":%u,\"tcp_flags\":%u",
 		PERFETTO_SCHEMA, pkt->ts, packet_id(pkt, event->key),
 		object_id("skb", event->key), flow_id, flow_tag, stage,
 		terminal ? "true" : "false",
@@ -1847,6 +1886,143 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 		ntohs(pkt->l4.min.sport), dest, ntohs(pkt->l4.min.dport),
 		pkt->mark, pkt->l4.tcp.seq, pkt->l4.tcp.ack,
 		pkt->l4.tcp.flags);
+	if (dropped && !strcmp(trace->name, "kfree_skb"))
+		fprintf(export_file,
+			",\"drop_reason\":%u,\"drop_location_id\":\"%016llx\"",
+			drop->reason, object_id("drop_location", drop->location));
+	fprintf(export_file, "}\n");
+}
+
+static void connect_remote_address(const connect_event_t *event, char *address,
+				   size_t size)
+{
+	const void *source = event->remote_addr;
+
+	address[0] = '\0';
+	if (event->family == AF_INET)
+		inet_ntop(AF_INET, source, address, size);
+#ifndef NT_DISABLE_IPV6
+	else if (event->family == AF_INET6)
+		inet_ntop(AF_INET6, source, address, size);
+#endif
+}
+
+static const char *connect_event_name(u16 kind)
+{
+	switch (kind) {
+	case CONNECT_EVENT_START:
+		return "TCP connect attempt";
+	case CONNECT_EVENT_SOCKET:
+		return "connect socket associated";
+	case CONNECT_EVENT_RESULT:
+		return "connect syscall returned";
+	case CONNECT_EVENT_SO_ERROR:
+		return "connect SO_ERROR";
+	default:
+		return "connect event";
+	}
+}
+
+static void export_connect_event(const connect_event_t *event, int cpu)
+{
+	u64 attempt_id = object_id("connect", event->attempt_key);
+	u64 socket_id = event->socket_key ?
+		socket_instance_id(event->socket_key, event->socket_generation) : 0;
+	char remote[INET6_ADDRSTRLEN], local[INET6_ADDRSTRLEN], peer[INET6_ADDRSTRLEN];
+	char task[64];
+
+	connect_remote_address(event, remote, sizeof(remote));
+	json_escape(event->task, task, sizeof(task));
+	local[0] = '\0';
+	peer[0] = '\0';
+	if (event->kind == CONNECT_EVENT_SOCKET)
+		socket_addresses(&event->ske, local, sizeof(local), peer,
+				 sizeof(peer));
+	switch (event->kind) {
+	case CONNECT_EVENT_START:
+		fprintf(export_file,
+			"{\"schema\":\"%s\",\"type\":\"connect_attempt_start\","
+			"\"ts_ns\":%llu,\"attempt_id\":\"%016llx\","
+			"\"uid\":%u,\"tid\":%u,\"tgid\":%u,\"fd\":%d,"
+			"\"task\":\"%s\",\"remote_addr\":\"%s\","
+			"\"remote_port\":%u,\"cpu\":%d}\n",
+			PERFETTO_SCHEMA, event->ts, attempt_id, event->uid,
+			event->tid, event->tgid, event->fd, task, remote,
+			event->remote_port, cpu);
+		break;
+	case CONNECT_EVENT_SOCKET:
+		fprintf(export_file,
+			"{\"schema\":\"%s\",\"type\":\"connect_socket\","
+			"\"ts_ns\":%llu,\"attempt_id\":\"%016llx\","
+			"\"socket_instance_id\":\"%016llx\","
+			"\"uid\":%u,\"tid\":%u,\"tgid\":%u,\"fd\":%d,"
+			"\"task\":\"%s\",\"local_addr\":\"%s\","
+			"\"local_port\":%u,\"remote_addr\":\"%s\","
+			"\"remote_port\":%u,\"cpu\":%d}\n",
+			PERFETTO_SCHEMA, event->ts, attempt_id, socket_id,
+			event->uid, event->tid, event->tgid, event->fd, task,
+			local, ntohs(event->ske.l4.min.sport),
+			remote[0] ? remote : peer, event->remote_port, cpu);
+		break;
+	case CONNECT_EVENT_RESULT: {
+		u64 error = event->result < 0 ? (u64)-event->result : 0;
+
+		fprintf(export_file,
+			"{\"schema\":\"%s\",\"type\":\"connect_attempt_end\","
+			"\"ts_ns\":%llu,\"attempt_id\":\"%016llx\","
+			"\"result\":%lld,\"error\":%llu,"
+			"\"async_pending\":%s,\"cpu\":%d}\n",
+			PERFETTO_SCHEMA, event->ts, attempt_id, event->result,
+			error,
+			(event->flags & CONNECT_EVENT_ASYNC_PENDING) ?
+				"true" : "false",
+			cpu);
+		break;
+	}
+	case CONNECT_EVENT_SO_ERROR:
+		fprintf(export_file,
+			"{\"schema\":\"%s\",\"type\":\"connect_so_error\","
+			"\"ts_ns\":%llu,\"attempt_id\":\"%016llx\","
+			"\"error\":%lld,\"cpu\":%d}\n",
+			PERFETTO_SCHEMA, event->ts, attempt_id, event->result, cpu);
+		break;
+	default:
+		break;
+	}
+}
+
+static void native_export_connect_event(const connect_event_t *connect, int cpu)
+{
+	u64 attempt_id = object_id("connect", connect->attempt_key);
+	u64 socket_id = connect->socket_key ?
+		socket_instance_id(connect->socket_key,
+				   connect->socket_generation) : 0;
+	struct native_track *thread;
+	struct proto_buffer event = {};
+
+	thread = native_thread_track(connect->tgid, connect->tid, connect->task);
+	if (!thread)
+		return;
+	native_event_start(&event, 3, thread->uuid,
+			   connect_event_name(connect->kind), "anettrace.connect");
+	native_event_flow(&event, attempt_id, false);
+	native_annotation_id(&event, "attempt_id", attempt_id);
+	if (socket_id)
+		native_annotation_id(&event, "socket_instance_id", socket_id);
+	native_annotation_uint(&event, "uid", connect->uid);
+	native_annotation_uint(&event, "tid", connect->tid);
+	native_annotation_uint(&event, "fd", connect->fd);
+	native_annotation_uint(&event, "cpu", cpu);
+	if (connect->kind == CONNECT_EVENT_RESULT) {
+		native_annotation_uint(&event, "error",
+				       connect->result < 0 ? -connect->result : 0);
+		native_annotation_bool(&event, "async_pending",
+			connect->flags & CONNECT_EVENT_ASYNC_PENDING);
+	} else if (connect->kind == CONNECT_EVENT_SO_ERROR) {
+		native_annotation_uint(&event, "error", connect->result);
+	}
+	native_event_write(connect->ts, &event);
+	proto_free(&event);
 }
 
 void perfetto_export_event(const void *data, int cpu, u32 size)
@@ -1860,6 +2036,21 @@ void perfetto_export_event(const void *data, int cpu, u32 size)
 	if ((!export_file && !native_file) || !data || size < sizeof(u16))
 		return;
 	meta = *(const u16 *)data;
+	if (meta == FUNC_TYPE_CONNECT) {
+		const connect_event_t *connect = data;
+
+		if (size < sizeof(*connect))
+			return;
+		pthread_mutex_lock(&export_lock);
+		write_clock_snapshot_if_due();
+		if (export_file)
+			export_connect_event(connect, cpu);
+		if (native_file)
+			native_export_connect_event(connect, cpu);
+		exported_events++;
+		pthread_mutex_unlock(&export_lock);
+		return;
+	}
 	if (meta == FUNC_TYPE_RET) {
 		if (size < sizeof(*ret))
 			return;
@@ -1921,8 +2112,7 @@ void perfetto_export_event(const void *data, int cpu, u32 size)
 		struct flow_state *flow = NULL;
 
 		if (!strcmp(trace->name, "tcp_close")) {
-			u64 socket_id = object_id("socket",
-				detail->owner_socket_key ?: event->key);
+			u64 socket_id = detail_socket_instance_id(detail);
 
 			if (flow_socket_supported(&event->ske))
 				flow = flow_find(socket_flow_id(&event->ske));

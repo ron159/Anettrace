@@ -55,6 +55,15 @@ bool trace_event_visible(const trace_t *trace, const event_t *event)
 		"udpv6_rcv",
 		"udp_recvmsg",
 		"udpv6_recvmsg",
+		"connect_sys_enter",
+		"connect_sys_exit",
+		"inet_stream_connect",
+		"tcp_retransmit_skb",
+		"tcp_v4_send_reset",
+		"tcp_v6_send_reset",
+		"tcp_send_active_reset",
+		"tcp_ack_update_rtt",
+		"kfree_skb",
 	};
 	size_t i;
 
@@ -574,14 +583,22 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		"udp_queue_rcv_skb,udpv6_queue_rcv_skb,"
 		"__udp_queue_rcv_skb,__udp_enqueue_schedule_skb,"
 		"udp_recvmsg,udpv6_recvmsg";
+	static char connect_diagnostic_traces[] =
+		"connect_sys_enter,connect_sys_exit,inet_stream_connect,"
+		"sk_alloc,inet_sock_set_state,tcp_close,__tcp_transmit_skb,"
+		"tcp_v4_rcv,tcp_v6_rcv,tcp_retransmit_skb,"
+		"tcp_v4_send_reset,tcp_v6_send_reset,tcp_send_active_reset,"
+		"tcp_ack_update_rtt,kfree_skb";
 	size_t i;
 
 	if (args->perfetto_events || args->capture_trace) {
 		bpf_args->perfetto = true;
 		bpf_args->detail = true;
 		if (!args->traces)
-			args->traces = args->trace_detail ? perfetto_detailed_traces :
-							   perfetto_compact_traces;
+			args->traces = args->connect_diagnostics ?
+				connect_diagnostic_traces :
+				(args->trace_detail ? perfetto_detailed_traces :
+						      perfetto_compact_traces);
 		trace_set_ret(&trace_sk_alloc);
 		trace_set_ret(&trace_tcp_sendmsg);
 		trace_set_ret(&trace_tcp_recvmsg);

@@ -181,7 +181,7 @@ static void analy_entry_output(analy_entry_t *entry, analy_entry_t *prev)
 		if (!ifname)
 			ifname = "";
 
-		sprintf(tinfo, "[%x][%-20s]%s[cpu:%-3u][%-5s][%s-tid:%u/pid:%u][uid:%u][ns:%u] ",
+		sprintf(tinfo, "[%llx][%-20s]%s[cpu:%-3u][%-5s][%s-tid:%u/pid:%u][uid:%u][ns:%u] ",
 			detail->key, trace_name, func_range, entry->cpu, ifname,
 			detail->task, e->tid, e->tgid, e->uid, detail->netns);
 	} else if (trace_ctx.mode != TRACE_MODE_DROP) {
@@ -314,7 +314,7 @@ void analy_ctx_output(analy_ctx_t *ctx)
 
 	keys[0] = '\0';
 	list_for_each_entry(fake, &ctx->fakes, list)
-		sprintf_end(keys, ",%08x", fake->key);
+		sprintf_end(keys, ",%016llx", fake->key);
 
 	keys[0] = ' ';
 	pr_info("*****************"PFMT_EMPH"%s "PFMT_END"***************\n",
@@ -556,7 +556,7 @@ static void ctx_async_poll_cb(data_list_t *dlist)
 		return;
 	}
 	e = entry->event;
-	pr_debug("create entry: %llx, %x\n", PTR2X(entry), e->key);
+	pr_debug("create entry: %llx, %llx\n", PTR2X(entry), e->key);
 
 	fake = analy_fake_ctx_fetch(e->key);
 	if (!fake) {
@@ -611,6 +611,13 @@ void perfetto_poll_handler(void *ctx, int cpu, void *data, u32 size)
 	event_t *event = data;
 	retevent_t *ret = data;
 	trace_t *trace;
+	u16 meta;
+
+	if (size < sizeof(meta))
+		return;
+	meta = *(u16 *)data;
+	if (meta == FUNC_TYPE_CONNECT)
+		return;
 
 	if (size >= sizeof(*ret) && ret->meta == FUNC_TYPE_RET) {
 		trace = get_trace(ret->func);

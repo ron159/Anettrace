@@ -103,6 +103,9 @@ class PerfettoExporter:
         self.flow_label_counts = {"tcp": 0, "udp": 0, "dns": 0, "flow": 0}
         self.active_flows: set[str] = set()
         self.pending_io: dict[tuple[str, str, int], int] = {}
+        self.connect_tracks: dict[str, int] = {}
+        self.connect_sockets: dict[str, str] = {}
+        self.active_connects: set[str] = set()
         self.global_track = stable_uuid("anettrace", "global")
         self.capture_start_monotonic_ns = 0
         self.clock_monotonic_ns: list[int] = []
@@ -218,6 +221,28 @@ class PerfettoExporter:
         label = f"{prefix}-{self.flow_label_counts[prefix]}"
         self.flow_labels[flow_id] = label
         return label
+
+    def connect_track(self, attempt_id: str, record: dict[str, Any]) -> int:
+        uuid = self.connect_tracks.get(attempt_id)
+        if uuid is not None:
+            return uuid
+        parent_uuid = self.thread_track(record)
+        uuid = stable_uuid("connect", attempt_id)
+        self.descriptor(uuid, f"connect {attempt_id[-8:]}", parent_uuid)
+        self.connect_tracks[attempt_id] = uuid
+        return uuid
+
+    def connect_attempt_id(self, record: dict[str, Any]) -> str:
+        attempt_id = str(record.get("attempt_id", ""))
+        if attempt_id:
+            return attempt_id
+        socket_id = str(
+            record.get("socket_instance_id")
+            or record.get("socket_id")
+            or record.get("owner_socket_id")
+            or ""
+        )
+        return self.connect_sockets.get(socket_id, "")
 
     def timestamp(self, monotonic_ns: int) -> int:
         if not self.clock_monotonic_ns:
@@ -485,6 +510,107 @@ class PerfettoExporter:
             ),
         )
 
+    def export_connect_event(self, record: dict[str, Any]) -> None:
+        record_type = str(record["type"])
+        attempt_id = self.connect_attempt_id(record)
+        if not attempt_id:
+            return
+        track = self.connect_track(attempt_id, record)
+        event_record = dict(record)
+        event_record["attempt_id"] = attempt_id
+        annotation_keys = tuple(
+            key
+            for key in event_record
+            if key not in ("schema", "type", "task", "ts_ns")
+        )
+        ts_ns = int(record["ts_ns"])
+        flow_id = id_value(attempt_id)
+
+        if record_type == "connect_attempt_start":
+            self.event(
+                ts_ns,
+                track,
+                TrackEvent.TYPE_SLICE_BEGIN,
+                "TCP connect attempt",
+                "anettrace.connect",
+                flow_id=flow_id,
+                correlation_id=flow_id,
+                annotations=(event_record, annotation_keys),
+            )
+            self.active_connects.add(attempt_id)
+            return
+
+        if record_type == "connect_socket":
+            socket_id = str(record["socket_instance_id"])
+            self.connect_sockets[socket_id] = attempt_id
+
+        should_close = (
+            record_type == "connect_so_error"
+            or record_type == "connect_cancel"
+            or (
+                record_type == "connect_attempt_end"
+                and not bool(record.get("async_pending", False))
+            )
+        )
+        name = {
+            "connect_socket": "connect socket associated",
+            "connect_attempt_end": "connect syscall returned",
+            "connect_so_error": "connect SO_ERROR",
+            "connect_reset": "connect reset",
+            "connect_drop": "connect kernel drop",
+            "connect_retransmit": "connect retransmit",
+            "connect_rtt": "connect RTT",
+            "connect_sched_delay": "connect scheduler delay",
+            "connect_cancel": "connect cancelled",
+        }.get(record_type, record_type)
+        self.event(
+            ts_ns,
+            track,
+            TrackEvent.TYPE_INSTANT,
+            name,
+            "anettrace.connect",
+            flow_id=flow_id,
+            correlation_id=flow_id,
+            annotations=(event_record, annotation_keys),
+        )
+        if should_close and attempt_id in self.active_connects:
+            self.event(
+                ts_ns,
+                track,
+                TrackEvent.TYPE_SLICE_END,
+                category="anettrace.connect",
+                flow_id=flow_id,
+                terminating_flow=True,
+            )
+            self.active_connects.remove(attempt_id)
+
+    def export_connect_socket_state(self, record: dict[str, Any]) -> None:
+        attempt_id = self.connect_attempt_id(record)
+        if not attempt_id:
+            return
+        event_record = dict(record)
+        event_record["attempt_id"] = attempt_id
+        self.event(
+            int(record["ts_ns"]),
+            self.connect_track(attempt_id, event_record),
+            TrackEvent.TYPE_INSTANT,
+            f"connect state {record.get('new_state_name', 'UNKNOWN')}",
+            "anettrace.connect",
+            flow_id=id_value(attempt_id),
+            correlation_id=id_value(attempt_id),
+            annotations=(
+                event_record,
+                (
+                    "attempt_id",
+                    "socket_id",
+                    "old_state",
+                    "old_state_name",
+                    "new_state",
+                    "new_state_name",
+                ),
+            ),
+        )
+
     def export_flow_start(self, record: dict[str, Any]) -> None:
         flow_id = str(record["flow_id"])
         flow_record = dict(record)
@@ -651,6 +777,7 @@ class PerfettoExporter:
                 self.export_socket_create(record)
             elif record_type == "socket_state":
                 self.export_socket_state(record)
+                self.export_connect_socket_state(record)
             elif record_type == "socket_event":
                 self.export_socket_event(record)
             elif record_type == "packet_event":
@@ -667,6 +794,8 @@ class PerfettoExporter:
                 self.export_io_start(record, "tx")
             elif record_type == "tx_write_end":
                 self.export_io_end(record, "tx")
+            elif record_type.startswith("connect_"):
+                self.export_connect_event(record)
             elif record_type in ("lost_events", "trace_end"):
                 if record_type == "trace_end" and record.get("ts_ns"):
                     for socket_id in tuple(self.socket_lifetimes):
@@ -687,6 +816,16 @@ class PerfettoExporter:
                             category="anettrace.io",
                         )
                     self.pending_io.clear()
+                    for attempt_id in tuple(self.active_connects):
+                        self.event(
+                            int(record["ts_ns"]),
+                            self.connect_tracks[attempt_id],
+                            TrackEvent.TYPE_SLICE_END,
+                            category="anettrace.connect",
+                            flow_id=id_value(attempt_id),
+                            terminating_flow=True,
+                        )
+                        self.active_connects.remove(attempt_id)
                 self.export_meta_event(record)
         return self.builder.serialize()
 

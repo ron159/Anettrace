@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <sys/syscall.h>
 #include <bpf/libbpf.h>
 
 #include <arg_parse.h>
@@ -257,6 +258,12 @@ static void do_parse_args(int argc, char *argv[])
 			.desc = "include detailed kernel network stages (default compact)",
 		},
 		{
+			.lname = "connect-diagnostics",
+			.dest = &trace_args->connect_diagnostics,
+			.type = OPTION_BOOL,
+			.desc = "collect bounded TCP connect diagnostic evidence",
+		},
+		{
 			.lname = "trace-profile", .dest = &trace_args->trace_profile,
 			.type = OPTION_STRING,
 			.desc = "system trace profile: full (default) or sched",
@@ -465,6 +472,11 @@ static void do_parse_args(int argc, char *argv[])
 		pr_err("--trace-detail requires --capture-trace or --perfetto-events\n");
 		goto err;
 	}
+	if (trace_args->connect_diagnostics && !trace_args->capture_trace &&
+	    !trace_args->perfetto_events) {
+		pr_err("--connect-diagnostics requires --capture-trace or --perfetto-events\n");
+		goto err;
+	}
 	if (trace_args->capture_trace && trace_args->trace_profile &&
 	    strcmp(trace_args->trace_profile, "full") &&
 	    strcmp(trace_args->trace_profile, "sched")) {
@@ -475,6 +487,11 @@ static void do_parse_args(int argc, char *argv[])
 		trace_args->duration = 10;
 	if (trace_args->capture_trace && !trace_args->trace_profile)
 		trace_args->trace_profile = "full";
+	if (trace_args->connect_diagnostics) {
+		bpf_args->connect_diagnostics = true;
+		bpf_args->connect_syscall_nr = SYS_connect;
+		bpf_args->getsockopt_syscall_nr = SYS_getsockopt;
+	}
 
 /* convert the args to the eBPF pkt_arg struct */
 #define FILL_ADDR_PROTO(name, subfix, args, pf) if (name##_pf == pf) {	\

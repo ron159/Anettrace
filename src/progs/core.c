@@ -44,10 +44,11 @@ struct {
 } m_matched SEC(".maps");
 
 typedef struct {
+	u64 socket_key;
 	u32 tid;
 	u32 tgid;
 	u32 uid;
-	u32 socket_key;
+	u32 socket_generation;
 	u8 dns;
 	u8 pad[3];
 } perfetto_owner_t;
@@ -74,6 +75,30 @@ typedef struct {
 	perfetto_flow_owner_t flow_value;
 } perfetto_scratch_t;
 
+typedef struct {
+	u64 attempt_key;
+	u64 start_ts;
+	u64 socket_key;
+	u32 socket_generation;
+	s32 fd;
+	u32 tid;
+	u32 tgid;
+	u32 uid;
+	u16 family;
+	u16 remote_port;
+	u8 remote_addr[16];
+} connect_pending_t;
+
+typedef struct {
+	u32 tgid;
+	s32 fd;
+} connect_fd_key_t;
+
+typedef struct {
+	connect_pending_t pending;
+	u64 optval;
+} connect_getsockopt_t;
+
 struct {
 #ifdef BPF_MAP_TYPE_LRU_HASH
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -84,6 +109,17 @@ struct {
 	__uint(value_size, sizeof(perfetto_owner_t));
 	__uint(max_entries, 16384);
 } m_perfetto_socket_owner SEC(".maps");
+
+struct {
+#ifdef BPF_MAP_TYPE_LRU_HASH
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+#else
+	__uint(type, BPF_MAP_TYPE_HASH);
+#endif
+	__uint(key_size, sizeof(u64));
+	__uint(value_size, sizeof(u32));
+	__uint(max_entries, 65536);
+} m_perfetto_socket_generation SEC(".maps");
 
 struct {
 #ifdef BPF_MAP_TYPE_LRU_HASH
@@ -103,6 +139,39 @@ struct {
 	__uint(value_size, sizeof(perfetto_scratch_t));
 	__uint(max_entries, 1);
 } m_perfetto_scratch SEC(".maps");
+
+struct {
+#ifdef BPF_MAP_TYPE_LRU_HASH
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+#else
+	__uint(type, BPF_MAP_TYPE_HASH);
+#endif
+	__uint(key_size, sizeof(u64));
+	__uint(value_size, sizeof(connect_pending_t));
+	__uint(max_entries, 16384);
+} m_connect_pending SEC(".maps");
+
+struct {
+#ifdef BPF_MAP_TYPE_LRU_HASH
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+#else
+	__uint(type, BPF_MAP_TYPE_HASH);
+#endif
+	__uint(key_size, sizeof(connect_fd_key_t));
+	__uint(value_size, sizeof(connect_pending_t));
+	__uint(max_entries, 16384);
+} m_connect_fd SEC(".maps");
+
+struct {
+#ifdef BPF_MAP_TYPE_LRU_HASH
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+#else
+	__uint(type, BPF_MAP_TYPE_HASH);
+#endif
+	__uint(key_size, sizeof(u64));
+	__uint(value_size, sizeof(connect_getsockopt_t));
+	__uint(max_entries, 16384);
+} m_connect_getsockopt SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -332,6 +401,30 @@ static __always_inline void perfetto_store_socket_owner(struct sock *sk,
 				    BPF_ANY);
 }
 
+static __always_inline u32 perfetto_socket_generation(struct sock *sk,
+						       bool created)
+{
+	u64 key = (u64)(void *)sk;
+	u32 *stored;
+	u32 generation = 1;
+
+	if (!sk)
+		return 0;
+	stored = bpf_map_lookup_elem(&m_perfetto_socket_generation, &key);
+	if (stored) {
+		generation = *stored;
+		if (created) {
+			generation++;
+			if (!generation)
+				generation = 1;
+		}
+	}
+	if (!stored || created)
+		bpf_map_update_elem(&m_perfetto_socket_generation, &key,
+				    &generation, BPF_ANY);
+	return generation;
+}
+
 static __always_inline bool perfetto_resolve_socket_owner(
 	struct sock *sk, bool trust_current, perfetto_owner_t *owner,
 	u32 tid, u32 tgid, u32 uid)
@@ -344,8 +437,10 @@ static __always_inline bool perfetto_resolve_socket_owner(
 		return false;
 	key = (u64)(void *)sk;
 	sk_uid = _C(sk, sk_uid.val);
+	owner->socket_generation = perfetto_socket_generation(sk, false);
 	cached = bpf_map_lookup_elem(&m_perfetto_socket_owner, &key);
-	if (cached && cached->uid == sk_uid) {
+	if (cached && cached->uid == sk_uid &&
+	    cached->socket_generation == owner->socket_generation) {
 		*owner = *cached;
 		if (trust_current && uid == sk_uid && !owner->tid) {
 			owner->tid = tid;
@@ -355,7 +450,7 @@ static __always_inline bool perfetto_resolve_socket_owner(
 		return true;
 	}
 
-	owner->socket_key = (u32)key;
+	owner->socket_key = key;
 	owner->uid = sk_uid;
 	if (trust_current && uid == sk_uid) {
 		owner->tid = tid;
@@ -424,7 +519,9 @@ static __attribute__((noinline)) int perfetto_handle_owner(
 			.tid = tid,
 			.tgid = tgid,
 			.uid = uid,
-			.socket_key = (u32)(u64)(void *)sk,
+			.socket_key = (u64)(void *)sk,
+			.socket_generation =
+				perfetto_socket_generation(sk, false),
 		};
 		owner_valid = true;
 		if (sk && (direction == PACKET_DIRECTION_TX ||
@@ -449,6 +546,7 @@ static __attribute__((noinline)) int perfetto_handle_owner(
 		detail->owner_tgid = owner->tgid;
 		detail->owner_uid = owner->uid;
 		detail->owner_socket_key = owner->socket_key;
+		detail->owner_socket_generation = owner->socket_generation;
 	}
 	return 0;
 }
@@ -763,6 +861,8 @@ out:
 #else
 	e->key = skb ? (u64)(void *)skb : (u64)(void *)info->sk;
 #endif
+	if (args->perfetto && sk && !skb)
+		e->key_generation = ((detail_event_t *)e)->owner_socket_generation;
 	e->func = info->func;
 	e->meta = info->is_return ? FUNC_TYPE_TRACING_RET : FUNC_TYPE_FUNC;
 	e->tid = tid;
@@ -1117,6 +1217,234 @@ DEFINE_KPROBE_INIT(tcp_send_active_reset, tcp_send_active_reset, 3,
  *******************************************************************/
 
 #ifndef __PROG_TYPE_TRACING
+#ifndef SOL_SOCKET
+#define SOL_SOCKET 1
+#endif
+#ifndef SO_ERROR
+#define SO_ERROR 4
+#endif
+
+static __always_inline bool connect_current_matches(bpf_args_t *args,
+						     u32 tid, u32 uid)
+{
+	if (!args->ready || !args->perfetto || !args->connect_diagnostics)
+		return false;
+	if (args_check(args, pid, tid))
+		return false;
+	return !args->uid_enabled || args->uid == uid;
+}
+
+static __always_inline bool connect_read_endpoint(connect_pending_t *pending,
+						   const void *address)
+{
+	u16 family = 0;
+
+	if (!address || bpf_probe_read_user(&family, sizeof(family), address))
+		return false;
+	pending->family = family;
+	if (family == AF_INET) {
+		struct sockaddr_in ipv4 = {};
+
+		if (bpf_probe_read_user(&ipv4, sizeof(ipv4), address))
+			return false;
+		pending->remote_port = bpf_ntohs(ipv4.sin_port);
+		__builtin_memcpy(pending->remote_addr, &ipv4.sin_addr,
+				 sizeof(ipv4.sin_addr));
+		return true;
+	}
+#ifndef NT_DISABLE_IPV6
+	if (family == AF_INET6) {
+		struct sockaddr_in6 ipv6 = {};
+
+		if (bpf_probe_read_user(&ipv6, sizeof(ipv6), address))
+			return false;
+		pending->remote_port = bpf_ntohs(ipv6.sin6_port);
+		__builtin_memcpy(pending->remote_addr, &ipv6.sin6_addr,
+				 sizeof(ipv6.sin6_addr));
+		return true;
+	}
+#endif
+	return false;
+}
+
+static __always_inline void connect_event_init(connect_event_t *event,
+						 const connect_pending_t *pending,
+						 u16 kind)
+{
+	event->meta = FUNC_TYPE_CONNECT;
+	event->kind = kind;
+	event->ts = bpf_ktime_get_ns();
+	event->attempt_key = pending->attempt_key;
+	event->socket_key = pending->socket_key;
+	event->socket_generation = pending->socket_generation;
+	event->fd = pending->fd;
+	event->tid = pending->tid;
+	event->tgid = pending->tgid;
+	event->uid = pending->uid;
+	event->family = pending->family;
+	event->remote_port = pending->remote_port;
+	__builtin_memcpy(event->remote_addr, pending->remote_addr,
+			 sizeof(event->remote_addr));
+	bpf_get_current_comm(event->task, sizeof(event->task));
+}
+
+SEC("tp/raw_syscalls/sys_enter")
+int TRACE_NAME(connect_sys_enter)(struct trace_event_raw_sys_enter *ctx)
+{
+	bpf_args_t *args = (void *)CONFIG();
+	u64 pid_tgid = bpf_get_current_pid_tgid();
+	u32 tid = (u32)pid_tgid;
+	u32 tgid = (u32)(pid_tgid >> 32);
+	u32 uid = (u32)bpf_get_current_uid_gid();
+	long syscall_id = _(ctx->id);
+	s32 fd = (s32)_(ctx->args[0]);
+	connect_fd_key_t fd_key = { .tgid = tgid, .fd = fd };
+
+	if (!connect_current_matches(args, tid, uid))
+		return 0;
+	if (syscall_id == args->getsockopt_syscall_nr) {
+		connect_pending_t *pending;
+		connect_getsockopt_t get = {};
+		int level = (int)_(ctx->args[1]);
+		int optname = (int)_(ctx->args[2]);
+
+		if (level != SOL_SOCKET || optname != SO_ERROR)
+			return 0;
+		pending = bpf_map_lookup_elem(&m_connect_fd, &fd_key);
+		if (!pending)
+			return 0;
+		get.pending = *pending;
+		get.optval = _(ctx->args[3]);
+		bpf_map_update_elem(&m_connect_getsockopt, &pid_tgid, &get,
+				    BPF_ANY);
+		return 0;
+	}
+	if (syscall_id == args->connect_syscall_nr) {
+		connect_pending_t pending = {};
+		connect_event_t event = {};
+		const void *address = (void *)_(ctx->args[1]);
+
+		pending.start_ts = bpf_ktime_get_ns();
+		pending.attempt_key = pending.start_ts ^
+			(pid_tgid * 0x9e3779b97f4a7c15ULL);
+		pending.fd = fd;
+		pending.tid = tid;
+		pending.tgid = tgid;
+		pending.uid = uid;
+		if (!connect_read_endpoint(&pending, address))
+			return 0;
+		bpf_map_update_elem(&m_connect_pending, &pid_tgid, &pending,
+				    BPF_ANY);
+		bpf_map_update_elem(&m_connect_fd, &fd_key, &pending, BPF_ANY);
+		connect_event_init(&event, &pending, CONNECT_EVENT_START);
+		EVENT_OUTPUT(ctx, event);
+		args->event_count++;
+	}
+	return 0;
+}
+
+SEC("tp/raw_syscalls/sys_exit")
+int TRACE_NAME(connect_sys_exit)(struct trace_event_raw_sys_exit *ctx)
+{
+	bpf_args_t *args = (void *)CONFIG();
+	u64 pid_tgid = bpf_get_current_pid_tgid();
+	long syscall_id = _(ctx->id);
+	s64 result = _(ctx->ret);
+
+	if (!args->ready || !args->perfetto || !args->connect_diagnostics)
+		return 0;
+	if (syscall_id == args->getsockopt_syscall_nr) {
+		connect_getsockopt_t *get;
+		connect_event_t event = {};
+		connect_fd_key_t fd_key;
+		int so_error = 0;
+
+		get = bpf_map_lookup_elem(&m_connect_getsockopt, &pid_tgid);
+		if (!get)
+			return 0;
+		if (!result && get->optval &&
+		    !bpf_probe_read_user(&so_error, sizeof(so_error),
+					 (const void *)get->optval)) {
+			connect_event_init(&event, &get->pending,
+					   CONNECT_EVENT_SO_ERROR);
+			event.result = so_error;
+			EVENT_OUTPUT(ctx, event);
+			args->event_count++;
+			fd_key.tgid = get->pending.tgid;
+			fd_key.fd = get->pending.fd;
+			bpf_map_delete_elem(&m_connect_fd, &fd_key);
+		}
+		bpf_map_delete_elem(&m_connect_getsockopt, &pid_tgid);
+		return 0;
+	}
+	if (syscall_id == args->connect_syscall_nr) {
+		connect_pending_t *pending;
+		connect_event_t event = {};
+		connect_fd_key_t fd_key;
+		bool async_pending;
+
+		pending = bpf_map_lookup_elem(&m_connect_pending, &pid_tgid);
+		if (!pending)
+			return 0;
+		connect_event_init(&event, pending, CONNECT_EVENT_RESULT);
+		event.result = result;
+		async_pending = result == -115 || result == -114;
+		if (async_pending)
+			event.flags |= CONNECT_EVENT_ASYNC_PENDING;
+		EVENT_OUTPUT(ctx, event);
+		args->event_count++;
+		if (!async_pending) {
+			fd_key.tgid = pending->tgid;
+			fd_key.fd = pending->fd;
+			bpf_map_delete_elem(&m_connect_fd, &fd_key);
+		}
+		bpf_map_delete_elem(&m_connect_pending, &pid_tgid);
+	}
+	return 0;
+}
+
+SEC("kprobe/inet_stream_connect")
+int TRACE_NAME(inet_stream_connect)(struct pt_regs *ctx)
+{
+	bpf_args_t *args = (void *)CONFIG();
+	u64 pid_tgid = bpf_get_current_pid_tgid();
+	connect_pending_t *pending;
+	connect_pending_t updated;
+	connect_event_t event = {};
+	connect_fd_key_t fd_key;
+	perfetto_owner_t owner = {};
+	struct socket *socket;
+	struct sock *sk;
+
+	if (!args->ready || !args->perfetto || !args->connect_diagnostics)
+		return 0;
+	pending = bpf_map_lookup_elem(&m_connect_pending, &pid_tgid);
+	if (!pending)
+		return 0;
+	socket = ctx_get_arg(ctx, 0);
+	sk = socket ? _C(socket, sk) : NULL;
+	if (!sk)
+		return 0;
+	updated = *pending;
+	updated.socket_key = (u64)(void *)sk;
+	updated.socket_generation = perfetto_socket_generation(sk, false);
+	fd_key.tgid = updated.tgid;
+	fd_key.fd = updated.fd;
+	bpf_map_update_elem(&m_connect_pending, &pid_tgid, &updated, BPF_ANY);
+	bpf_map_update_elem(&m_connect_fd, &fd_key, &updated, BPF_ANY);
+	owner.socket_key = updated.socket_key;
+	owner.socket_generation = updated.socket_generation;
+	owner.tid = updated.tid;
+	owner.tgid = updated.tgid;
+	owner.uid = updated.uid;
+	perfetto_store_socket_owner(sk, &owner);
+	connect_event_init(&event, &updated, CONNECT_EVENT_SOCKET);
+	probe_parse_sk(sk, &event.ske, &args->pkt);
+	EVENT_OUTPUT(ctx, event);
+	args->event_count++;
+	return 0;
+}
+
 struct {
 #ifdef BPF_MAP_TYPE_LRU_HASH
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -1168,6 +1496,7 @@ int TRACE_RET_NAME(sk_alloc)(struct pt_regs *ctx)
 	event.event.func = INDEX_sk_alloc;
 	event.event.meta = FUNC_TYPE_FUNC;
 	event.event.key = (u64)(void *)sk;
+	event.event.key_generation = perfetto_socket_generation(sk, true);
 	event.event.ske.ts = bpf_ktime_get_ns();
 	event.event.tid = (u32)pid_tgid;
 	event.event.tgid = (u32)(pid_tgid >> 32);
@@ -1175,12 +1504,14 @@ int TRACE_RET_NAME(sk_alloc)(struct pt_regs *ctx)
 	owner.tid = event.event.tid;
 	owner.tgid = event.event.tgid;
 	owner.uid = event.event.uid;
-	owner.socket_key = (u32)(u64)(void *)sk;
+	owner.socket_key = (u64)(void *)sk;
+	owner.socket_generation = event.event.key_generation;
 	perfetto_store_socket_owner(sk, &owner);
 	event.event.owner_tid = owner.tid;
 	event.event.owner_tgid = owner.tgid;
 	event.event.owner_uid = owner.uid;
 	event.event.owner_socket_key = owner.socket_key;
+	event.event.owner_socket_generation = owner.socket_generation;
 	event.event.owner_valid = 1;
 	bpf_get_current_comm(event.event.task, sizeof(event.event.task));
 	event.start_ts = *start_ts;

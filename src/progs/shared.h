@@ -26,6 +26,9 @@ typedef struct {
 	bool match_mode;
 	bool latency_free;
 	bool perfetto;
+	bool connect_diagnostics;
+	u32  connect_syscall_nr;
+	u32  getsockopt_syscall_nr;
 	u32  first_rtt;
 	u32  last_rtt;
 	u32  rate_limit;
@@ -39,7 +42,8 @@ typedef struct {
 typedef struct {
 	u16		meta;
 	u16		func;
-	u32		key;
+	u64		key;
+	u32		key_generation;
 	union {
 		packet_t	pkt;
 		sock_t		ske;
@@ -65,14 +69,16 @@ typedef struct {
 typedef struct {
 	u16 meta;
 	u16 func;
-	u32 key;
+	u64 key;
+	u32 key_generation;
 	u64 ts;
 } tiny_event_t;
 
 typedef struct {
 	u16		meta;
 	u16		func;
-	u32		key;
+	u64		key;
+	u32		key_generation;
 	union {
 		packet_t	pkt;
 		sock_t		ske;
@@ -97,7 +103,8 @@ typedef struct {
 	u32		owner_tid;
 	u32		owner_tgid;
 	u32		owner_uid;
-	u32		owner_socket_key;
+	u64		owner_socket_key;
+	u32		owner_socket_generation;
 	u8		direction;
 	u8		owner_valid;
 	u16		owner_pad;
@@ -112,8 +119,38 @@ enum {
 	FUNC_TYPE_RET,
 	FUNC_TYPE_TINY,
 	FUNC_TYPE_TRACING_RET,
+	FUNC_TYPE_CONNECT,
 	FUNC_TYPE_MAX,
 };
+
+enum connect_event_kind {
+	CONNECT_EVENT_START,
+	CONNECT_EVENT_SOCKET,
+	CONNECT_EVENT_RESULT,
+	CONNECT_EVENT_SO_ERROR,
+};
+
+typedef struct {
+	u16 meta;
+	u16 kind;
+	u32 flags;
+	u64 ts;
+	u64 attempt_key;
+	u64 socket_key;
+	u32 socket_generation;
+	s32 fd;
+	s64 result;
+	u32 tid;
+	u32 tgid;
+	u32 uid;
+	u16 family;
+	u16 remote_port;
+	u8 remote_addr[16];
+	sock_t ske;
+	char task[16];
+} connect_event_t;
+
+#define CONNECT_EVENT_ASYNC_PENDING (1 << 0)
 
 enum {
 	PACKET_DIRECTION_UNKNOWN,

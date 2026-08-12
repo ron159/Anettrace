@@ -610,6 +610,28 @@ class PerfettoConverterTest(unittest.TestCase):
         self.assertEqual(trace_end.timestamp, 1_070_000_000)
         self.assertEqual(trace_end.timestamp_clock_id, MODULE.CLOCK_MONOTONIC)
 
+    def test_connect_diagnostic_events_are_queryable(self) -> None:
+        records = MODULE.read_records(
+            ROOT / "tests" / "fixtures" / "connect-diagnostics-events.jsonl"
+        )
+        encoded = MODULE.PerfettoExporter(records).serialize()
+        with TemporaryDirectory(prefix="anettrace-connect-") as directory:
+            trace_path = Path(directory) / "connect.pftrace"
+            trace_path.write_bytes(encoded)
+            with TraceProcessor(trace=str(trace_path)) as processor:
+                rows = list(
+                    processor.query(
+                        (ROOT / "tools" / "perfetto_sql" / "connect_diagnostics.sql")
+                        .read_text(encoding="utf-8")
+                    )
+                )
+
+        attempt_ids = {row.attempt_id for row in rows if row.attempt_id}
+        self.assertEqual(len(attempt_ids), 8)
+        self.assertTrue(any(row.name == "TCP connect attempt" for row in rows))
+        self.assertTrue(any(row.name == "connect SO_ERROR" for row in rows))
+        self.assertTrue(any(row.name == "connect kernel drop" for row in rows))
+
 
 if __name__ == "__main__":
     unittest.main()

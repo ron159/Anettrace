@@ -505,6 +505,17 @@ children:
   - name: tcp-state
     desc: TCP socket state releated hooks
     children:
+    - name: connect_sys_enter
+      tp: raw_syscalls/sys_enter
+      custom: true
+      default: false
+    - name: connect_sys_exit
+      tp: raw_syscalls/sys_exit
+      custom: true
+      default: false
+    - name: inet_stream_connect/0
+      custom: true
+      default: false
     - name: sk_alloc/0
       custom: true
       default: false

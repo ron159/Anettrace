@@ -1,0 +1,132 @@
+# Android TCP connect diagnostics
+
+Anettrace `v0.5.0` adds a capability-gated diagnostic path for outbound TCP
+connection attempts on rooted Android devices. The host-side entry point is:
+
+```sh
+python3 tools/diagnose_android_connect.py \
+  --package com.example.app \
+  --binary /path/to/anettrace \
+  --trace-processor /path/to/trace_processor_shell \
+  --out /path/to/report
+```
+
+The command performs preflight checks, resolves the package to an Android UID,
+starts a bounded device capture, correlates each `connect()` attempt with its
+socket and kernel evidence, and writes a report bundle. The target application
+does not need an SDK or source change.
+
+## Support contract
+
+Android 15 and newer are the target platform range, but an Android or kernel
+version alone does not imply support. Every session checks the actual device
+for root access, BTF, tracefs, Perfetto, required tracepoints, and usable attach
+backends before collecting data.
+
+The first reference configuration is:
+
+- PKC130;
+- Android 17 / SDK 37;
+- AArch64 Linux 6.6.118;
+- root ADB shell with SELinux enforcing;
+- KPROBE/KRETPROBE, raw syscall tracepoints, BTF, tracefs and Perfetto.
+
+This reference kernel does not provide the complete fentry/fexit path. The
+diagnostic therefore uses raw syscall events for the `connect()` boundary,
+KPROBE/KRETPROBE for socket association, and stable kernel tracepoints for TCP
+state, retransmission, reset, drop and scheduling evidence.
+
+If a core probe or event-integrity requirement is missing, Anettrace produces
+an `invalid` report without a root-cause verdict. Missing optional evidence
+produces a `degraded` report with the unavailable capability listed.
+
+## Diagnostic unit and outcomes
+
+The unit of analysis is one outbound TCP connect attempt associated with one
+session-scoped socket instance. Blocking and nonblocking connects are supported.
+`EINPROGRESS` is a pending state, not a failure; the attempt remains open until
+socket state and observable `SO_ERROR` evidence resolve it or the capture ends.
+
+Every attempt has exactly one outcome:
+
+| Outcome | Meaning |
+| --- | --- |
+| `success` | The connect completed successfully. |
+| `local_rejection` | A versioned errno mapping identifies a local parameter, resource or policy rejection. |
+| `network_unreachable` | A versioned errno mapping identifies a network, route or host reachability failure. |
+| `peer_refused` | `ECONNREFUSED`, or a reset reliably associated with the socket while it is connecting. |
+| `timeout_no_response` | `ETIMEDOUT` was observed; SYN and retransmission data are supporting evidence. |
+| `kernel_drop` | A kernel drop was precisely associated with the attempt's SYN lifecycle. |
+| `interrupted_or_cancelled` | A direct error or a proven close/process exit cancelled the pending attempt. |
+| `incomplete_or_unknown` | The capture ended pending, the errno is unknown, or evidence is insufficient. |
+
+Evidence strength is `direct`, `correlated`, or `insufficient`. A report may
+list retransmission, RTT and scheduler measurements as contributing evidence,
+but those measurements do not become a root cause without the required direct
+or correlated evidence.
+
+The first release intentionally does not apply a hidden or public latency
+threshold. It reports measured durations and events without declaring that a
+stage is "slow".
+
+## Privacy contract
+
+By default the report contains the network metadata needed for diagnosis:
+UID/TID, anonymous application and socket IDs, addresses, ports, protocol,
+interface/network context, monotonic timing, errno and capability information.
+
+By default it does not persist package names, shared-UID package candidates,
+device serials, fingerprints, account data or the device application list.
+`--include-package` opts the current report into storing the selected package
+and shared-UID candidates.
+
+The v1 collector does not read or store payloads, URLs, headers, SNI, DNS query
+names or DNS response content. It does not install a TLS probe.
+
+## Bounded collection
+
+The default capture is limited to 120 seconds and a 512 MiB report budget. The
+device enforces its own limits so an ADB interruption cannot leave an unbounded
+collector. The default Perfetto profile is `sched`; the broader `full` profile
+is opt-in.
+
+Each run uses a unique device directory. After verified pull and hashing, the
+directory is removed unless `--keep-device-artifacts` is explicit. The command
+does not automatically run `adb root`, `su`, or Magisk commands, and it does not
+stop another tracing session. Unsafe trace-resource conflicts fail preflight.
+
+The collector binary is supplied with `--binary` or by the matching release
+bundle. Its architecture, version, Git commit and SHA-256 are recorded before
+use. Trace Processor is supplied with `--trace-processor` or found on `PATH`;
+its version and SHA-256 are also recorded. The command never downloads a tool at
+runtime.
+
+## Report bundle
+
+The user chooses an output directory. The directory is created with mode `0700`
+and files with mode `0600`:
+
+- `report.md`: human-readable verdict, evidence and Perfetto drill-down notes;
+- `report.json`: public `anettrace.connect-diagnostics.v1` machine contract;
+- `manifest.json`: versions, capabilities, filters, privacy flags and integrity;
+- `trace.pftrace`: the evidence timeline;
+- `session.log`: redacted orchestration and failure diagnostics;
+- `SHA256SUMS`: hashes of the stable report files.
+
+Report status is `valid`, `degraded`, or `invalid`. Even an invalid session keeps
+its redacted manifest and log, but it does not claim a root cause.
+
+## Explicit non-goals for v1
+
+- DNS transaction or encrypted-DNS diagnosis;
+- QUIC/HTTP3;
+- HTTP/RPC request timing after a TCP connection is established;
+- payload or TLS plaintext capture;
+- an always-on flight recorder or hidden history database;
+- prebuilt Linux release binaries;
+- automatic migration to the independent `android-tracing` product branch.
+
+The JSON schema in `schemas/connect-diagnostics-v1.schema.json` is the normative
+report interface. The stable Trace Processor query is
+`tools/perfetto_sql/connect_diagnostics.sql`. Fixtures and SQL contract tests
+are part of CI and must stay aligned with this document.

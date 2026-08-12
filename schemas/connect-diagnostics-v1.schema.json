@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ron159/Anettrace/schemas/connect-diagnostics-v1.schema.json",
+  "title": "Anettrace TCP connect diagnostics report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_id",
+    "generated_at_utc",
+    "status",
+    "summary",
+    "target",
+    "capture",
+    "attempts",
+    "warnings",
+    "errors"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "anettrace.connect-diagnostics.v1"
+    },
+    "report_id": {
+      "$ref": "#/$defs/id"
+    },
+    "generated_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "enum": ["valid", "degraded", "invalid"]
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt_count", "outcome_counts"],
+      "properties": {
+        "attempt_count": {"type": "integer", "minimum": 0},
+        "outcome_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uid", "application_id", "package_included", "shared_uid_ambiguous"],
+      "properties": {
+        "uid": {"type": "integer", "minimum": 0},
+        "application_id": {"$ref": "#/$defs/id"},
+        "package_included": {"type": "boolean"},
+        "package": {"type": "string", "minLength": 1},
+        "shared_uid_ambiguous": {"type": "boolean"},
+        "shared_uid_candidates": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "started_ns",
+        "ended_ns",
+        "lost_events",
+        "truncated"
+      ],
+      "properties": {
+        "profile": {"enum": ["sched", "full"]},
+        "started_ns": {"type": "integer", "minimum": 0},
+        "ended_ns": {"type": "integer", "minimum": 0},
+        "lost_events": {"type": "integer", "minimum": 0},
+        "truncated": {"type": "boolean"}
+      }
+    },
+    "attempts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/attempt"}
+    },
+    "warnings": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "errors": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16,64}$"
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["local_addr", "local_port", "remote_addr", "remote_port"],
+      "properties": {
+        "local_addr": {"type": "string"},
+        "local_port": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "remote_addr": {"type": "string"},
+        "remote_port": {"type": "integer", "minimum": 0, "maximum": 65535}
+      }
+    },
+    "errno": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["number", "name"],
+      "properties": {
+        "number": {"type": "integer", "minimum": 0},
+        "name": {"type": "string"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "ts_ns"],
+      "properties": {
+        "type": {"type": "string", "minLength": 1},
+        "ts_ns": {"type": "integer", "minimum": 0}
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt_id",
+        "socket_instance_id",
+        "uid",
+        "tid",
+        "tgid",
+        "fd",
+        "started_ns",
+        "ended_ns",
+        "duration_ns",
+        "outcome",
+        "evidence_strength",
+        "errno",
+        "endpoint",
+        "evidence",
+        "contributing_factors"
+      ],
+      "properties": {
+        "attempt_id": {"$ref": "#/$defs/id"},
+        "socket_instance_id": {
+          "oneOf": [
+            {"$ref": "#/$defs/id"},
+            {"type": "null"}
+          ]
+        },
+        "uid": {"type": "integer", "minimum": 0},
+        "tid": {"type": "integer", "minimum": 0},
+        "tgid": {"type": "integer", "minimum": 0},
+        "fd": {"type": "integer", "minimum": 0},
+        "started_ns": {"type": "integer", "minimum": 0},
+        "ended_ns": {"type": "integer", "minimum": 0},
+        "duration_ns": {"type": "integer", "minimum": 0},
+        "outcome": {
+          "enum": [
+            "success",
+            "local_rejection",
+            "network_unreachable",
+            "peer_refused",
+            "timeout_no_response",
+            "kernel_drop",
+            "interrupted_or_cancelled",
+            "incomplete_or_unknown"
+          ]
+        },
+        "evidence_strength": {
+          "enum": ["direct", "correlated", "insufficient"]
+        },
+        "errno": {"$ref": "#/$defs/errno"},
+        "endpoint": {"$ref": "#/$defs/endpoint"},
+        "evidence": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidence"}
+        },
+        "contributing_factors": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

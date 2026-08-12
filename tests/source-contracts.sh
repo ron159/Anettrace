@@ -61,6 +61,9 @@ require_text 'LADDR:PORT' src/traffic.c
 require_text 'traffic_print_snapshot' src/traffic.c
 require_text '.lname = "perfetto-events"' src/anettrace.c
 require_text 'bool perfetto;' src/progs/shared.h
+require_text 'bool connect_diagnostics;' src/progs/shared.h
+require_text 'u64 key;' src/progs/shared.h
+require_text 'u32 key_generation;' src/progs/shared.h
 require_text 'owner_socket_key' src/progs/shared.h
 require_text 'PACKET_DIRECTION_RX' src/progs/shared.h
 require_text 'FUNC_STATUS_RX' src/progs/shared.h
@@ -71,6 +74,9 @@ require_text 'm_perfetto_scratch' src/progs/core.c
 require_text 'pkt->l4.min.sport == bpf_htons(53)' src/progs/core.c
 require_text 'pkt->l4.min.dport == bpf_htons(53)' src/progs/core.c
 require_text 'SEC("kprobe/sk_alloc")' src/progs/core.c
+require_text 'SEC("tp/raw_syscalls/sys_enter")' src/progs/core.c
+require_text 'SEC("tp/raw_syscalls/sys_exit")' src/progs/core.c
+require_text 'SEC("kprobe/inet_stream_connect")' src/progs/core.c
 require_text 'DEFINE_TP_SK(inet_sock_set_state' src/progs/core.c
 require_text 'perfetto_export_event(data, cpu, size);' src/trace.c
 require_text '\"type\":\"packet_event\"' src/perfetto_export.c
@@ -116,6 +122,7 @@ require_text '.lname = "capture-trace"' src/anettrace.c
 require_text '--capture-trace and --trace are standalone; run them separately' \
 	src/anettrace.c
 require_text '.lname = "trace-detail"' src/anettrace.c
+require_text '.lname = "connect-diagnostics"' src/anettrace.c
 require_text '--trace-detail requires --capture-trace or --perfetto-events' \
 	src/anettrace.c
 require_text '.lname = "trace-profile"' src/anettrace.c
@@ -179,7 +186,12 @@ require_text 'raw_native_tracepacket_concat' \
 	tools/merge_trace_with_anettrace.py
 require_text 'capture_android_trace.py' tools/capture_android_perfetto.sh
 require_text 'perfetto==0.57.2' tools/requirements-perfetto.txt
-require_text 'anettrace-0.4.0-android-arm64-dual.tar.bz2' \
+require_text 'anettrace-${{ steps.product.outputs.version }}-android-arm64-dual' \
 	.github/workflows/build-android-arm64.yml
+require_text 'anettrace.connect-diagnostics.v1' \
+	schemas/connect-diagnostics-v1.schema.json
+require_text 'connect_attempt_start' tools/connect_diagnostics.py
+require_text 'runtime download is disabled' tools/diagnose_android_connect.py
+require_text 'connect_diagnostics.sql' docs/connect-diagnostics.md
 
 echo "source contracts: ok"
