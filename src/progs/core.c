@@ -437,9 +437,12 @@ static __always_inline u32 perfetto_socket_generation(struct sock *sk,
 				      &counter_key);
 	if (!counter)
 		return 1;
-	generation = __sync_fetch_and_add(counter, 1) + 1;
-	if (!generation)
-		generation = __sync_fetch_and_add(counter, 1) + 1;
+	__sync_fetch_and_add(counter, 1);
+	generation = *counter;
+	if (!generation) {
+		__sync_fetch_and_add(counter, 1);
+		generation = *counter;
+	}
 	bpf_map_update_elem(&m_perfetto_socket_generation, &key,
 			    &generation, created ? BPF_ANY : BPF_NOEXIST);
 	stored = bpf_map_lookup_elem(&m_perfetto_socket_generation, &key);
