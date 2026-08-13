@@ -253,6 +253,11 @@ static void do_parse_args(int argc, char *argv[])
 			.desc = "capture system plus Anettrace events without terminal trace output",
 		},
 		{
+			.lname = "ring-buffer", .dest = &trace_args->ring_buffer,
+			.type = OPTION_BOOL,
+			.desc = "run until interrupted and save the trailing --duration window",
+		},
+		{
 			.lname = "trace-detail", .dest = &trace_args->trace_detail,
 			.type = OPTION_BOOL,
 			.desc = "include detailed kernel network stages (default compact)",
@@ -271,7 +276,7 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "duration", .dest = &trace_args->duration,
 			.type = OPTION_U32,
-			.desc = "capture or Perfetto event duration in seconds",
+			.desc = "capture duration, or ring-buffer retention window, in seconds",
 		},
 		{
 			.lname = "output", .dest = &trace_args->output,
@@ -459,6 +464,10 @@ static void do_parse_args(int argc, char *argv[])
 		pr_err("--output requires --capture-trace\n");
 		goto err;
 	}
+	if (trace_args->ring_buffer && !trace_args->capture_trace) {
+		pr_err("--ring-buffer requires --capture-trace\n");
+		goto err;
+	}
 	if (trace_args->duration && !trace_args->capture_trace &&
 	    !trace_args->perfetto_events) {
 		pr_err("--duration requires --capture-trace or --perfetto-events\n");
@@ -545,7 +554,13 @@ err:
 	exit(-EINVAL);
 }
 
-static void do_exit(int code)
+static void request_exit(int code)
+{
+	(void)code;
+	trace_ctx.stop = true;
+}
+
+static void finish_trace(void)
 {
 	static bool is_exited = false;
 	bpf_args_t *bpf_args;
@@ -591,18 +606,25 @@ int main(int argc, char *argv[])
 	if (trace_ctx.args.capture_trace) {
 		if (trace_capture_start(trace_ctx.args.output,
 					trace_ctx.args.duration,
-					trace_ctx.args.trace_profile))
+					trace_ctx.args.trace_profile,
+					trace_ctx.args.ring_buffer))
 			goto err;
-		if (perfetto_export_native_open(trace_capture_network_path()))
+		if ((trace_ctx.args.ring_buffer ?
+		     perfetto_export_native_open_ring(
+			     trace_capture_network_path(),
+			     trace_ctx.args.duration) :
+		     perfetto_export_native_open(trace_capture_network_path())))
 			goto err;
 	}
 
-	signal(SIGTERM, do_exit);
-	signal(SIGINT, do_exit);
+	signal(SIGTERM, request_exit);
+	signal(SIGINT, request_exit);
 
 	pr_info("begin trace...\n");
 	trace_poll();
-	do_exit(0);
+	if (trace_ctx.args.capture_trace)
+		trace_capture_stop();
+	finish_trace();
 	if (trace_ctx.args.capture_trace) {
 		if (perfetto_export_failed()) {
 			pr_err("failed to encode Anettrace Perfetto packets\n");

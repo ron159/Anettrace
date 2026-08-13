@@ -42,6 +42,7 @@ PING_TARGET="$(ip route get 1.1.1.1 2>/dev/null | awk '
 "$BIN" --version | tee "$OUT/version.txt"
 "$BIN" -h > "$OUT/help.txt"
 grep -q -- '--trace-detail' "$OUT/help.txt" || fail "--trace-detail help missing"
+grep -q -- '--ring-buffer' "$OUT/help.txt" || fail "--ring-buffer help missing"
 for section in \
 	"Packet and owner filters" \
 	"Analysis modes" \
@@ -58,6 +59,12 @@ if "$BIN" --trace-detail > "$OUT/trace-detail-invalid.txt" 2>&1; then
 fi
 grep -q -- '--trace-detail requires --capture-trace or --perfetto-events' \
 	"$OUT/trace-detail-invalid.txt" || fail "missing --trace-detail scope error"
+
+if "$BIN" --ring-buffer > "$OUT/ring-buffer-invalid.txt" 2>&1; then
+	fail "--ring-buffer unexpectedly succeeded without trace capture"
+fi
+grep -q -- '--ring-buffer requires --capture-trace' \
+	"$OUT/ring-buffer-invalid.txt" || fail "missing --ring-buffer scope error"
 
 if "$BIN" --traffic --capture-trace > "$OUT/traffic-trace-conflict.txt" 2>&1; then
 	fail "standalone --traffic unexpectedly combined with trace capture"

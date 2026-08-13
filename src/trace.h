@@ -3,6 +3,7 @@
 #ifndef _H_TRACE
 #define _H_TRACE
 
+#include <signal.h>
 #include <stdbool.h>
 #include <list.h>
 #include <sys_utils.h>
@@ -132,6 +133,7 @@ typedef struct trace_args {
 	char *tcp_flags;
 	char *perfetto_events;
 	bool capture_trace;
+	bool ring_buffer;
 	bool trace_detail;
 	bool connect_diagnostics;
 	char *trace_profile;
@@ -164,7 +166,7 @@ typedef struct {
 	bpf_args_t	bpf_args;
 	trace_mode_t	mode;
 	__u64		mode_mask;
-	bool		stop;
+	volatile sig_atomic_t stop;
 	/* if drop reason feature is supported */
 	bool		drop_reason;
 	/* enable detail output */

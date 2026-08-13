@@ -17,6 +17,7 @@
 #include <sys_utils.h>
 
 #include "output.h"
+#include "perfetto_trim.h"
 #include "trace_capture.h"
 
 struct capture_state {
@@ -25,6 +26,9 @@ struct capture_state {
 	char system_trace[PATH_MAX];
 	char network_trace[PATH_MAX];
 	char config[PATH_MAX];
+	__u32 window_s;
+	bool ring_buffer;
+	bool stop_requested;
 	bool started;
 };
 
@@ -40,12 +44,13 @@ static const char sched_perfetto_config[] =
 	"ftrace_events: \"sched/sched_process_exec\"\n"
 	"ftrace_events: \"sched/sched_process_exit\"\n"
 	"ftrace_events: \"power/suspend_resume\"\n"
-	"compact_sched { enabled: true }\n"
+	"%s"
 	"} } }\n"
 	"data_sources: { config { name: \"linux.process_stats\" target_buffer: 0 "
 	"process_stats_config { scan_all_processes_on_start: true "
 	"proc_stats_poll_ms: 1000 } } }\n"
-	"duration_ms: %llu\n";
+	"%s"
+	"%s";
 
 /* Keep this aligned with PerfAllInOne's full perfetto_cfg.pbtx profile. */
 static const char full_perfetto_config[] =
@@ -107,6 +112,7 @@ static const char full_perfetto_config[] =
 	"ftrace_events: \"task/task_newtask\"\n"
 	"ftrace_events: \"task/task_rename\"\n"
 	"ftrace_events: \"ftrace/print\"\n"
+	"%s"
 	"buffer_size_kb: 24576\n"
 	"drain_period_ms: 1000\n"
 	"} } }\n"
@@ -157,8 +163,8 @@ static const char full_perfetto_config[] =
 	"raw_push_atom_id: 100076\n"
 	"raw_push_atom_id: 100195\n"
 	"} } }\n"
-	"duration_ms: %llu\n"
-	"flush_period_ms: 30000\n"
+	"%s"
+	"%s"
 	"incremental_state_config { clear_period_ms: 5000 }\n";
 
 static int make_default_name(char *path, size_t size, const char *directory)
@@ -250,17 +256,27 @@ static int write_all(int fd, const void *data, size_t size)
 	return 0;
 }
 
-static int write_config(__u32 duration_s, const char *profile)
+static int write_config(__u32 duration_s, const char *profile,
+			bool ring_buffer)
 {
 	const char *template;
 	char config_text[16384];
+	char duration_line[64] = {};
+	const char *flush_line = ring_buffer ? "" :
+		"flush_period_ms: 30000\n";
+	const char *compact_sched = ring_buffer ?
+		"compact_sched { enabled: false }\n" :
+		"compact_sched { enabled: true }\n";
 	int length, fd, err;
 
 	template = !strcmp(profile, "full") ? full_perfetto_config :
 		   sched_perfetto_config;
-	/* Keep the system trace alive slightly longer than the network capture. */
+	if (!ring_buffer)
+		snprintf(duration_line, sizeof(duration_line),
+			 "duration_ms: %llu\n",
+			 ((unsigned long long)duration_s + 1) * 1000);
 	length = snprintf(config_text, sizeof(config_text), template,
-			  ((unsigned long long)duration_s + 1) * 1000);
+			  compact_sched, duration_line, flush_line);
 	if (length < 0 || length >= (int)sizeof(config_text))
 		return -EOVERFLOW;
 	fd = open(capture.config,
@@ -370,7 +386,7 @@ static void cleanup_temporary(void)
 }
 
 int trace_capture_start(const char *output, __u32 duration_s,
-			const char *profile)
+			const char *profile, bool ring_buffer)
 {
 	struct timespec startup_wait = { .tv_nsec = 250 * 1000 * 1000 };
 	int status, err;
@@ -394,7 +410,9 @@ int trace_capture_start(const char *output, __u32 duration_s,
 	err = system_temporary_paths();
 	if (err)
 		goto fail;
-	err = write_config(duration_s, profile);
+	capture.ring_buffer = ring_buffer;
+	capture.window_s = duration_s;
+	err = write_config(duration_s, profile, ring_buffer);
 	if (err)
 		goto fail;
 
@@ -422,8 +440,12 @@ int trace_capture_start(const char *output, __u32 duration_s,
 		err = -errno;
 		goto fail;
 	}
-	pr_info("system Perfetto %s capture started (pid %d)\n", profile,
-		capture.perfetto_pid);
+	if (ring_buffer)
+		pr_info("system Perfetto %s ring capture started (pid %d, trailing %u seconds; press Ctrl+C to save)\n",
+			profile, capture.perfetto_pid, duration_s);
+	else
+		pr_info("system Perfetto %s capture started (pid %d)\n", profile,
+			capture.perfetto_pid);
 	return 0;
 
 fail:
@@ -437,21 +459,72 @@ const char *trace_capture_network_path(void)
 	return capture.network_trace[0] ? capture.network_trace : NULL;
 }
 
+void trace_capture_stop(void)
+{
+	if (!capture.started || capture.stop_requested)
+		return;
+	if (kill(capture.perfetto_pid, SIGTERM) && errno != ESRCH)
+		pr_warn("failed to request system Perfetto stop: %s\n",
+			strerror(errno));
+	capture.stop_requested = true;
+}
+
 int trace_capture_finish(void)
 {
 	int status = 0, err;
 
 	if (!capture.started)
 		return -EINVAL;
-	err = wait_child(capture.perfetto_pid, 250, &status);
-	if (err == -ETIMEDOUT) {
-		kill(capture.perfetto_pid, SIGTERM);
+	err = wait_child(capture.perfetto_pid,
+			 capture.stop_requested ? 5000 : 250, &status);
+	if (err == -ETIMEDOUT && !capture.stop_requested) {
+		trace_capture_stop();
 		err = wait_child(capture.perfetto_pid, 5000, &status);
+	}
+	if (err == -ETIMEDOUT) {
+		int reap_err;
+
+		kill(capture.perfetto_pid, SIGKILL);
+		reap_err = wait_child(capture.perfetto_pid, 2000, &status);
+		err = reap_err ? reap_err : -ETIMEDOUT;
 	}
 	capture.started = false;
 	if (err) {
 		pr_err("system Perfetto did not stop cleanly: %s\n", strerror(-err));
 		goto out;
+	}
+	if (capture.ring_buffer) {
+		struct timespec boottime, monotonic;
+		u64 boottime_cutoff_ns, monotonic_cutoff_ns;
+		u64 window_ns = (u64)capture.window_s * 1000000000ULL;
+
+		if (clock_gettime(CLOCK_BOOTTIME, &boottime) ||
+		    clock_gettime(CLOCK_MONOTONIC, &monotonic)) {
+			err = -errno;
+			pr_err("failed to read ring-buffer cutoff clock: %s\n",
+			       strerror(-err));
+			goto out;
+		}
+		boottime_cutoff_ns = (u64)boottime.tv_sec * 1000000000ULL +
+			boottime.tv_nsec;
+		monotonic_cutoff_ns = (u64)monotonic.tv_sec * 1000000000ULL +
+			monotonic.tv_nsec;
+		if (boottime_cutoff_ns > window_ns)
+			boottime_cutoff_ns -= window_ns;
+		else
+			boottime_cutoff_ns = 0;
+		if (monotonic_cutoff_ns > window_ns)
+			monotonic_cutoff_ns -= window_ns;
+		else
+			monotonic_cutoff_ns = 0;
+		err = perfetto_trim_file(capture.system_trace,
+					 boottime_cutoff_ns,
+					 monotonic_cutoff_ns);
+		if (err) {
+			pr_err("failed to trim system Perfetto ring window: %s\n",
+			       strerror(-err));
+			goto out;
+		}
 	}
 	err = file_nonempty(capture.system_trace);
 	if (err) {

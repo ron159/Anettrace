@@ -104,6 +104,22 @@ cd /data/local/tmp
   --output /data/local/tmp/browser-network.pftrace
 ```
 
+持续运行并在 Ctrl+C 后只保存停止前 30 秒，可启用环形缓冲模式：
+
+```shell
+./anettrace \
+  --capture-trace \
+  --ring-buffer \
+  --duration 30 \
+  --uid 10187 \
+  --output /data/local/tmp/browser-network-ring.pftrace
+```
+
+环形模式下 `--duration` 是保留窗口而不是进程运行时长；进程会持续抓取，直到收到 Ctrl+C 或
+SIGTERM，再原子生成最终文件。系统 Perfetto 和 Anettrace 网络事件都会裁剪到停止前最多 N 秒。
+网络事件环最多使用 64 MiB；系统侧继续使用 profile 自带的 Perfetto 环形缓冲。极高事件速率导致
+任一缓冲提前覆盖时，最终窗口可能短于 N 秒，Anettrace 会对网络环提前覆盖打印警告。
+
 抓取完成后拉取并用 Perfetto UI 打开：
 
 ```shell

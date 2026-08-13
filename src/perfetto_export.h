@@ -8,6 +8,7 @@
 
 int perfetto_export_open(const char *path);
 int perfetto_export_native_open(const char *path);
+int perfetto_export_native_open_ring(const char *path, __u32 window_s);
 void perfetto_export_event(const void *data, int cpu, __u32 size);
 void perfetto_export_lost(int cpu, __u64 count);
 void perfetto_export_tick(void);

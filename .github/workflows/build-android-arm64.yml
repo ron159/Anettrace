@@ -105,6 +105,7 @@ jobs:
               grep -q -- "--interval" /tmp/anettrace-help.txt
               grep -q -- "--perfetto-events" /tmp/anettrace-help.txt
               grep -q -- "--capture-trace" /tmp/anettrace-help.txt
+              grep -q -- "--ring-buffer" /tmp/anettrace-help.txt
               grep -q -- "--trace-detail" /tmp/anettrace-help.txt
               grep -q -- "--connect-diagnostics" /tmp/anettrace-help.txt
               grep -q -- "--trace-profile" /tmp/anettrace-help.txt
@@ -128,6 +129,12 @@ jobs:
               fi
               grep -q -- "--trace-detail requires --capture-trace or --perfetto-events" \
                 /tmp/anettrace-trace-detail-invalid.txt
+              if src/anettrace --ring-buffer \
+                > /tmp/anettrace-ring-buffer-invalid.txt 2>&1; then
+                exit 1
+              fi
+              grep -q -- "--ring-buffer requires --capture-trace" \
+                /tmp/anettrace-ring-buffer-invalid.txt
               if src/anettrace --traffic --capture-trace \
                 > /tmp/anettrace-traffic-trace-conflict.txt 2>&1; then
                 exit 1

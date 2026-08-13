@@ -1204,7 +1204,8 @@ static int poll_timeout(int err)
 
 	if (trace_ctx.stop)
 		return 1;
-	if (trace_ctx.args.duration && poll_deadline_ns) {
+	if (trace_ctx.args.duration && !trace_ctx.args.ring_buffer &&
+	    poll_deadline_ns) {
 		if (!clock_gettime(CLOCK_MONOTONIC, &now) &&
 			   (u64)now.tv_sec * 1000000000ULL + now.tv_nsec >=
 			   poll_deadline_ns) {
@@ -1257,7 +1258,7 @@ int trace_poll()
 	}
 
 	poll_deadline_ns = 0;
-	if (trace_ctx.args.duration &&
+	if (trace_ctx.args.duration && !trace_ctx.args.ring_buffer &&
 	    !clock_gettime(CLOCK_MONOTONIC, &now))
 		poll_deadline_ns = (u64)now.tv_sec * 1000000000ULL + now.tv_nsec +
 			(u64)trace_ctx.args.duration * 1000000000ULL;

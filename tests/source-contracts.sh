@@ -150,6 +150,8 @@ require_text '\"skb_id\":' src/perfetto_export.c
 require_text 'CLOCK_SNAPSHOT_INTERVAL_NS' src/perfetto_export.c
 require_text 'perfetto_export_tick();' src/trace.c
 require_text '.lname = "capture-trace"' src/anettrace.c
+require_text '.lname = "ring-buffer"' src/anettrace.c
+require_text '--ring-buffer requires --capture-trace' src/anettrace.c
 require_text '--capture-trace and --trace are standalone; run them separately' \
 	src/anettrace.c
 require_text '.lname = "trace-detail"' src/anettrace.c
@@ -163,6 +165,9 @@ require_text 'trace_args->trace_profile = "full"' src/anettrace.c
 require_text '.lname = "duration"' src/anettrace.c
 require_text '.lname = "output"' src/anettrace.c
 require_text 'perfetto_export_native_open' src/anettrace.c
+require_text 'perfetto_export_native_open_ring' src/anettrace.c
+require_text 'NATIVE_RING_MAX_BYTES' src/perfetto_export.c
+require_text 'perfetto_trim_file' src/trace_capture.c
 require_text 'Trace.packet' src/perfetto_export.c
 require_text 'trace_capture_finish' src/anettrace.c
 require_text 'sched/sched_switch' src/trace_capture.c

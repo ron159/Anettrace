@@ -26,6 +26,7 @@
 #define CLOCK_SNAPSHOT_INTERVAL_NS (5ULL * 1000 * 1000 * 1000)
 #define DNS_FLOW_IDLE_NS (5ULL * 1000 * 1000 * 1000)
 #define NATIVE_PACKET_SEQUENCE_ID 0xa11e7001U
+#define NATIVE_RING_MAX_BYTES (64ULL * 1024 * 1024)
 
 static FILE *export_file;
 static FILE *native_file;
@@ -103,6 +104,19 @@ struct proto_buffer {
 	bool failed;
 };
 
+struct native_packet {
+	struct native_packet *next;
+	u64 timestamp_ns;
+	size_t size;
+	unsigned char data[];
+};
+
+struct native_packet_queue {
+	struct native_packet *head;
+	struct native_packet *tail;
+	size_t bytes;
+};
+
 static struct native_track *native_tracks;
 static size_t native_track_count;
 static size_t native_track_capacity;
@@ -115,6 +129,14 @@ static size_t flow_capacity;
 static u32 tcp_flow_count;
 static u32 udp_flow_count;
 static u32 dns_flow_count;
+static struct native_packet_queue native_persistent_packets;
+static struct native_packet_queue native_ring_packets;
+/* Descriptors and clock snapshots stay in the prefix. Timestamped TrackEvent
+ * packets are bounded by both the requested window and a byte guardrail.
+ */
+static u64 native_ring_window_ns;
+static u64 native_ring_latest_ns;
+static bool native_ring_capacity_truncated;
 
 static u64 hash_bytes(u64 hash, const void *data, size_t size);
 
@@ -231,17 +253,142 @@ static void proto_message(struct proto_buffer *buffer, u32 field,
 	proto_bytes(buffer, message->data, message->size);
 }
 
-static void native_write_packet(struct proto_buffer *packet)
+static void native_packet_queue_free(struct native_packet_queue *queue)
+{
+	struct native_packet *packet = queue->head;
+
+	while (packet) {
+		struct native_packet *next = packet->next;
+
+		free(packet);
+		packet = next;
+	}
+	memset(queue, 0, sizeof(*queue));
+}
+
+static bool native_packet_queue_append(struct native_packet_queue *queue,
+				       const struct proto_buffer *trace,
+				       u64 timestamp_ns)
+{
+	struct native_packet *packet;
+
+	if (trace->size > SIZE_MAX - sizeof(*packet))
+		return false;
+	packet = malloc(sizeof(*packet) + trace->size);
+	if (!packet)
+		return false;
+	if (trace->size > SIZE_MAX - queue->bytes) {
+		free(packet);
+		return false;
+	}
+	packet->next = NULL;
+	packet->timestamp_ns = timestamp_ns;
+	packet->size = trace->size;
+	memcpy(packet->data, trace->data, trace->size);
+	if (queue->tail)
+		queue->tail->next = packet;
+	else
+		queue->head = packet;
+	queue->tail = packet;
+	queue->bytes += packet->size;
+	return true;
+}
+
+static bool native_packet_queue_write(const struct native_packet_queue *queue)
+{
+	const struct native_packet *packet;
+
+	for (packet = queue->head; packet; packet = packet->next)
+		if (fwrite(packet->data, 1, packet->size, native_file) !=
+		    packet->size)
+			return false;
+	return true;
+}
+
+static void native_ring_evict(void)
+{
+	u64 cutoff = native_ring_latest_ns > native_ring_window_ns ?
+		native_ring_latest_ns - native_ring_window_ns : 0;
+
+	while (native_ring_packets.head &&
+	       (native_ring_packets.head->timestamp_ns < cutoff ||
+		native_ring_packets.bytes > NATIVE_RING_MAX_BYTES)) {
+		struct native_packet *packet = native_ring_packets.head;
+
+		if (native_ring_packets.bytes > NATIVE_RING_MAX_BYTES)
+			native_ring_capacity_truncated = true;
+		native_ring_packets.head = packet->next;
+		if (!native_ring_packets.head)
+			native_ring_packets.tail = NULL;
+		native_ring_packets.bytes -= packet->size;
+		free(packet);
+	}
+}
+
+static void native_ring_prune_all(void)
+{
+	struct native_packet *packet = native_ring_packets.head;
+	struct native_packet *previous = NULL;
+	u64 cutoff = native_ring_latest_ns > native_ring_window_ns ?
+		native_ring_latest_ns - native_ring_window_ns : 0;
+
+	while (packet) {
+		struct native_packet *next = packet->next;
+
+		if (packet->timestamp_ns < cutoff) {
+			if (previous)
+				previous->next = next;
+			else
+				native_ring_packets.head = next;
+			native_ring_packets.bytes -= packet->size;
+			free(packet);
+		} else {
+			previous = packet;
+		}
+		packet = next;
+	}
+	native_ring_packets.tail = previous;
+}
+
+static void native_write_packet_at(struct proto_buffer *packet,
+				   u64 timestamp_ns)
 {
 	struct proto_buffer trace = {};
+	struct native_packet_queue *queue;
 
 	if (!native_file || native_failed)
 		return;
 	proto_message(&trace, 1, packet); /* Trace.packet */
-	if (trace.failed || fwrite(trace.data, 1, trace.size, native_file) !=
-	    trace.size)
+	if (trace.failed) {
 		native_failed = true;
+		goto out;
+	}
+	if (!native_ring_window_ns) {
+		if (fwrite(trace.data, 1, trace.size, native_file) != trace.size)
+			native_failed = true;
+		goto out;
+	}
+	if (timestamp_ns && native_ring_latest_ns > native_ring_window_ns &&
+	    timestamp_ns < native_ring_latest_ns - native_ring_window_ns)
+		goto out;
+	queue = timestamp_ns ? &native_ring_packets :
+		&native_persistent_packets;
+	if (!native_packet_queue_append(queue, &trace, timestamp_ns)) {
+		native_failed = true;
+		goto out;
+	}
+	if (timestamp_ns) {
+		if (timestamp_ns > native_ring_latest_ns)
+			native_ring_latest_ns = timestamp_ns;
+		native_ring_evict();
+	}
+out:
 	proto_free(&trace);
+}
+
+static void native_write_packet(struct proto_buffer *packet)
+{
+	native_write_packet_at(packet, 0);
 }
 
 static void native_sequence_packet(struct proto_buffer *packet)
@@ -740,7 +887,7 @@ static void native_event_write(u64 timestamp_ns, struct proto_buffer *event)
 	proto_uint(&packet, 8, timestamp_ns);
 	proto_uint(&packet, 58, 3); /* BUILTIN_CLOCK_MONOTONIC */
 	proto_message(&packet, 11, event);
-	native_write_packet(&packet);
+	native_write_packet_at(&packet, timestamp_ns);
 	proto_free(&packet);
 }
 
@@ -1707,6 +1854,11 @@ static void export_state_start(void)
 	tcp_flow_count = 0;
 	udp_flow_count = 0;
 	dns_flow_count = 0;
+	native_packet_queue_free(&native_persistent_packets);
+	native_packet_queue_free(&native_ring_packets);
+	native_ring_window_ns = 0;
+	native_ring_latest_ns = 0;
+	native_ring_capacity_truncated = false;
 	if (getrandom(&export_salt, sizeof(export_salt), 0) !=
 	    sizeof(export_salt)) {
 		clock_gettime(CLOCK_MONOTONIC, &now);
@@ -1741,13 +1893,15 @@ int perfetto_export_open(const char *path)
 	return 0;
 }
 
-int perfetto_export_native_open(const char *path)
+static int perfetto_export_native_open_internal(const char *path,
+						 u32 window_s)
 {
 	int fd;
 
 	if (!path)
 		return -EINVAL;
 	export_state_start();
+	native_ring_window_ns = (u64)window_s * 1000000000ULL;
 	fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
 	if (fd < 0) {
 		pr_err("failed to open native Perfetto file %s: %s\n", path,
@@ -1766,6 +1920,18 @@ int perfetto_export_native_open(const char *path)
 	setvbuf(native_file, NULL, _IOFBF, 64 * 1024);
 	write_clock_snapshot();
 	return 0;
+}
+
+int perfetto_export_native_open(const char *path)
+{
+	return perfetto_export_native_open_internal(path, 0);
+}
+
+int perfetto_export_native_open_ring(const char *path, u32 window_s)
+{
+	if (!window_s)
+		return -EINVAL;
+	return perfetto_export_native_open_internal(path, window_s);
 }
 
 bool perfetto_export_enabled(void)
@@ -2308,6 +2474,13 @@ void perfetto_export_close(u64 event_count)
 				     "anettrace.connect", track->object, true);
 			track->active = false;
 		}
+		if (native_ring_window_ns)
+			native_export_meta(end_ts, "ring_buffer", -1,
+				native_ring_window_ns / 1000000000ULL,
+				"window_seconds", native_ring_packets.bytes,
+				"retained_bytes",
+				native_ring_capacity_truncated,
+				"capacity_truncated");
 		native_export_meta(end_ts, "trace_end", -1, event_count,
 				   "event_count", exported_events,
 				   "exported_events", lost_events,
@@ -2327,10 +2500,24 @@ void perfetto_export_close(u64 event_count)
 		export_file = NULL;
 	}
 	if (native_file) {
+		if (native_ring_window_ns)
+			native_ring_prune_all();
+		if (native_ring_window_ns &&
+		    (!native_packet_queue_write(&native_persistent_packets) ||
+		     !native_packet_queue_write(&native_ring_packets)))
+			native_failed = true;
 		if (fclose(native_file))
 			native_failed = true;
 		native_file = NULL;
+		if (native_ring_capacity_truncated)
+			pr_warn("Anettrace ring buffer exceeded %llu MiB; the retained network window is shorter than requested\n",
+				(unsigned long long)(NATIVE_RING_MAX_BYTES /
+						     (1024 * 1024)));
 	}
+	native_packet_queue_free(&native_persistent_packets);
+	native_packet_queue_free(&native_ring_packets);
+	native_ring_window_ns = 0;
+	native_ring_latest_ns = 0;
 	free(native_tracks);
 	native_tracks = NULL;
 	native_track_count = 0;
