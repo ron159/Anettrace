@@ -147,6 +147,14 @@ struct {
 	__uint(max_entries, 1);
 } m_perfetto_scratch SEC(".maps");
 
+/* Keep the detailed drop event off the 512-byte combined BPF stack. */
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(key_size, sizeof(u32));
+	__uint(value_size, sizeof(detail_drop_event_t));
+	__uint(max_entries, 1);
+} m_drop_scratch SEC(".maps");
+
 struct {
 #ifdef BPF_MAP_TYPE_LRU_HASH
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -982,7 +990,29 @@ DEFINE_ALL_PROBES(KPROBE_DEFAULT, TP_DEFAULT, FNC)
 
 DEFINE_TP(kfree_skb, skb, kfree_skb, 0, 8)
 {
+	detail_drop_event_t *storage;
+	pure_drop_event_t *e;
+	u32 scratch_key = 0;
+	int event_size;
+	int err;
 	int reason = 0;
+
+	storage = bpf_map_lookup_elem(&m_drop_scratch, &scratch_key);
+	if (!storage)
+		return -1;
+	info->e = (void *)storage;
+	if (info->args->detail) {
+		__builtin_memset(storage, 0, sizeof(*storage));
+		e = (void *)storage +
+			offsetof(detail_drop_event_t, __event_filed);
+		event_size = sizeof(*storage);
+	} else {
+		drop_event_t *compact = (void *)storage;
+
+		__builtin_memset(compact, 0, sizeof(*compact));
+		e = (void *)compact + offsetof(drop_event_t, __event_filed);
+		event_size = sizeof(*compact);
+	}
 
 	if (bpf_core_type_exists(enum skb_drop_reason)) {
 		if (bpf_core_field_exists(struct trace_event_raw_kfree_skb, rx_sk))
@@ -994,12 +1024,12 @@ DEFINE_TP(kfree_skb, skb, kfree_skb, 0, 8)
 		reason = _(*(int *)info_tp_args(info, 28, 0));
 	}
 
-	DECLARE_EVENT(drop_event_t, e)
-
 	e->location = *(u64 *)info_tp_args(info, 16, 1);
 	e->reason = reason;
-
-	return handle_entry_output(info, e);
+	err = handle_entry(info);
+	if (!err)
+		do_event_output(info, event_size);
+	return err;
 }
 
 DEFINE_TP_SK(inet_sock_set_state, sock, inet_sock_set_state, 0, 8)

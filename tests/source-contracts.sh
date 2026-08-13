@@ -74,6 +74,10 @@ require_text 'm_perfetto_socket_owner' src/progs/core.c
 require_text 'm_perfetto_socket_generation_counter' src/progs/core.c
 require_text 'm_perfetto_flow_owner' src/progs/core.c
 require_text 'm_perfetto_scratch' src/progs/core.c
+require_text 'm_drop_scratch' src/progs/core.c
+require_text 'bpf_map_lookup_elem(&m_drop_scratch' src/progs/core.c
+require_text 'Anettrace exited before capture completed' \
+	tools/capture_android_trace.py
 require_text 'pkt->l4.min.sport == bpf_htons(53)' src/progs/core.c
 require_text 'pkt->l4.min.dport == bpf_htons(53)' src/progs/core.c
 require_text 'SEC("kprobe/sk_alloc")' src/progs/core.c

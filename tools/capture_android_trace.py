@@ -967,6 +967,12 @@ def capture(args: argparse.Namespace) -> Path:
             if stop_requested.wait(timeout=min(0.25, max(0.0, deadline - time.monotonic()))):
                 interrupted = True
                 break
+            if (
+                anettrace_process
+                and not remote_alive(adb, anettrace_process)
+                and deadline - time.monotonic() > 0.5
+            ):
+                raise CaptureError("Anettrace exited before capture completed")
             for process in companion_processes:
                 if not remote_alive(adb, process) and deadline - time.monotonic() > 0.5:
                     raise CaptureError(f"{process.name} exited before capture completed")
