@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   build-android-arm64:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     outputs:
       version: ${{ steps.product.outputs.version }}
 
@@ -28,11 +28,6 @@ jobs:
       - name: Read product version
         id: product
         run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
-
-      - name: Set up arm64 emulation
-        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
-        with:
-          platforms: linux/arm64
 
       - name: Build static arm64 artifact
         run: |
