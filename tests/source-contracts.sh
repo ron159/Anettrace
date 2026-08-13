@@ -213,6 +213,9 @@ require_text 'android.surfaceflinger.frametimeline' tools/capture_android_trace.
 require_text 'simpleperf' tools/capture_android_trace.py
 require_text 'session-manifest.json' tools/capture_android_trace.py
 require_text '/proc/{process.pid}/cmdline' tools/capture_android_trace.py
+require_text 'ANETTRACE_READY_MARKER = "begin trace..."' \
+	tools/capture_android_trace.py
+require_text 'wait_remote_ready(' tools/capture_android_trace.py
 require_text 'processes_verified' tools/capture_android_trace.py
 require_text 'remote process or artifact cleanup could not be verified' \
 	tools/capture_android_trace.py

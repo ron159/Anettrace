@@ -256,6 +256,39 @@ class SuccessfulCaptureTest(unittest.TestCase):
             [mock.call(adb, process, "INT"), mock.call(adb, process, "KILL")],
         )
 
+    def test_remote_readiness_waits_for_anettrace_marker(self) -> None:
+        process = MODULE.RemoteProcess(
+            name="anettrace",
+            pid=200,
+            log_path="/data/local/tmp/session/anettrace.log",
+            identity="/data/local/tmp/session/anettrace",
+        )
+        adb = mock.Mock()
+        adb.shell.side_effect = [
+            MODULE.subprocess.CompletedProcess([], 1, "", ""),
+            MODULE.subprocess.CompletedProcess([], 0, "", ""),
+        ]
+        with (
+            mock.patch.object(MODULE, "remote_alive", return_value=True),
+            mock.patch.object(MODULE.time, "sleep"),
+        ):
+            MODULE.wait_remote_ready(adb, process, "begin trace...", 1.0)
+        self.assertEqual(adb.shell.call_count, 2)
+        self.assertIn("begin trace...", adb.shell.call_args.args[0])
+
+    def test_remote_readiness_rejects_early_exit(self) -> None:
+        process = MODULE.RemoteProcess(
+            name="anettrace",
+            pid=200,
+            log_path="/data/local/tmp/session/anettrace.log",
+            identity="/data/local/tmp/session/anettrace",
+        )
+        adb = mock.Mock()
+        adb.shell.return_value = MODULE.subprocess.CompletedProcess([], 1, "", "")
+        with mock.patch.object(MODULE, "remote_alive", return_value=False):
+            with self.assertRaisesRegex(MODULE.CaptureError, "exited during startup"):
+                MODULE.wait_remote_ready(adb, process, "begin trace...", 1.0)
+
     def test_mock_device_capture_records_outputs_and_metadata(self) -> None:
         class FakeAdb:
             next_pid = 200
@@ -294,6 +327,8 @@ class SuccessfulCaptureTest(unittest.TestCase):
                     FakeAdb.next_pid += 1
                     self.alive[pid] = True
                     return self.result(stdout=f"{pid}\n")
+                if script.startswith("grep -Fq -- 'begin trace...' "):
+                    return self.result()
                 match = MODULE.re.match(
                     r"test -r /proc/([0-9]+)/cmdline && ", script
                 )

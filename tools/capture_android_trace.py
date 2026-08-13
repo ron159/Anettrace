@@ -37,6 +37,8 @@ DEFAULT_DURATIONS = {"sched": 10, "light": 10, "full": 20, "long": 600, "none": 
 REMOTE_ROOT = "/data/local/tmp"
 PERFETTO_CONFIG_ROOT = "/data/misc/perfetto-configs"
 PERFETTO_TRACE_ROOT = "/data/misc/perfetto-traces"
+ANETTRACE_READY_MARKER = "begin trace..."
+ANETTRACE_STARTUP_TIMEOUT_S = 30.0
 
 ATRACE_CATEGORIES = (
     "aidl",
@@ -354,6 +356,28 @@ def wait_remote(adb: Adb, process: RemoteProcess, timeout_s: float) -> bool:
             return True
         time.sleep(0.1)
     return not remote_alive(adb, process)
+
+
+def wait_remote_ready(
+    adb: Adb,
+    process: RemoteProcess,
+    marker: str,
+    timeout_s: float,
+) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        result = adb.shell(
+            f"grep -Fq -- {shlex.quote(marker)} {shlex.quote(process.log_path)}",
+            check=False,
+        )
+        if result.returncode == 0:
+            return
+        if not remote_alive(adb, process):
+            raise CaptureError(f"{process.name} exited during startup")
+        time.sleep(0.1)
+    raise CaptureError(
+        f"{process.name} did not become ready within {timeout_s:g} seconds"
+    )
 
 
 def stop_remote(
@@ -879,7 +903,8 @@ def capture(args: argparse.Namespace) -> Path:
             file_blocks = args.max_device_file_mib * 2048
             anettrace_command = (
                 f"ulimit -f {file_blocks}; exec toybox timeout -s INT "
-                f"{args.duration + 5} {anettrace_command}"
+                f"{args.duration + int(ANETTRACE_STARTUP_TIMEOUT_S) + 5} "
+                f"{anettrace_command}"
             )
         commands["anettrace"] = anettrace_parts
         anettrace_process = start_remote(
@@ -898,9 +923,12 @@ def capture(args: argparse.Namespace) -> Path:
                 warnings.append(
                     "device clock tick rate unavailable; resource CPU uses Linux USER_HZ=100"
                 )
-        time.sleep(0.2)
-        if not remote_alive(adb, anettrace_process):
-            raise CaptureError("Anettrace exited during startup")
+        wait_remote_ready(
+            adb,
+            anettrace_process,
+            ANETTRACE_READY_MARKER,
+            ANETTRACE_STARTUP_TIMEOUT_S,
+        )
 
         if args.profile != "none":
             perfetto_command = " ".join(
