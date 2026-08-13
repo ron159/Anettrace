@@ -65,10 +65,20 @@ jobs:
           grep -q -- '--ring-buffer requires --capture-trace' \
             /tmp/ring-buffer-invalid.txt
           if ./src/anettrace --traffic --capture-trace \
-            > /tmp/traffic-trace-conflict.txt 2>&1; then
+            --trace-profile invalid > /tmp/traffic-trace-combined.txt 2>&1; then
             exit 1
           fi
-          grep -q -- '--traffic is standalone' /tmp/traffic-trace-conflict.txt
+          grep -q -- '--trace-profile must be full or sched' \
+            /tmp/traffic-trace-combined.txt
+          if grep -q -- '--traffic is standalone' /tmp/traffic-trace-combined.txt; then
+            exit 1
+          fi
+          if ./src/anettrace --traffic --perfetto-events /tmp/events.jsonl \
+            > /tmp/traffic-perfetto-conflict.txt 2>&1; then
+            exit 1
+          fi
+          grep -q -- '--traffic cannot be combined with --perfetto-events' \
+            /tmp/traffic-perfetto-conflict.txt
           if ./src/anettrace --capture-trace --trace tcp \
             > /tmp/capture-trace-conflict.txt 2>&1; then
             exit 1

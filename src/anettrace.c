@@ -143,7 +143,7 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "traffic", .dest = &trace_args->traffic,
 			.type = OPTION_BOOL,
-			.desc = "run standalone per-thread TCP/UDP application-byte accounting",
+			.desc = "show per-thread TCP/UDP application bytes, including during trace capture",
 		},
 		{
 			.lname = "interval", .dest = &trace_args->traffic_interval,
@@ -447,9 +447,8 @@ static void do_parse_args(int argc, char *argv[])
 		pr_version();
 		exit(0);
 	}
-	if (trace_args->traffic &&
-	    (trace_args->capture_trace || trace_args->perfetto_events)) {
-		pr_err("--traffic is standalone; run traffic and trace capture separately\n");
+	if (trace_args->traffic && trace_args->perfetto_events) {
+		pr_err("--traffic cannot be combined with --perfetto-events\n");
 		goto err;
 	}
 	if (trace_args->capture_trace && trace_args->perfetto_events) {
@@ -587,11 +586,12 @@ static void finish_trace(void)
 int main(int argc, char *argv[])
 {
 	int capture_err = 0;
+	bool traffic_started = false;
 
 	output_time_init();
 	init_trace_group();
 	do_parse_args(argc, argv);
-	if (trace_ctx.args.traffic)
+	if (trace_ctx.args.traffic && !trace_ctx.args.capture_trace)
 		return traffic_run(&trace_ctx.args, &trace_ctx.bpf_args);
 
 	if (trace_prepare())
@@ -613,8 +613,13 @@ int main(int argc, char *argv[])
 		     perfetto_export_native_open_ring(
 			     trace_capture_network_path(),
 			     trace_ctx.args.duration) :
-		     perfetto_export_native_open(trace_capture_network_path())))
+			     perfetto_export_native_open(trace_capture_network_path())))
 			goto err;
+	}
+	if (trace_ctx.args.traffic) {
+		if (traffic_start(&trace_ctx.args, &trace_ctx.bpf_args))
+			goto err;
+		traffic_started = true;
 	}
 
 	signal(SIGTERM, request_exit);
@@ -622,6 +627,10 @@ int main(int argc, char *argv[])
 
 	pr_info("begin trace...\n");
 	trace_poll();
+	if (traffic_started) {
+		traffic_stop(true);
+		traffic_started = false;
+	}
 	if (trace_ctx.args.capture_trace)
 		trace_capture_stop();
 	finish_trace();
@@ -637,6 +646,8 @@ int main(int argc, char *argv[])
 	}
 	return 0;
 err:
+	if (traffic_started)
+		traffic_stop(false);
 	perfetto_export_close(0);
 	trace_capture_abort();
 	return -1;
