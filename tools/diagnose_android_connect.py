@@ -335,7 +335,7 @@ def device_preflight(
         "kprobe_events_writable": capability(
             adb, "test -w /sys/kernel/tracing/kprobe_events"
         ),
-        "toybox_timeout": capability(adb, "toybox timeout --help >/dev/null 2>&1"),
+        "toybox_timeout": capability(adb, "toybox timeout 1 true >/dev/null 2>&1"),
         "file_ulimit": capability(adb, "sh -c 'ulimit -f' >/dev/null 2>&1"),
         "tcp_close_symbol": capability(adb, "grep -q -w tcp_close /proc/kallsyms"),
         "tcp_close_kprobe_allowed": capability(

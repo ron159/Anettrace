@@ -88,6 +88,8 @@ require_text 'required connect diagnostic trace is unavailable' src/trace.c
 require_text 'bpf_program__attach_tracepoint' src/trace_probe.c
 require_text 'connect_diagnostics_metrics.sql' tools/diagnose_android_connect.py
 require_text 'perfetto --query-raw | base64' tools/diagnose_android_connect.py
+require_text 'toybox timeout 1 true >/dev/null 2>&1' \
+	tools/diagnose_android_connect.py
 require_text 'perfetto_no_active_sessions' tools/diagnose_android_connect.py
 require_text 'global_trace_events_idle' tools/diagnose_android_connect.py
 require_text 'trace_instances_idle' tools/diagnose_android_connect.py
