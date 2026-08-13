@@ -26,7 +26,24 @@ struct traffic_row {
 	traffic_flow_value_t value;
 };
 
+#define TRAFFIC_MAX_LINKS 12
+
+struct traffic_session {
+	trace_args_t *args;
+	struct traffic *skel;
+	struct bpf_link *links[TRAFFIC_MAX_LINKS];
+	struct traffic_row *rows;
+	u64 previous_drops[TRAFFIC_STAT_MAX];
+	u64 last_report_ns;
+	u64 next_report_ns;
+	u32 reports;
+	int link_count;
+	bool active;
+	bool limit_reached;
+};
+
 static volatile sig_atomic_t traffic_exiting;
+static struct traffic_session traffic_session;
 
 static void traffic_signal_handler(int signal_number)
 {
@@ -285,66 +302,131 @@ static int traffic_validate_options(trace_args_t *args, bpf_args_t *bpf_args)
 	}
 	if (args->basic || args->intel || args->drop || args->sock ||
 	    args->monitor || args->rtt || args->rtt_detail || args->latency ||
-	    args->traces || args->traces_stack) {
+	    (args->traces && !args->capture_trace) || args->traces_stack) {
 		pr_err("--traffic cannot be combined with packet or socket trace modes\n");
 		return -1;
 	}
 	return 0;
 }
 
-int traffic_run(trace_args_t *args, bpf_args_t *bpf_args)
+static void traffic_release(void)
+{
+	struct traffic_session *session = &traffic_session;
+	int i;
+
+	for (i = 0; i < session->link_count; i++)
+		bpf_link__destroy(session->links[i]);
+	traffic__destroy(session->skel);
+	free(session->rows);
+	memset(session, 0, sizeof(*session));
+}
+
+static bool traffic_tick(bool force)
+{
+	struct traffic_session *session = &traffic_session;
+	u64 now_ns;
+
+	if (!session->active || session->limit_reached)
+		return session->limit_reached;
+	now_ns = traffic_monotonic_ns();
+	if (!force && now_ns < session->next_report_ns)
+		return false;
+
+	traffic_print_snapshot(session->skel, session->args, session->rows,
+			       session->last_report_ns, now_ns);
+	traffic_report_drops(session->skel, session->previous_drops);
+	session->last_report_ns = now_ns;
+	session->next_report_ns = now_ns +
+		(u64)session->args->traffic_interval * 1000000000ULL;
+	session->reports++;
+	session->limit_reached = session->args->count &&
+		session->reports >= session->args->count;
+	return session->limit_reached;
+}
+
+int traffic_start(trace_args_t *args, bpf_args_t *bpf_args)
 {
 	DECLARE_LIBBPF_OPTS(bpf_object_open_opts, opts,
 		.btf_custom_path = args->btf_path,
 	);
-	struct bpf_link *links[12] = {};
-	struct traffic_row *rows = NULL;
-	struct traffic *skel = NULL;
-	u64 previous_drops[TRAFFIC_STAT_MAX] = {};
-	u64 last_report_ns, now_ns;
-	u32 reports = 0;
-	int link_count = 0, status = -1, i;
+	struct traffic_session *session = &traffic_session;
 
+	if (session->active) {
+		pr_err("traffic: session is already active\n");
+		return -1;
+	}
 	if (traffic_validate_options(args, bpf_args))
 		return -1;
 	if (liberate_l())
 		pr_warn("failed to set rlimit\n");
 
-	rows = calloc(TRAFFIC_MAX_FLOWS, sizeof(*rows));
-	if (!rows) {
+	session->args = args;
+	session->rows = calloc(TRAFFIC_MAX_FLOWS, sizeof(*session->rows));
+	if (!session->rows) {
 		pr_err("traffic: failed to allocate flow rows\n");
 		goto out;
 	}
 
-	skel = traffic__open_opts(&opts);
-	if (!skel) {
+	session->skel = traffic__open_opts(&opts);
+	if (!session->skel) {
 		pr_err("traffic: failed to open BPF skeleton\n");
 		goto out;
 	}
-	skel->rodata->traffic_config.tid = bpf_args->pid;
-	skel->rodata->traffic_config.uid = bpf_args->uid;
-	skel->rodata->traffic_config.uid_enabled = bpf_args->uid_enabled;
-	skel->rodata->traffic_config.protocol = bpf_args->pkt.l4_proto;
+	session->skel->rodata->traffic_config.tid = bpf_args->pid;
+	session->skel->rodata->traffic_config.uid = bpf_args->uid;
+	session->skel->rodata->traffic_config.uid_enabled =
+		bpf_args->uid_enabled;
+	session->skel->rodata->traffic_config.protocol = bpf_args->pkt.l4_proto;
 
-	if (traffic__load(skel)) {
+	if (traffic__load(session->skel)) {
 		pr_err("traffic: failed to load BPF programs\n");
 		goto out;
 	}
-	if (traffic_attach_probes(skel, bpf_args->pkt.l4_proto, links,
-				  &link_count))
+	if (traffic_attach_probes(session->skel, bpf_args->pkt.l4_proto,
+				  session->links, &session->link_count))
 		goto out;
 
-	traffic_exiting = 0;
-	signal(SIGTERM, traffic_signal_handler);
-	signal(SIGINT, traffic_signal_handler);
-	last_report_ns = traffic_monotonic_ns();
+	session->last_report_ns = traffic_monotonic_ns();
+	session->next_report_ns = session->last_report_ns +
+		(u64)args->traffic_interval * 1000000000ULL;
+	session->active = true;
 	pr_info("Tracing %s traffic every %u second(s)... Hit Ctrl-C to end.\n",
 		bpf_args->pkt.l4_proto ?
 		traffic_protocol_name(bpf_args->pkt.l4_proto) : "TCP/UDP",
 		args->traffic_interval);
 	pr_info("Traffic bytes are successful sendmsg/recvmsg application payload; "
 		"Wireshark wire bytes also include headers, control packets, and retransmits.\n");
+	if (args->capture_trace)
+		pr_info("Trace capture runs in the background while traffic remains on stdout.\n");
+	return 0;
 
+out:
+	traffic_release();
+	return -1;
+}
+
+bool traffic_poll(void)
+{
+	return traffic_tick(false);
+}
+
+void traffic_stop(bool final_report)
+{
+	if (!traffic_session.active)
+		return;
+	if (final_report)
+		traffic_tick(true);
+	traffic_release();
+}
+
+int traffic_run(trace_args_t *args, bpf_args_t *bpf_args)
+{
+	if (traffic_start(args, bpf_args))
+		return -1;
+
+	traffic_exiting = 0;
+	signal(SIGTERM, traffic_signal_handler);
+	signal(SIGINT, traffic_signal_handler);
 	while (!traffic_exiting) {
 		struct timespec delay = {
 			.tv_sec = args->traffic_interval,
@@ -353,32 +435,37 @@ int traffic_run(trace_args_t *args, bpf_args_t *bpf_args)
 		while (nanosleep(&delay, &delay) && errno == EINTR &&
 		       !traffic_exiting)
 			;
-		now_ns = traffic_monotonic_ns();
-		traffic_print_snapshot(skel, args, rows, last_report_ns, now_ns);
-		traffic_report_drops(skel, previous_drops);
-		last_report_ns = now_ns;
-		reports++;
-		if (traffic_exiting || (args->count && reports >= args->count))
+		if (traffic_exiting || traffic_tick(true))
 			break;
 	}
 
-	status = 0;
-out:
-	for (i = 0; i < link_count; i++)
-		bpf_link__destroy(links[i]);
-	traffic__destroy(skel);
-	free(rows);
-	return status;
+	traffic_stop(true);
+	return 0;
 }
 
 #else
 
-int traffic_run(trace_args_t *args, bpf_args_t *bpf_args)
+int traffic_start(trace_args_t *args, bpf_args_t *bpf_args)
 {
 	(void)args;
 	(void)bpf_args;
 	pr_err("--traffic requires a BTF build\n");
 	return -1;
+}
+
+bool traffic_poll(void)
+{
+	return false;
+}
+
+void traffic_stop(bool final_report)
+{
+	(void)final_report;
+}
+
+int traffic_run(trace_args_t *args, bpf_args_t *bpf_args)
+{
+	return traffic_start(args, bpf_args);
 }
 
 #endif

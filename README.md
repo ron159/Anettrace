@@ -19,7 +19,7 @@ Anettrace 是面向 Linux 与已 root Android 设备的 eBPF 网络诊断工具�
 - **Android 诊断字段**：可输出 TID、TGID、UID、CPU、网卡、IPv4 ID、skb mark、
   本地时间或原始单调时间戳。
 - **线程流量视图**：`--traffic` 按 PID/TID、协议和本地/远端端点累计 TCP/UDP
-  应用层收发字节。
+  应用层收发字节，并可在后台抓取 Perfetto trace 时持续显示。
 - **Perfetto 联合时间线**：记录 socket 创建/状态、TCP 双向与 UDP DNS/53 双向路径、应用
   `recvmsg` 耗时/字节数，并与 Perfetto 线程调度状态合并；不保存报文 payload。
 - **TCP 主动建连根因诊断**：按应用 UID 关联 `connect()`、Socket 状态、RST、重传、drop、
@@ -68,7 +68,7 @@ python3 -m venv /tmp/anettrace-connect-venv
 /tmp/anettrace-connect-venv/bin/pip install -r tools/requirements-perfetto.txt
 /tmp/anettrace-connect-venv/bin/python tools/diagnose_android_connect.py \
   --package com.example.app \
-  --binary /path/to/anettrace-0.5.0-android-arm64-dual \
+  --binary /path/to/anettrace-0.6.0-android-arm64-dual \
   --trace-processor /path/to/trace_processor_shell \
   --out output/connect-report
 ```
@@ -144,18 +144,21 @@ adb pull /data/local/tmp/browser-network.pftrace .
 默认精简模式只保留 socket、TCP 状态、应用 I/O、TCP 关键包和 DNS 收发点；
 `--trace-detail` 只改变网络事件粒度，不改变 `full`/`sched` 系统 profile。
 
-### 同时抓文件并在终端观察
+### 后台抓取 Trace 并显示实时流量
 
-`--capture-trace` 和 `--trace GROUP` 是独立模式，不能在同一个进程组合。需要同时使用时，以相同
-过滤条件启动两个进程：
+`--traffic` 可以与 `--capture-trace` 在同一进程运行。网络 trace 事件不会刷到终端，前台只按
+`--interval` 显示流量表；Ctrl+C 会先输出最后一个统计区间，再统一停止 Perfetto 并保存 trace：
 
 ```shell
-./anettrace --capture-trace --duration 15 --uid 10187 \
-  --output /data/local/tmp/browser-network.pftrace &
-./anettrace --trace tcp --uid 10187
+./anettrace --traffic --capture-trace --ring-buffer \
+  --duration 30 --interval 2 --proto tcp --uid 10187 \
+  --output /data/local/tmp/browser-network.pftrace
 ```
 
-结束终端进程不会隐式停止文件采集，反之亦然。
+非环形模式会在 `--duration` 到期后自动保存；组合模式下 `--count` 表示流量报告次数，达到次数后
+也会停止并保存 trace。`--traffic` 仍只支持协议、TID 和 UID 过滤。
+
+终端逐事件的 `--trace GROUP` 仍是独立诊断模式；如需它和文件抓取同时运行，应启动两个进程。
 
 ### 配合已有系统 Trace 工具
 
@@ -225,12 +228,12 @@ perf event / map 快照 -> 用户态聚合、规则匹配、格式化输出
    `src/analysis.c` 关联报文生命周期并执行规则，
    `src/output.c` 与 `src/traffic.c` 生成最终输出。
 
-`--traffic` 是独立统计通路：它在 TCP/UDP send/recv 的入口保存调用上下文，
+`--traffic` 使用专用统计通路：它在 TCP/UDP send/recv 的入口保存调用上下文，
 在返回点按真实返回值累计字节，因此 `APP_TX_KB/APP_RX_KB` 显示的是可归属到线程的应用
 payload，不包含协议头、SYN/ACK/FIN、重传、纯内核转发，以及尚未被应用读取的数据。收到
-Ctrl-C 时会先打印最后一个未满统计区间。联合采集不需要也不会启动这套独立 skeleton；
-`--capture-trace` 自身会在 `tcp/udp/udpv6 sendmsg/recvmsg` 返回点统计实际字节，并写入对应的
-五元组 flow。两个模式不能在同一个进程组合，但可以分别启动两个 Anettrace 进程独立使用。
+Ctrl-C 时会先打印最后一个未满统计区间。它既可独立运行，也可与 `--capture-trace` 共用用户态
+轮询和退出生命周期；专用 skeleton 保留全部 TCP/UDP 流量语义。`--capture-trace` 同时会在
+`tcp/udp/udpv6 sendmsg/recvmsg` 返回点把可关联的实际字节写入对应五元组 flow。
 
 ### Perfetto 数据模型
 
@@ -246,7 +249,8 @@ NAPI/softirq RX 不会被伪装到应用 reader 线程。
 同流连续收发包，便于在 Perfetto 中沿箭头跳转；`packet_id` Flow 则在详细模式下串起同一个包的
 内核阶段。完整 ID 仍保存在事件属性中，可用于精确检索。
 
-`--traffic`、`--capture-trace`、终端 `--trace GROUP` 和 JSONL `--perfetto-events` 是独立入口。
+`--traffic` 可以与 `--capture-trace` 组合；终端 `--trace GROUP` 和 JSONL `--perfetto-events`
+仍是独立入口。
 直采需要设备提供 `/system/bin/perfetto`；JSONL 可与第三方系统 trace 离线合并，但本身不包含
 Running/Runnable/Sleeping 等系统调度状态。
 
@@ -321,7 +325,7 @@ make BPFTOOL=/absolute/path/to/bpftool \
 默认归档为：
 
 ```text
-output/anettrace-0.5.0-android-arm64-dual.tar.bz2
+output/anettrace-0.6.0-android-arm64-dual.tar.bz2
 ```
 
 CI 中的完整依赖安装、静态链接检查和校验和步骤见

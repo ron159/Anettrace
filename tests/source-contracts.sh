@@ -47,8 +47,11 @@ require_text 'bpf_program__attach_kprobe' src/trace_probe.c
 require_text 'progs/kprobe' src/Makefile
 require_text '.lname = "traffic"' src/anettrace.c
 require_text '.lname = "interval"' src/anettrace.c
-require_text '--traffic is standalone; run traffic and trace capture separately' \
+require_text '--traffic cannot be combined with --perfetto-events' src/anettrace.c
+require_text 'trace_ctx.args.traffic && !trace_ctx.args.capture_trace' \
 	src/anettrace.c
+require_text 'traffic_start(&trace_ctx.args, &trace_ctx.bpf_args)' src/anettrace.c
+require_text 'traffic_stop(true)' src/anettrace.c
 require_text 'progs/traffic' src/Makefile
 require_text 'SEC("kprobe/tcp_sendmsg")' src/progs/traffic.c
 require_text 'SEC("kretprobe/tcp_recvmsg")' src/progs/traffic.c
@@ -59,8 +62,10 @@ require_text '(s32)PT_REGS_RC(ctx)' src/progs/traffic.c
 require_text 'APP_TX_KB' src/traffic.c
 require_text 'APP_RX_KB' src/traffic.c
 require_text 'cumulative application payload per flow' src/traffic.c
-require_text 'traffic_exiting || (args->count && reports >= args->count)' \
-	src/traffic.c
+require_text 'session->reports >= session->args->count' src/traffic.c
+require_text 'bool traffic_poll(void)' src/traffic.c
+require_text 'trace_ctx.args.traffic && traffic_poll()' src/trace.c
+require_text 'args->traffic ? 0 : args->count' src/trace.c
 require_text 'LADDR:PORT' src/traffic.c
 require_text 'traffic_print_snapshot' src/traffic.c
 require_text '.lname = "perfetto-events"' src/anettrace.c

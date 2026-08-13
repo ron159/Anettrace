@@ -1,6 +1,6 @@
 # Android TCP connect diagnostics
 
-Anettrace `v0.5.0` adds a capability-gated diagnostic path for outbound TCP
+Anettrace `v0.5.0` and later provide a capability-gated diagnostic path for outbound TCP
 connection attempts on rooted Android devices. The host-side entry point is:
 
 ```sh
@@ -65,8 +65,8 @@ verified device cleanup:
 ```sh
 /tmp/anettrace-connect-venv/bin/python tools/soak_android_connect.py \
   --package com.example.app \
-  --binary /path/to/anettrace-0.5.0-android-arm64-dual \
-  --workload /path/to/anettrace-0.5.0-connect-workload-android-arm64 \
+  --binary /path/to/anettrace-0.6.0-android-arm64-dual \
+  --workload /path/to/anettrace-0.6.0-connect-workload-android-arm64 \
   --trace-processor /path/to/trace_processor_shell \
   --out /path/to/soak
 ```

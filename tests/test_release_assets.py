@@ -132,8 +132,10 @@ class ReleaseAssetTest(unittest.TestCase):
         notes = (ROOT / "docs" / "releases" / f"v{version}.md").read_text(
             encoding="utf-8"
         )
-        for text in ("TCP 主动建连", "Android 15+", "PKC130", "隐私", "已知限制"):
+        for text in (f"# Anettrace v{version}", "## 主要变化", "## 快速使用"):
             self.assertIn(text, notes)
+        chinese_characters = sum("\u4e00" <= char <= "\u9fff" for char in notes)
+        self.assertGreaterEqual(chinese_characters, 100)
 
 
 if __name__ == "__main__":

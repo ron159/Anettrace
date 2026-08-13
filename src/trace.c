@@ -13,6 +13,7 @@
 #include "dropreason.h"
 #include "rstreason.h"
 #include "perfetto_export.h"
+#include "traffic.h"
 
 const char *cond_pre = "verlte() { [ \"$1\" = \"$2\" ] && echo 0 && return; "
 		       "[ \"$1\" = \"$(/bin/echo -e \"$1\\n$2\" | sort -V | head -n1)\" ] "
@@ -768,7 +769,8 @@ static int trace_prepare_args()
 
 	bpf_args->trace_mode = 1 << trace_ctx.mode;
 	trace_ctx.detail = bpf_args->detail;
-	bpf_args->max_event = args->count;
+	/* In a combined traffic capture, --count limits traffic reports. */
+	bpf_args->max_event = args->traffic ? 0 : args->count;
 	trace_ctx.skip_last = !bpf_args->latency_free;
 
 	if (args->pkt_len) {
@@ -1212,8 +1214,10 @@ static int poll_timeout(int err)
 			return 1;
 		}
 	}
+	if (trace_ctx.args.traffic && traffic_poll())
+		return 1;
 
-	if (err == 0 && trace_ctx.args.count) {
+	if (err == 0 && trace_ctx.args.count && !trace_ctx.args.traffic) {
 		if (trace_ctx.args.count <= get_bpf_args()->event_count) {
 			usleep(200000);
 			return 1;

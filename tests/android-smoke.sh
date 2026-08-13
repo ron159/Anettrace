@@ -66,12 +66,6 @@ fi
 grep -q -- '--ring-buffer requires --capture-trace' \
 	"$OUT/ring-buffer-invalid.txt" || fail "missing --ring-buffer scope error"
 
-if "$BIN" --traffic --capture-trace > "$OUT/traffic-trace-conflict.txt" 2>&1; then
-	fail "standalone --traffic unexpectedly combined with trace capture"
-fi
-grep -q -- '--traffic is standalone' "$OUT/traffic-trace-conflict.txt" ||
-	fail "missing standalone traffic error"
-
 if "$BIN" --capture-trace --trace tcp > "$OUT/capture-trace-conflict.txt" 2>&1; then
 	fail "standalone --capture-trace unexpectedly combined with --trace"
 fi
@@ -187,5 +181,47 @@ grep -q 'Traffic TCP ' "$OUT/traffic-tcp.txt" ||
 	fail "TCP protocol filter heading missing"
 grep -q ' TCP ' "$OUT/traffic-tcp.txt" ||
 	fail "TCP protocol filter produced no flow rows"
+
+run_combined_traffic_capture() {
+	log="$OUT/traffic-capture.txt"
+	trace_file="$OUT/traffic-capture-$$.pftrace"
+	port=$((47000 + $$ % 1000))
+
+	"$BIN" --traffic --capture-trace --duration 8 --trace-profile sched \
+		--interval 1 --uid 0 --proto tcp --output "$trace_file" \
+		> "$log" 2>&1 &
+	TRACE_PID=$!
+	(
+		sleep 25
+		kill "$TRACE_PID" 2>/dev/null || true
+	) &
+	WATCHDOG_PID=$!
+	sleep 3
+	nc -l -s "$PING_TARGET" -p "$port" >/dev/null 2>&1 &
+	SERVER_PID=$!
+	sleep 1
+	if ! dd if=/dev/zero bs=1024 count=8 2>/dev/null |
+		nc -w 3 "$PING_TARGET" "$port" >/dev/null 2>&1; then
+		fail "unable to generate combined-capture TCP traffic"
+	fi
+	wait "$SERVER_PID" 2>/dev/null || true
+	SERVER_PID=""
+	if ! wait "$TRACE_PID"; then
+		TRACE_PID=""
+		kill "$WATCHDOG_PID" 2>/dev/null || true
+		WATCHDOG_PID=""
+		fail "combined traffic capture failed or timed out; inspect $log"
+	fi
+	TRACE_PID=""
+	kill "$WATCHDOG_PID" 2>/dev/null || true
+	wait "$WATCHDOG_PID" 2>/dev/null || true
+	WATCHDOG_PID=""
+	[ -s "$trace_file" ] || fail "combined capture trace file missing"
+	grep -q 'Traffic TCP ' "$log" || fail "combined traffic heading missing"
+	grep -q ' TCP ' "$log" || fail "combined traffic row missing"
+	grep -q 'begin trace' "$log" || fail "combined trace did not start"
+}
+
+run_combined_traffic_capture
 
 echo "Android KPROBE smoke test: PASS ($OUT)"
