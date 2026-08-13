@@ -313,7 +313,13 @@ def wrap_device_shell(script: str, root_command: str | None) -> str:
     return f"{root_command} {shlex.quote(script)}"
 
 
-def start_remote(adb: Adb, name: str, command: str, remote_dir: str) -> RemoteProcess:
+def start_remote(
+    adb: Adb,
+    name: str,
+    command: str,
+    remote_dir: str,
+    identity: str,
+) -> RemoteProcess:
     log_path = f"{remote_dir}/{name}.log"
     script = f"{command} >{shlex.quote(log_path)} 2>&1 & echo $!"
     output = adb.shell(script).stdout.strip().replace("\r", "")
@@ -323,7 +329,7 @@ def start_remote(adb: Adb, name: str, command: str, remote_dir: str) -> RemotePr
         name=name,
         pid=int(output),
         log_path=log_path,
-        identity=remote_dir,
+        identity=identity,
     )
 
 
@@ -859,6 +865,8 @@ def capture(args: argparse.Namespace) -> Path:
             remote_binary,
             "--perfetto-events",
             remote_events,
+            "--duration",
+            str(args.duration),
             *trace_mode_args,
             *diagnostic_args,
             *filter_args,
@@ -874,7 +882,13 @@ def capture(args: argparse.Namespace) -> Path:
                 f"{args.duration + 5} {anettrace_command}"
             )
         commands["anettrace"] = anettrace_parts
-        anettrace_process = start_remote(adb, "anettrace", anettrace_command, remote_dir)
+        anettrace_process = start_remote(
+            adb,
+            "anettrace",
+            anettrace_command,
+            remote_dir,
+            remote_binary,
+        )
         remote_processes.append(anettrace_process)
         if args.resource_sample_interval:
             clock_ticks = device_value(adb, "getconf CLK_TCK")
@@ -901,7 +915,13 @@ def capture(args: argparse.Namespace) -> Path:
                 "-o",
                 remote_system_trace,
             ]
-            perfetto_process = start_remote(adb, "perfetto", perfetto_command, remote_dir)
+            perfetto_process = start_remote(
+                adb,
+                "perfetto",
+                perfetto_command,
+                remote_dir,
+                remote_system_trace,
+            )
             remote_processes.append(perfetto_process)
             companion_processes.append(perfetto_process)
 
@@ -932,6 +952,7 @@ def capture(args: argparse.Namespace) -> Path:
                 "simpleperf",
                 " ".join(shlex.quote(part) for part in simpleperf_parts),
                 remote_dir,
+                remote_perf_data,
             )
             remote_processes.append(simpleperf_process)
             companion_processes.append(simpleperf_process)
@@ -946,8 +967,6 @@ def capture(args: argparse.Namespace) -> Path:
             if stop_requested.wait(timeout=min(0.25, max(0.0, deadline - time.monotonic()))):
                 interrupted = True
                 break
-            if anettrace_process and not remote_alive(adb, anettrace_process):
-                raise CaptureError("Anettrace exited before capture completed")
             for process in companion_processes:
                 if not remote_alive(adb, process) and deadline - time.monotonic() > 0.5:
                     raise CaptureError(f"{process.name} exited before capture completed")
@@ -981,6 +1000,12 @@ def capture(args: argparse.Namespace) -> Path:
                 f"external command failed with status {external_process.returncode}"
             )
 
+        if (
+            anettrace_process
+            and args.max_device_file_mib
+            and remote_alive(adb, anettrace_process)
+        ):
+            wait_remote(adb, anettrace_process, 2.0)
         if anettrace_process and remote_alive(adb, anettrace_process):
             signal_remote(adb, anettrace_process, "INT")
             if not wait_remote(adb, anettrace_process, 5.0):

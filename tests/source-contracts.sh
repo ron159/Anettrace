@@ -148,6 +148,8 @@ require_text '.lname = "trace-detail"' src/anettrace.c
 require_text '.lname = "connect-diagnostics"' src/anettrace.c
 require_text '--trace-detail requires --capture-trace or --perfetto-events' \
 	src/anettrace.c
+require_text '--duration requires --capture-trace or --perfetto-events' \
+	src/anettrace.c
 require_text '.lname = "trace-profile"' src/anettrace.c
 require_text 'trace_args->trace_profile = "full"' src/anettrace.c
 require_text '.lname = "duration"' src/anettrace.c

@@ -201,6 +201,24 @@ class FailureManifestTest(unittest.TestCase):
 
 
 class SuccessfulCaptureTest(unittest.TestCase):
+    def test_start_remote_tracks_explicit_command_identity(self) -> None:
+        adb = mock.Mock()
+        adb.shell.return_value = MODULE.subprocess.CompletedProcess(
+            [], 0, "321\n", ""
+        )
+        process = MODULE.start_remote(
+            adb,
+            "perfetto",
+            "perfetto --txt -c config -o /data/misc/perfetto-traces/session.pftrace",
+            "/data/local/tmp/session",
+            "/data/misc/perfetto-traces/session.pftrace",
+        )
+        self.assertEqual(process.pid, 321)
+        self.assertEqual(
+            process.identity,
+            "/data/misc/perfetto-traces/session.pftrace",
+        )
+
     def test_remote_signal_requires_matching_session_identity(self) -> None:
         process = MODULE.RemoteProcess(
             name="anettrace",
@@ -213,6 +231,7 @@ class SuccessfulCaptureTest(unittest.TestCase):
         MODULE.signal_remote(adb, process, "TERM")
         self.assertEqual(adb.shell.call_count, 1)
         self.assertIn("/proc/200/cmdline", adb.shell.call_args.args[0])
+        self.assertIn(process.identity, adb.shell.call_args.args[0])
 
     def test_remote_stop_escalates_only_while_identity_matches(self) -> None:
         process = MODULE.RemoteProcess(
@@ -330,6 +349,10 @@ class SuccessfulCaptureTest(unittest.TestCase):
             self.assertEqual(manifest["device"]["boot_id"], "boot-123")
             self.assertEqual(manifest["anettrace"]["lost_events"], 0)
             self.assertIn("--trace-detail", manifest["commands"]["anettrace"])
+            duration_index = manifest["commands"]["anettrace"].index("--duration")
+            self.assertEqual(
+                manifest["commands"]["anettrace"][duration_index + 1], "1"
+            )
             self.assertTrue(manifest["cleanup"]["verified"])
             self.assertTrue(manifest["cleanup"]["processes_verified"])
             self.assertEqual(manifest["cleanup"]["remaining_processes"], [])

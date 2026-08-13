@@ -271,7 +271,7 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "duration", .dest = &trace_args->duration,
 			.type = OPTION_U32,
-			.desc = "capture duration in seconds (default 10 with --capture-trace)",
+			.desc = "capture or Perfetto event duration in seconds",
 		},
 		{
 			.lname = "output", .dest = &trace_args->output,
@@ -459,8 +459,9 @@ static void do_parse_args(int argc, char *argv[])
 		pr_err("--output requires --capture-trace\n");
 		goto err;
 	}
-	if (trace_args->duration && !trace_args->capture_trace) {
-		pr_err("--duration requires --capture-trace\n");
+	if (trace_args->duration && !trace_args->capture_trace &&
+	    !trace_args->perfetto_events) {
+		pr_err("--duration requires --capture-trace or --perfetto-events\n");
 		goto err;
 	}
 	if (trace_args->trace_profile && !trace_args->capture_trace) {
