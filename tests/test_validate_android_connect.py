@@ -37,6 +37,7 @@ class AndroidAcceptanceContractTest(unittest.TestCase):
         )
         self.assertEqual(args.repeat, 3)
         self.assertEqual(args.duration, 20)
+        self.assertEqual(args.timeout_address, "2001:db8::1")
         self.assertEqual(
             MODULE.SCENARIOS,
             {

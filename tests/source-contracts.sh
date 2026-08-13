@@ -244,6 +244,9 @@ require_text '--recover-session' tools/diagnose_android_connect.py
 require_text '--external-command' tools/diagnose_android_connect.py
 require_text 'TCP_USER_TIMEOUT' tests/android/connect_workload.c
 require_text 'timeout_no_response' tools/validate_android_connect.py
+require_text 'default="2001:db8::1"' tools/validate_android_connect.py
+require_text 'timeout_address = "2001:db8::1"' \
+	tests/android/connect_workload.c
 require_text 'release soak duration must be at least 1800 seconds' \
 	tools/soak_android_connect.py
 require_text 'stop_remote_workload' tools/validate_android_connect.py

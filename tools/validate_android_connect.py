@@ -297,7 +297,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--duration", type=int, default=20)
     parser.add_argument("--max-report-mib", type=int, default=512)
     parser.add_argument("--profile", choices=("sched", "full"), default="sched")
-    parser.add_argument("--timeout-address", default="192.0.2.1")
+    parser.add_argument("--timeout-address", default="2001:db8::1")
     parser.add_argument("--include-package", action="store_true")
     args = parser.parse_args(argv)
     if args.repeat <= 0 or args.duration <= 0 or args.max_report_mib <= 0:

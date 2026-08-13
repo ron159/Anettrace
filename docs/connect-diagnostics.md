@@ -51,9 +51,11 @@ python3 -m venv /tmp/anettrace-connect-venv
   --out /path/to/acceptance
 ```
 
-`success` and `refused` use loopback and are deterministic. `timeout` uses a
-numeric non-responsive address with bounded TCP retry settings; the gate fails
-instead of rewriting another observed errno as a timeout.
+`success` and `refused` use loopback and are deterministic. `timeout` defaults
+to the numeric IPv6 documentation address `2001:db8::1` with bounded TCP retry
+settings. Maintainers may select another numeric address with
+`--timeout-address` when the target network routes that prefix differently; the
+gate fails instead of rewriting another observed errno as a timeout.
 
 The release soak uses the same workload for a controlled 30-minute success
 stream. It compares a short pre-capture baseline with traced throughput and

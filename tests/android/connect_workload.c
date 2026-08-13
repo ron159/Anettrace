@@ -196,7 +196,7 @@ static int run_expected_error(uid_t uid, const char *scenario,
 int main(int argc, char **argv)
 {
 	const char *scenario = NULL;
-	const char *timeout_address = "192.0.2.1";
+	const char *timeout_address = "2001:db8::1";
 	uid_t uid = 0;
 	int repeat = 1, run_seconds = 0, interval_ms = 0;
 	int progress_every = 0, hold_seconds = 0, completed = 0, i;
