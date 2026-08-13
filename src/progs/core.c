@@ -70,12 +70,6 @@ typedef struct {
 } perfetto_flow_owner_t;
 
 typedef struct {
-	perfetto_owner_t owner;
-	perfetto_flow_key_t flow_key;
-	perfetto_flow_owner_t flow_value;
-} perfetto_scratch_t;
-
-typedef struct {
 	u64 attempt_key;
 	u64 start_ts;
 	u64 socket_key;
@@ -98,6 +92,16 @@ typedef struct {
 	connect_pending_t pending;
 	u64 optval;
 } connect_getsockopt_t;
+
+typedef struct {
+	perfetto_owner_t owner;
+	perfetto_flow_key_t flow_key;
+	perfetto_flow_owner_t flow_value;
+	connect_pending_t connect_pending;
+	connect_getsockopt_t connect_getsockopt;
+	connect_event_t connect_event;
+	detail_socket_create_event_t socket_create_event;
+} perfetto_scratch_t;
 
 struct {
 #ifdef BPF_MAP_TYPE_LRU_HASH
@@ -1366,13 +1370,15 @@ int TRACE_NAME(connect_sys_enter)(struct trace_event_raw_sys_enter *ctx)
 	u32 uid = (u32)bpf_get_current_uid_gid();
 	long syscall_id = _(ctx->id);
 	s32 fd = (s32)_(ctx->args[0]);
+	u32 scratch_key = 0;
 	connect_fd_key_t fd_key = { .tgid = tgid, .fd = fd };
 
 	if (!connect_current_matches(args, tid, uid))
 		return 0;
 	if (syscall_id == args->getsockopt_syscall_nr) {
+		perfetto_scratch_t *scratch;
 		connect_pending_t *pending;
-		connect_getsockopt_t get = {};
+		connect_getsockopt_t *get;
 		int level = (int)_(ctx->args[1]);
 		int optname = (int)_(ctx->args[2]);
 
@@ -1381,31 +1387,44 @@ int TRACE_NAME(connect_sys_enter)(struct trace_event_raw_sys_enter *ctx)
 		pending = bpf_map_lookup_elem(&m_connect_fd, &fd_key);
 		if (!pending)
 			return 0;
-		get.pending = *pending;
-		get.optval = _(ctx->args[3]);
-		bpf_map_update_elem(&m_connect_getsockopt, &pid_tgid, &get,
+		scratch = bpf_map_lookup_elem(&m_perfetto_scratch, &scratch_key);
+		if (!scratch)
+			return 0;
+		get = &scratch->connect_getsockopt;
+		__builtin_memset(get, 0, sizeof(*get));
+		get->pending = *pending;
+		get->optval = _(ctx->args[3]);
+		bpf_map_update_elem(&m_connect_getsockopt, &pid_tgid, get,
 				    BPF_ANY);
 		return 0;
 	}
 	if (syscall_id == args->connect_syscall_nr) {
-		connect_pending_t pending = {};
-		connect_event_t event = {};
+		perfetto_scratch_t *scratch;
+		connect_pending_t *pending;
+		connect_event_t *event;
 		const void *address = (void *)_(ctx->args[1]);
 
-		pending.start_ts = bpf_ktime_get_ns();
-		pending.attempt_key = pending.start_ts ^
-			(pid_tgid * 0x9e3779b97f4a7c15ULL);
-		pending.fd = fd;
-		pending.tid = tid;
-		pending.tgid = tgid;
-		pending.uid = uid;
-		if (!connect_read_endpoint(&pending, address))
+		scratch = bpf_map_lookup_elem(&m_perfetto_scratch, &scratch_key);
+		if (!scratch)
 			return 0;
-		bpf_map_update_elem(&m_connect_pending, &pid_tgid, &pending,
+		pending = &scratch->connect_pending;
+		event = &scratch->connect_event;
+		__builtin_memset(pending, 0, sizeof(*pending));
+		__builtin_memset(event, 0, sizeof(*event));
+		pending->start_ts = bpf_ktime_get_ns();
+		pending->attempt_key = pending->start_ts ^
+			(pid_tgid * 0x9e3779b97f4a7c15ULL);
+		pending->fd = fd;
+		pending->tid = tid;
+		pending->tgid = tgid;
+		pending->uid = uid;
+		if (!connect_read_endpoint(pending, address))
+			return 0;
+		bpf_map_update_elem(&m_connect_pending, &pid_tgid, pending,
 				    BPF_ANY);
-		bpf_map_update_elem(&m_connect_fd, &fd_key, &pending, BPF_ANY);
-		connect_event_init(&event, &pending, CONNECT_EVENT_START);
-		EVENT_OUTPUT(ctx, event);
+		bpf_map_update_elem(&m_connect_fd, &fd_key, pending, BPF_ANY);
+		connect_event_init(event, pending, CONNECT_EVENT_START);
+		EVENT_OUTPUT_PTR(ctx, event, sizeof(*event));
 		args->event_count++;
 	}
 	return 0;
@@ -1418,24 +1437,33 @@ int TRACE_NAME(connect_sys_exit)(struct trace_event_raw_sys_exit *ctx)
 	u64 pid_tgid = bpf_get_current_pid_tgid();
 	long syscall_id = _(ctx->id);
 	s64 result = _(ctx->ret);
+	u32 scratch_key = 0;
 
 	if (!args->ready || !args->perfetto || !args->connect_diagnostics)
 		return 0;
 	if (syscall_id == args->getsockopt_syscall_nr) {
+		perfetto_scratch_t *scratch;
 		connect_getsockopt_t *get;
-		connect_event_t event = {};
+		connect_event_t *event;
 		int so_error = 0;
 
 		get = bpf_map_lookup_elem(&m_connect_getsockopt, &pid_tgid);
 		if (!get)
 			return 0;
+		scratch = bpf_map_lookup_elem(&m_perfetto_scratch, &scratch_key);
+		if (!scratch) {
+			bpf_map_delete_elem(&m_connect_getsockopt, &pid_tgid);
+			return 0;
+		}
+		event = &scratch->connect_event;
+		__builtin_memset(event, 0, sizeof(*event));
 		if (!result && get->optval &&
 		    !bpf_probe_read_user(&so_error, sizeof(so_error),
 					 (const void *)get->optval)) {
-			connect_event_init(&event, &get->pending,
+			connect_event_init(event, &get->pending,
 					   CONNECT_EVENT_SO_ERROR);
-			event.result = so_error;
-			EVENT_OUTPUT(ctx, event);
+			event->result = so_error;
+			EVENT_OUTPUT_PTR(ctx, event, sizeof(*event));
 			args->event_count++;
 			if (so_error != 115 && so_error != 114)
 				connect_forget(&get->pending);
@@ -1444,19 +1472,28 @@ int TRACE_NAME(connect_sys_exit)(struct trace_event_raw_sys_exit *ctx)
 		return 0;
 	}
 	if (syscall_id == args->connect_syscall_nr) {
+		perfetto_scratch_t *scratch;
 		connect_pending_t *pending;
-		connect_event_t event = {};
+		connect_event_t *event;
 		bool async_pending;
 
 		pending = bpf_map_lookup_elem(&m_connect_pending, &pid_tgid);
 		if (!pending)
 			return 0;
-		connect_event_init(&event, pending, CONNECT_EVENT_RESULT);
-		event.result = result;
+		scratch = bpf_map_lookup_elem(&m_perfetto_scratch, &scratch_key);
+		if (!scratch) {
+			connect_forget(pending);
+			bpf_map_delete_elem(&m_connect_pending, &pid_tgid);
+			return 0;
+		}
+		event = &scratch->connect_event;
+		__builtin_memset(event, 0, sizeof(*event));
+		connect_event_init(event, pending, CONNECT_EVENT_RESULT);
+		event->result = result;
 		async_pending = result == -115 || result == -114;
 		if (async_pending)
-			event.flags |= CONNECT_EVENT_ASYNC_PENDING;
-		EVENT_OUTPUT(ctx, event);
+			event->flags |= CONNECT_EVENT_ASYNC_PENDING;
+		EVENT_OUTPUT_PTR(ctx, event, sizeof(*event));
 		args->event_count++;
 		if (!async_pending)
 			connect_forget(pending);
@@ -1489,7 +1526,6 @@ int TRACE_NAME(tcp_close)(struct pt_regs *ctx)
 	struct sock *sk = ctx_get_arg(ctx, 0);
 	u64 socket_key = (u64)(void *)sk;
 	connect_pending_t *pending;
-	connect_event_t event = {};
 	u8 state = sk ? _C(sk, __sk_common.skc_state) : TCP_CLOSE;
 	context_info_t info = {
 		.func = INDEX_tcp_close,
@@ -1503,10 +1539,20 @@ int TRACE_NAME(tcp_close)(struct pt_regs *ctx)
 		if (pending) {
 			if (state == TCP_SYN_SENT || state == TCP_SYN_RECV ||
 			    state == TCP_CLOSE) {
-				connect_event_init(&event, pending,
-						   CONNECT_EVENT_CANCEL);
-				EVENT_OUTPUT(ctx, event);
-				args->event_count++;
+				u32 scratch_key = 0;
+				perfetto_scratch_t *scratch;
+				connect_event_t *event;
+
+				scratch = bpf_map_lookup_elem(&m_perfetto_scratch,
+							      &scratch_key);
+				if (scratch) {
+					event = &scratch->connect_event;
+					__builtin_memset(event, 0, sizeof(*event));
+					connect_event_init(event, pending,
+							   CONNECT_EVENT_CANCEL);
+					EVENT_OUTPUT_PTR(ctx, event, sizeof(*event));
+					args->event_count++;
+				}
 			}
 			connect_forget(pending);
 		}
@@ -1522,13 +1568,15 @@ int TRACE_NAME(inet_stream_connect)(struct pt_regs *ctx)
 {
 	bpf_args_t *args = (void *)CONFIG();
 	u64 pid_tgid = bpf_get_current_pid_tgid();
+	perfetto_scratch_t *scratch;
 	connect_pending_t *pending;
-	connect_pending_t updated;
-	connect_event_t event = {};
+	connect_pending_t *updated;
+	connect_event_t *event;
 	connect_fd_key_t fd_key;
-	perfetto_owner_t owner = {};
+	perfetto_owner_t *owner;
 	struct socket *socket;
 	struct sock *sk;
+	u32 scratch_key = 0;
 
 	if (!args->ready || !args->perfetto || !args->connect_diagnostics)
 		return 0;
@@ -1539,24 +1587,32 @@ int TRACE_NAME(inet_stream_connect)(struct pt_regs *ctx)
 	sk = socket ? _C(socket, sk) : NULL;
 	if (!sk)
 		return 0;
-	updated = *pending;
-	updated.socket_key = (u64)(void *)sk;
-	updated.socket_generation = perfetto_socket_generation(sk, false);
-	fd_key.tgid = updated.tgid;
-	fd_key.fd = updated.fd;
-	bpf_map_update_elem(&m_connect_pending, &pid_tgid, &updated, BPF_ANY);
-	bpf_map_update_elem(&m_connect_fd, &fd_key, &updated, BPF_ANY);
-	bpf_map_update_elem(&m_connect_socket, &updated.socket_key, &updated,
+	scratch = bpf_map_lookup_elem(&m_perfetto_scratch, &scratch_key);
+	if (!scratch)
+		return 0;
+	updated = &scratch->connect_pending;
+	event = &scratch->connect_event;
+	owner = &scratch->owner;
+	__builtin_memset(event, 0, sizeof(*event));
+	__builtin_memset(owner, 0, sizeof(*owner));
+	*updated = *pending;
+	updated->socket_key = (u64)(void *)sk;
+	updated->socket_generation = perfetto_socket_generation(sk, false);
+	fd_key.tgid = updated->tgid;
+	fd_key.fd = updated->fd;
+	bpf_map_update_elem(&m_connect_pending, &pid_tgid, updated, BPF_ANY);
+	bpf_map_update_elem(&m_connect_fd, &fd_key, updated, BPF_ANY);
+	bpf_map_update_elem(&m_connect_socket, &updated->socket_key, updated,
 			    BPF_ANY);
-	owner.socket_key = updated.socket_key;
-	owner.socket_generation = updated.socket_generation;
-	owner.tid = updated.tid;
-	owner.tgid = updated.tgid;
-	owner.uid = updated.uid;
-	perfetto_store_socket_owner(sk, &owner);
-	connect_event_init(&event, &updated, CONNECT_EVENT_SOCKET);
-	probe_parse_sk(sk, &event.ske, &args->pkt);
-	EVENT_OUTPUT(ctx, event);
+	owner->socket_key = updated->socket_key;
+	owner->socket_generation = updated->socket_generation;
+	owner->tid = updated->tid;
+	owner->tgid = updated->tgid;
+	owner->uid = updated->uid;
+	perfetto_store_socket_owner(sk, owner);
+	connect_event_init(event, updated, CONNECT_EVENT_SOCKET);
+	probe_parse_sk(sk, &event->ske, &args->pkt);
+	EVENT_OUTPUT_PTR(ctx, event, sizeof(*event));
 	args->event_count++;
 	return 0;
 }
@@ -1594,11 +1650,13 @@ SEC("kretprobe/sk_alloc")
 int TRACE_RET_NAME(sk_alloc)(struct pt_regs *ctx)
 {
 	bpf_args_t *args = (void *)CONFIG();
-	detail_socket_create_event_t event = {};
-	perfetto_owner_t owner = {};
+	perfetto_scratch_t *scratch;
+	detail_socket_create_event_t *event;
+	perfetto_owner_t *owner;
 	u64 pid_tgid = bpf_get_current_pid_tgid();
 	u64 *start_ts;
 	struct sock *sk;
+	u32 scratch_key = 0;
 
 	if (!args->ready || !args->perfetto)
 		return 0;
@@ -1608,30 +1666,37 @@ int TRACE_RET_NAME(sk_alloc)(struct pt_regs *ctx)
 	sk = (void *)PT_REGS_RC(ctx);
 	if (!sk)
 		goto out;
+	scratch = bpf_map_lookup_elem(&m_perfetto_scratch, &scratch_key);
+	if (!scratch)
+		goto out;
+	event = &scratch->socket_create_event;
+	owner = &scratch->owner;
+	__builtin_memset(event, 0, sizeof(*event));
+	__builtin_memset(owner, 0, sizeof(*owner));
 
-	event.event.func = INDEX_sk_alloc;
-	event.event.meta = FUNC_TYPE_FUNC;
-	event.event.key = (u64)(void *)sk;
-	event.event.key_generation = perfetto_socket_generation(sk, true);
-	event.event.ske.ts = bpf_ktime_get_ns();
-	event.event.tid = (u32)pid_tgid;
-	event.event.tgid = (u32)(pid_tgid >> 32);
-	event.event.uid = (u32)bpf_get_current_uid_gid();
-	owner.tid = event.event.tid;
-	owner.tgid = event.event.tgid;
-	owner.uid = event.event.uid;
-	owner.socket_key = (u64)(void *)sk;
-	owner.socket_generation = event.event.key_generation;
-	perfetto_store_socket_owner(sk, &owner);
-	event.event.owner_tid = owner.tid;
-	event.event.owner_tgid = owner.tgid;
-	event.event.owner_uid = owner.uid;
-	event.event.owner_socket_key = owner.socket_key;
-	event.event.owner_socket_generation = owner.socket_generation;
-	event.event.owner_valid = 1;
-	bpf_get_current_comm(event.event.task, sizeof(event.event.task));
-	event.start_ts = *start_ts;
-	EVENT_OUTPUT(ctx, event);
+	event->event.func = INDEX_sk_alloc;
+	event->event.meta = FUNC_TYPE_FUNC;
+	event->event.key = (u64)(void *)sk;
+	event->event.key_generation = perfetto_socket_generation(sk, true);
+	event->event.ske.ts = bpf_ktime_get_ns();
+	event->event.tid = (u32)pid_tgid;
+	event->event.tgid = (u32)(pid_tgid >> 32);
+	event->event.uid = (u32)bpf_get_current_uid_gid();
+	owner->tid = event->event.tid;
+	owner->tgid = event->event.tgid;
+	owner->uid = event->event.uid;
+	owner->socket_key = (u64)(void *)sk;
+	owner->socket_generation = event->event.key_generation;
+	perfetto_store_socket_owner(sk, owner);
+	event->event.owner_tid = owner->tid;
+	event->event.owner_tgid = owner->tgid;
+	event->event.owner_uid = owner->uid;
+	event->event.owner_socket_key = owner->socket_key;
+	event->event.owner_socket_generation = owner->socket_generation;
+	event->event.owner_valid = 1;
+	bpf_get_current_comm(event->event.task, sizeof(event->event.task));
+	event->start_ts = *start_ts;
+	EVENT_OUTPUT_PTR(ctx, event, sizeof(*event));
 	args->event_count++;
 out:
 	bpf_map_delete_elem(&m_socket_create_start, &pid_tgid);

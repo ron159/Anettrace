@@ -74,6 +74,8 @@ require_text 'm_perfetto_socket_owner' src/progs/core.c
 require_text 'm_perfetto_socket_generation_counter' src/progs/core.c
 require_text 'm_perfetto_flow_owner' src/progs/core.c
 require_text 'm_perfetto_scratch' src/progs/core.c
+require_text 'connect_event_t connect_event' src/progs/core.c
+require_text 'detail_socket_create_event_t socket_create_event' src/progs/core.c
 require_text 'm_drop_scratch' src/progs/core.c
 require_text 'bpf_map_lookup_elem(&m_drop_scratch' src/progs/core.c
 require_text 'Anettrace exited before capture completed' \
