@@ -34,6 +34,9 @@ require_text $'\t\t} ipv4;\n#ifndef NT_DISABLE_IPV6\n\t\tstruct {' \
 require_text $'\t\t} ipv4;\n#if 0\n\t\tstruct {' src/progs/skb_shared.h
 require_text 'pkt->mark = _C(skb, mark);' src/progs/skb_parse.h
 require_text 'pkt->l3.ipv4.id = bpf_ntohs(_C(ipv4, id));' src/progs/skb_parse.h
+require_text '_LC(&e->table, table, name);' src/progs/core.c
+require_text '#define _L(dst, src) bpf_probe_read_kernel(dst, sizeof(*dst), src)' \
+	src/progs/skb_parse.h
 require_text '--date and --timestamp cannot be used together' src/anettrace.c
 require_text 'OPTION_GROUP' utils/arg_parse.h
 require_text 'Packet and owner filters' src/anettrace.c
