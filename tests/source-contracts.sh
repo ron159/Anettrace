@@ -44,6 +44,8 @@ require_text 'if (sym_init_data())' utils/parse_sym.c
 require_text 'else if (bpf_core_field_exists(icsk->icsk_retransmit_timer))' \
 	src/progs/skb_parse.h
 require_text 'ske->timer_out = 0;' src/progs/skb_parse.h
+require_text 'Author: ron' src/anettrace.c
+require_text 'printf("\n%s\n", config->desc);' utils/arg_parse.c
 require_text '--date and --timestamp cannot be used together' src/anettrace.c
 require_text 'OPTION_GROUP' utils/arg_parse.h
 require_text 'Packet and owner filters' src/anettrace.c

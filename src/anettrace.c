@@ -18,7 +18,8 @@
 arg_config_t config = {
 	.name = "anettrace",
 	.summary = "a tool to trace skb in kernel and diagnose network problem",
-	.desc = "",
+	.desc = "Copyright (C) ron\nAuthor: ron\n"
+		"GitHub: https://github.com/ron159/Anettrace",
 };
 
 static int print_all_levels(enum libbpf_print_level level, const char *format,

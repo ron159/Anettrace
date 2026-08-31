@@ -217,6 +217,8 @@ help:
 			sprintf(name, "--%s", item->lname);
 		printf("    %-16s %s\n", name, item->desc);
 	}
+	if (config->desc && config->desc[0])
+		printf("\n%s\n", config->desc);
 	free(long_opts);
 	exit(0);
 }
