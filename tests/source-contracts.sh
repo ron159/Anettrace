@@ -37,6 +37,10 @@ require_text 'pkt->l3.ipv4.id = bpf_ntohs(_C(ipv4, id));' src/progs/skb_parse.h
 require_text '_LC(&e->table, table, name);' src/progs/core.c
 require_text '#define _L(dst, src) bpf_probe_read_kernel(dst, sizeof(*dst), src)' \
 	src/progs/skb_parse.h
+require_text 'size_t count;' utils/parse_sym.c
+require_text '*cur = '\''\0'\'';' utils/parse_sym.c
+require_text 'fclose(f);' utils/parse_sym.c
+require_text 'if (sym_init_data())' utils/parse_sym.c
 require_text '--date and --timestamp cannot be used together' src/anettrace.c
 require_text 'OPTION_GROUP' utils/arg_parse.h
 require_text 'Packet and owner filters' src/anettrace.c
