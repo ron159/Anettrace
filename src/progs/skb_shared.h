@@ -87,6 +87,9 @@ typedef struct {
 		struct {
 			be16	sport;
 			be16	dport;
+			/* Header-only metadata; this member remains smaller than tcp. */
+			u16	dns_transaction_id;
+			u8	dns_transaction_id_valid;
 		} udp;
 		l4_min_t min;
 		struct {
@@ -109,7 +112,7 @@ typedef struct {
 	} l4;
 	u16 proto_l3;
 	u8 proto_l4;
-	u8 pad;
+	u8 ip_id_valid;
 	/* packet mark must remain the final field for event ABI stability */
 	u32 mark;
 } packet_t;

@@ -276,12 +276,22 @@ static inline int probe_parse_l4(void *l4, packet_t *pkt, pkt_args_t *args)
 		struct udphdr *udp = l4;
 		u16 sport = _(udp->source);
 		u16 dport = _(udp->dest);
+		u16 dns_transaction_id;
 	
 		if (filter_port(args, sport, dport))
 			return -1;
 
 		pkt->l4.udp.sport = sport;
 		pkt->l4.udp.dport = dport;
+		if ((sport == bpf_htons(53) || dport == bpf_htons(53)) &&
+		    bpf_ntohs(_(udp->len)) >= sizeof(*udp) +
+						  sizeof(dns_transaction_id) &&
+		    !bpf_probe_read_kernel(&dns_transaction_id,
+					   sizeof(dns_transaction_id), udp + 1)) {
+			pkt->l4.udp.dns_transaction_id =
+				bpf_ntohs(dns_transaction_id);
+			pkt->l4.udp.dns_transaction_id_valid = true;
+		}
 		break;
 	}
 	case IPPROTO_ICMPV6:
@@ -363,6 +373,7 @@ static inline int probe_parse_l3(struct sk_buff *skb, pkt_args_t *args,
 		pkt->l3.ipv4.saddr = saddr;
 		pkt->l3.ipv4.daddr = daddr;
 		pkt->l3.ipv4.id = bpf_ntohs(_C(ipv4, id));
+		pkt->ip_id_valid = true;
 	}
 
 	if (filter_check(args, l4_proto, pkt->proto_l4))
@@ -727,10 +738,24 @@ static inline int direct_parse_skb(struct __sk_buff *skb, packet_t *pkt,
 	struct tcphdr *tcp = __ptr(l4_p);
 
 	switch (ip->protocol) {
-	case IPPROTO_UDP:
+	case IPPROTO_UDP: {
+		struct udphdr *udp = __ptr(l4_p);
+		__be16 *dns_transaction_id = __ptr(udp + 1);
+
 		if (SKB_CHECK_UDP(skb))
 			goto err;
-		goto fill_port;
+		pkt->l4.min = *l4_p;
+		if ((udp->source == bpf_htons(53) ||
+		     udp->dest == bpf_htons(53)) &&
+		    bpf_ntohs(udp->len) >= sizeof(*udp) +
+					       sizeof(*dns_transaction_id) &&
+		    __ptr(dns_transaction_id + 1) <= SKB_END(skb)) {
+			pkt->l4.udp.dns_transaction_id =
+				bpf_ntohs(*dns_transaction_id);
+			pkt->l4.udp.dns_transaction_id_valid = true;
+		}
+		break;
+	}
 	case IPPROTO_TCP:
 		if (SKB_CHECK_TCP(skb))
 			goto err;
@@ -738,7 +763,6 @@ static inline int direct_parse_skb(struct __sk_buff *skb, packet_t *pkt,
 		pkt->l4.tcp.flags = ((u8 *)tcp)[13];
 		pkt->l4.tcp.ack = bpf_ntohl(tcp->ack_seq);
 		pkt->l4.tcp.seq = bpf_ntohl(tcp->seq);
-fill_port:
 		pkt->l4.min = *l4_p;
 		break;
 	case IPPROTO_ICMP: {
@@ -762,6 +786,7 @@ fill_port:
 	pkt->l3.ipv4.saddr = ip->saddr;
 	pkt->l3.ipv4.daddr = ip->daddr;
 	pkt->l3.ipv4.id = bpf_ntohs(ip->id);
+	pkt->ip_id_valid = true;
 	pkt->proto_l4 = ip->protocol;
 	pkt->proto_l3 = ETH_P_IP;
 	pkt->ts = bpf_ktime_get_ns();

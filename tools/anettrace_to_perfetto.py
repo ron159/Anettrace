@@ -61,7 +61,7 @@ def packet_flow_anchor(record: dict[str, Any]) -> bool:
     direction = str(record.get("direction", ""))
     if direction == "tx":
         if protocol == 6:
-            return stage == "__tcp_transmit_skb"
+            return stage in ("ip_output", "ip6_output", "__tcp_transmit_skb")
         return stage in ("ip_output", "ip6_output")
     if direction == "rx":
         if protocol == 6:
@@ -503,6 +503,10 @@ class PerfettoExporter:
                     "daddr",
                     "dport",
                     "mark",
+                    "ip_id",
+                    "ip_id_hex",
+                    "dns_transaction_id",
+                    "dns_transaction_id_hex",
                     "tcp_seq",
                     "tcp_ack",
                     "tcp_flags",
