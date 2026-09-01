@@ -34,6 +34,10 @@ require_text $'\t\t} ipv4;\n#ifndef NT_DISABLE_IPV6\n\t\tstruct {' \
 require_text $'\t\t} ipv4;\n#if 0\n\t\tstruct {' src/progs/skb_shared.h
 require_text 'pkt->mark = _C(skb, mark);' src/progs/skb_parse.h
 require_text 'pkt->l3.ipv4.id = bpf_ntohs(_C(ipv4, id));' src/progs/skb_parse.h
+require_text $'u16\tdns_transaction_id;' src/progs/skb_shared.h
+require_text $'u8\tdns_transaction_id_valid;' src/progs/skb_shared.h
+require_text $'u8 ip_id_valid;' src/progs/skb_shared.h
+require_text 'pkt->l4.udp.dns_transaction_id_valid = true;' src/progs/skb_parse.h
 require_text '_LC(&e->table, table, name);' src/progs/core.c
 require_text '#define _L(dst, src) bpf_probe_read_kernel(dst, sizeof(*dst), src)' \
 	src/progs/skb_parse.h
@@ -164,6 +168,18 @@ require_text 'sock->proto_l3 != ETH_P_IP' src/perfetto_export.c
 require_text 'if ((args->pid || args->uid_enabled) && !current_matches' \
 	src/progs/core.c
 require_text '\"skb_id\":' src/perfetto_export.c
+require_text 'native_annotation_uint(&track_event, "ip_id",' src/perfetto_export.c
+require_text 'native_annotation_uint(&track_event, "dns_transaction_id",' \
+	src/perfetto_export.c
+require_text 'native_annotation_string(&track_event, "ip_id_hex",' \
+	src/perfetto_export.c
+require_text 'native_annotation_string(&track_event, "dns_transaction_id_hex",' \
+	src/perfetto_export.c
+require_text '",\"ip_id\":%u,\"ip_id_hex\":\"0x%04x\""' \
+	src/perfetto_export.c
+require_text '",\"dns_transaction_id\":%u,"' src/perfetto_export.c
+require_text '\"ip_id_hex\":\"0x%04x\"' src/perfetto_export.c
+require_text '\"dns_transaction_id_hex\":\"0x%04x\"' src/perfetto_export.c
 require_text 'CLOCK_SNAPSHOT_INTERVAL_NS' src/perfetto_export.c
 require_text 'perfetto_export_tick();' src/trace.c
 require_text '.lname = "capture-trace"' src/anettrace.c
@@ -200,6 +216,8 @@ require_text 'perfetto_compact_traces' src/trace.c
 require_text 'perfetto_detailed_traces' src/trace.c
 require_text 'trace_event_visible' src/perfetto_export.c
 require_text 'event->pkt.proto_l4 == IPPROTO_UDP' src/trace.c
+require_text 'event->pkt.proto_l4 == IPPROTO_TCP ||' src/trace.c
+require_text 'return trace_ctx.args.connect_diagnostics;' src/trace.c
 require_text 'static const char *const compact_events[]' src/trace.c
 require_text 'return false;' src/trace.c
 require_text '"TCP SYN send"' src/trace.c

@@ -47,7 +47,6 @@ bool trace_event_visible(const trace_t *trace, const event_t *event)
 		"tcp_sendmsg",
 		"tcp_recvmsg",
 		"tcp_close",
-		"__tcp_transmit_skb",
 		"tcp_v4_rcv",
 		"tcp_v6_rcv",
 		"udp_sendmsg",
@@ -72,9 +71,12 @@ bool trace_event_visible(const trace_t *trace, const event_t *event)
 	if (!trace || !event || !trace_ctx.bpf_args.perfetto ||
 	    trace_ctx.args.trace_detail)
 		return true;
+	if (trace_name_matches(trace, "__tcp_transmit_skb"))
+		return trace_ctx.args.connect_diagnostics;
 	if (trace_name_matches(trace, "ip_output") ||
 	    trace_name_matches(trace, "ip6_output"))
-		return event->pkt.proto_l4 == IPPROTO_UDP;
+		return event->pkt.proto_l4 == IPPROTO_TCP ||
+		       event->pkt.proto_l4 == IPPROTO_UDP;
 	for (i = 0; i < sizeof(compact_events) / sizeof(compact_events[0]); i++)
 		if (trace_name_matches(trace, compact_events[i]))
 			return true;
@@ -84,7 +86,7 @@ bool trace_event_visible(const trace_t *trace, const event_t *event)
 const char *trace_event_name(const trace_t *trace, const event_t *event)
 {
 	const packet_t *packet;
-	bool tx;
+	bool ip_output, tx;
 
 	if (!trace)
 		return "unknown";
@@ -110,7 +112,10 @@ const char *trace_event_name(const trace_t *trace, const event_t *event)
 		return trace->name;
 
 	packet = &event->pkt;
-	tx = trace_name_matches(trace, "__tcp_transmit_skb");
+	ip_output = trace_name_matches(trace, "ip_output") ||
+		    trace_name_matches(trace, "ip6_output");
+	tx = trace_name_matches(trace, "__tcp_transmit_skb") ||
+	     (ip_output && packet->proto_l4 == IPPROTO_TCP);
 	if (tx || trace_name_matches(trace, "tcp_v4_rcv") ||
 	    trace_name_matches(trace, "tcp_v6_rcv")) {
 		if (packet->l4.tcp.flags & TCP_FLAGS_SYN)
@@ -123,8 +128,7 @@ const char *trace_event_name(const trace_t *trace, const event_t *event)
 			return tx ? "TCP FIN send" : "TCP FIN receive";
 		return tx ? "TCP packet send" : "TCP packet receive";
 	}
-	if (trace_name_matches(trace, "ip_output") ||
-	    trace_name_matches(trace, "ip6_output"))
+	if (ip_output)
 		return packet->proto_l4 == IPPROTO_UDP &&
 		       ntohs(packet->l4.min.dport) == 53 ?
 		       "DNS query send" : "DNS response send";

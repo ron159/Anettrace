@@ -69,7 +69,6 @@ class PerfettoConverterTest(unittest.TestCase):
                 for annotations in packet_annotations
             )
         )
-
         packets = [
             event
             for event, annotations in zip(packet_events, packet_annotations)
@@ -210,6 +209,66 @@ class PerfettoConverterTest(unittest.TestCase):
             )
         )
 
+    def test_dns_transaction_id_is_exported_as_packet_metadata(self) -> None:
+        records = [
+            {
+                "schema": MODULE.SCHEMA,
+                "type": "clock_snapshot",
+                "monotonic_ns": 1_000_000_000,
+                "boottime_ns": 1_100_000_000,
+                "realtime_ns": 1_800_000_000_000_000_000,
+            },
+            {
+                "schema": MODULE.SCHEMA,
+                "type": "packet_event",
+                "ts_ns": 1_010_000_000,
+                "packet_id": "0000000000005001",
+                "skb_id": "0000000000006001",
+                "flow_id": "0000000000007001",
+                "stage": "ip_output",
+                "terminal": False,
+                "dropped": False,
+                "flow_anchor": True,
+                "cpu": 2,
+                "tid": 101,
+                "tgid": 100,
+                "uid": 10000,
+                "task": "dns-worker",
+                "ifname": "wlan0",
+                "direction": "tx",
+                "ifindex": 3,
+                "netns": 42,
+                "proto_l3": 2048,
+                "proto_l4": 17,
+                "saddr": "10.0.0.2",
+                "sport": 40000,
+                "daddr": "1.1.1.1",
+                "dport": 53,
+                "mark": 0,
+                "ip_id": 0x2345,
+                "ip_id_hex": "0x2345",
+                "dns_transaction_id": 0x1201,
+                "dns_transaction_id_hex": "0x1201",
+            },
+        ]
+        trace = Trace()
+        trace.ParseFromString(MODULE.PerfettoExporter(records).serialize())
+        packet = next(
+            packet.track_event
+            for packet in trace.packet
+            if packet.HasField("track_event")
+            and "anettrace.packet" in packet.track_event.categories
+        )
+        annotations = {
+            annotation.name: annotation for annotation in packet.debug_annotations
+        }
+        self.assertEqual(annotations["ip_id"].uint_value, 0x2345)
+        self.assertEqual(annotations["ip_id_hex"].string_value, "0x2345")
+        self.assertEqual(annotations["dns_transaction_id"].uint_value, 0x1201)
+        self.assertEqual(
+            annotations["dns_transaction_id_hex"].string_value, "0x1201"
+        )
+
     def test_flow_labels_are_sequential_per_protocol(self) -> None:
         exporter = MODULE.PerfettoExporter([])
         self.assertEqual(exporter.flow_label("1", {"protocol": "tcp"}), "tcp-1")
@@ -226,6 +285,13 @@ class PerfettoConverterTest(unittest.TestCase):
             exporter.flow_label("1", {"protocol": "udp"}),
             "tcp-1",
             "an existing flow_id must keep its first label",
+        )
+
+    def test_tcp_tx_anchor_inference_accepts_compact_and_detailed_stages(self) -> None:
+        base = {"proto_l4": 6, "direction": "tx"}
+        self.assertTrue(MODULE.packet_flow_anchor({**base, "stage": "ip_output"}))
+        self.assertTrue(
+            MODULE.packet_flow_anchor({**base, "stage": "__tcp_transmit_skb"})
         )
 
     def test_interleaved_thread_flows_keep_visuals_and_stats_distinct(self) -> None:

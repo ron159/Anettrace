@@ -1260,8 +1260,13 @@ static struct flow_state *flow_from_socket(const detail_event_t *detail,
 static bool flow_packet_anchor(const trace_t *trace, u8 protocol, u8 direction)
 {
 	if (direction == PACKET_DIRECTION_TX) {
-		if (protocol == IPPROTO_TCP)
-			return !strcmp(trace->name, "__tcp_transmit_skb");
+		if (protocol == IPPROTO_TCP) {
+			if (trace_ctx.args.trace_detail ||
+			    trace_ctx.args.connect_diagnostics)
+				return !strcmp(trace->name, "__tcp_transmit_skb");
+			return !strcmp(trace->name, "ip_output") ||
+			       !strcmp(trace->name, "ip6_output");
+		}
 		return !strcmp(trace->name, "ip_output") ||
 		       !strcmp(trace->name, "ip6_output");
 	}
@@ -1678,7 +1683,7 @@ static void native_export_packet_event(const detail_event_t *detail,
 	struct native_track *thread;
 	struct proto_buffer track_event = {};
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
-	char flow_tag[16];
+	char flow_tag[16], id_hex[7];
 	const char *stage = trace_event_name(trace, event);
 	bool dropped = TRACE_HAS_ANALYZER(trace, drop);
 	bool terminal = dropped || TRACE_HAS_ANALYZER(trace, free) ||
@@ -1732,9 +1737,25 @@ static void native_export_packet_event(const detail_event_t *detail,
 	native_annotation_string(&track_event, "daddr", dest);
 	native_annotation_uint(&track_event, "dport", ntohs(pkt->l4.min.dport));
 	native_annotation_uint(&track_event, "mark", pkt->mark);
-	native_annotation_uint(&track_event, "tcp_seq", pkt->l4.tcp.seq);
-	native_annotation_uint(&track_event, "tcp_ack", pkt->l4.tcp.ack);
-	native_annotation_uint(&track_event, "tcp_flags", pkt->l4.tcp.flags);
+	if (pkt->proto_l3 == ETH_P_IP && pkt->ip_id_valid) {
+		native_annotation_uint(&track_event, "ip_id", pkt->l3.ipv4.id);
+		snprintf(id_hex, sizeof(id_hex), "0x%04x",
+			 (unsigned int)pkt->l3.ipv4.id);
+		native_annotation_string(&track_event, "ip_id_hex", id_hex);
+	}
+	if (pkt->proto_l4 == IPPROTO_TCP) {
+		native_annotation_uint(&track_event, "tcp_seq", pkt->l4.tcp.seq);
+		native_annotation_uint(&track_event, "tcp_ack", pkt->l4.tcp.ack);
+		native_annotation_uint(&track_event, "tcp_flags", pkt->l4.tcp.flags);
+	} else if (pkt->proto_l4 == IPPROTO_UDP &&
+		   pkt->l4.udp.dns_transaction_id_valid) {
+		native_annotation_uint(&track_event, "dns_transaction_id",
+				       pkt->l4.udp.dns_transaction_id);
+		snprintf(id_hex, sizeof(id_hex), "0x%04x",
+			 (unsigned int)pkt->l4.udp.dns_transaction_id);
+		native_annotation_string(&track_event, "dns_transaction_id_hex",
+					 id_hex);
+	}
 	if (dropped && !strcmp(trace->name, "kfree_skb")) {
 		native_annotation_uint(&track_event, "drop_reason", drop->reason);
 		native_annotation_id(&track_event, "drop_location_id",
@@ -2077,8 +2098,7 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 		"\"owner_socket_id\":\"%016llx\","
 		"\"ifindex\":%u,\"netns\":%u,\"proto_l3\":%u,"
 		"\"proto_l4\":%u,\"saddr\":\"%s\",\"sport\":%u,"
-		"\"daddr\":\"%s\",\"dport\":%u,\"mark\":%u,"
-		"\"tcp_seq\":%u,\"tcp_ack\":%u,\"tcp_flags\":%u",
+		"\"daddr\":\"%s\",\"dport\":%u,\"mark\":%u",
 		PERFETTO_SCHEMA, pkt->ts, packet_id(pkt, event->key),
 		object_id("skb", event->key), flow_id, flow_tag, stage,
 		terminal ? "true" : "false",
@@ -2090,8 +2110,22 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 		detail->ifindex, detail->netns,
 		pkt->proto_l3, pkt->proto_l4, source,
 		ntohs(pkt->l4.min.sport), dest, ntohs(pkt->l4.min.dport),
-		pkt->mark, pkt->l4.tcp.seq, pkt->l4.tcp.ack,
-		pkt->l4.tcp.flags);
+		pkt->mark);
+	if (pkt->proto_l3 == ETH_P_IP && pkt->ip_id_valid)
+		fprintf(export_file,
+			",\"ip_id\":%u,\"ip_id_hex\":\"0x%04x\"",
+			pkt->l3.ipv4.id, (unsigned int)pkt->l3.ipv4.id);
+	if (pkt->proto_l4 == IPPROTO_TCP)
+		fprintf(export_file,
+			",\"tcp_seq\":%u,\"tcp_ack\":%u,\"tcp_flags\":%u",
+			pkt->l4.tcp.seq, pkt->l4.tcp.ack, pkt->l4.tcp.flags);
+	else if (pkt->proto_l4 == IPPROTO_UDP &&
+		 pkt->l4.udp.dns_transaction_id_valid)
+		fprintf(export_file,
+			",\"dns_transaction_id\":%u,"
+			"\"dns_transaction_id_hex\":\"0x%04x\"",
+			pkt->l4.udp.dns_transaction_id,
+			(unsigned int)pkt->l4.udp.dns_transaction_id);
 	if (dropped && !strcmp(trace->name, "kfree_skb"))
 		fprintf(export_file,
 			",\"drop_reason\":%u,\"drop_location_id\":\"%016llx\"",
