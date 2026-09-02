@@ -4,7 +4,9 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <string.h>
 #include <sys/syscall.h>
+#include <unistd.h>
 #include <bpf/libbpf.h>
 
 #include <arg_parse.h>
@@ -275,6 +277,13 @@ static void do_parse_args(int argc, char *argv[])
 			.desc = "system trace profile: full (default) or sched",
 		},
 		{
+			.lname = "perfetto-config",
+			.dest = &trace_args->perfetto_config,
+			.type = OPTION_STRING,
+			.desc = "custom Perfetto text config; top-level "
+				"duration_ms is ignored",
+		},
+		{
 			.lname = "duration", .dest = &trace_args->duration,
 			.type = OPTION_U32,
 			.desc = "capture duration, or ring-buffer retention window, in seconds",
@@ -477,6 +486,20 @@ static void do_parse_args(int argc, char *argv[])
 		pr_err("--trace-profile requires --capture-trace\n");
 		goto err;
 	}
+	if (trace_args->perfetto_config && !trace_args->capture_trace) {
+		pr_err("--perfetto-config requires --capture-trace\n");
+		goto err;
+	}
+	if (trace_args->perfetto_config && trace_args->trace_profile) {
+		pr_err("--perfetto-config and --trace-profile are mutually exclusive\n");
+		goto err;
+	}
+	if (trace_args->perfetto_config &&
+	    access(trace_args->perfetto_config, R_OK)) {
+		pr_err("cannot read Perfetto config %s: %s\n",
+		       trace_args->perfetto_config, strerror(errno));
+		goto err;
+	}
 	if (trace_args->trace_detail && !trace_args->capture_trace &&
 	    !trace_args->perfetto_events) {
 		pr_err("--trace-detail requires --capture-trace or --perfetto-events\n");
@@ -495,7 +518,8 @@ static void do_parse_args(int argc, char *argv[])
 	}
 	if (trace_args->capture_trace && !trace_args->duration)
 		trace_args->duration = 10;
-	if (trace_args->capture_trace && !trace_args->trace_profile)
+	if (trace_args->capture_trace && !trace_args->trace_profile &&
+	    !trace_args->perfetto_config)
 		trace_args->trace_profile = "full";
 	if (trace_args->connect_diagnostics) {
 		bpf_args->connect_diagnostics = true;
@@ -608,6 +632,7 @@ int main(int argc, char *argv[])
 		if (trace_capture_start(trace_ctx.args.output,
 					trace_ctx.args.duration,
 					trace_ctx.args.trace_profile,
+					trace_ctx.args.perfetto_config,
 					trace_ctx.args.ring_buffer))
 			goto err;
 		if ((trace_ctx.args.ring_buffer ?

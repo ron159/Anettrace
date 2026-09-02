@@ -17,6 +17,7 @@
 #include <sys_utils.h>
 
 #include "output.h"
+#include "perfetto_config.h"
 #include "perfetto_trim.h"
 #include "trace_capture.h"
 
@@ -257,7 +258,7 @@ static int write_all(int fd, const void *data, size_t size)
 }
 
 static int write_config(__u32 duration_s, const char *profile,
-			bool ring_buffer)
+			const char *custom_config, bool ring_buffer)
 {
 	const char *template;
 	char config_text[16384];
@@ -269,6 +270,16 @@ static int write_config(__u32 duration_s, const char *profile,
 		"compact_sched { enabled: true }\n";
 	int length, fd, err;
 
+	fd = open(capture.config,
+		  O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+	if (fd < 0)
+		return -errno;
+	if (custom_config) {
+		err = perfetto_config_write_custom(fd, custom_config, duration_s,
+						   ring_buffer);
+		goto close_config;
+	}
+
 	template = !strcmp(profile, "full") ? full_perfetto_config :
 		   sched_perfetto_config;
 	if (!ring_buffer)
@@ -278,12 +289,10 @@ static int write_config(__u32 duration_s, const char *profile,
 	length = snprintf(config_text, sizeof(config_text), template,
 			  compact_sched, duration_line, flush_line);
 	if (length < 0 || length >= (int)sizeof(config_text))
-		return -EOVERFLOW;
-	fd = open(capture.config,
-		  O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-	if (fd < 0)
-		return -errno;
-	err = write_all(fd, config_text, length);
+		err = -EOVERFLOW;
+	else
+		err = write_all(fd, config_text, length);
+close_config:
 	if (close(fd) && !err)
 		err = -errno;
 	return err;
@@ -386,15 +395,18 @@ static void cleanup_temporary(void)
 }
 
 int trace_capture_start(const char *output, __u32 duration_s,
-			const char *profile, bool ring_buffer)
+			const char *profile, const char *perfetto_config,
+			bool ring_buffer)
 {
 	struct timespec startup_wait = { .tv_nsec = 250 * 1000 * 1000 };
+	const char *profile_name = perfetto_config ? "custom" : profile;
 	int status, err;
 
 	memset(&capture, 0, sizeof(capture));
-	if (!duration_s || !profile)
+	if (!duration_s || (!profile && !perfetto_config))
 		return -EINVAL;
-	if (strcmp(profile, "full") && strcmp(profile, "sched"))
+	if (!perfetto_config && strcmp(profile, "full") &&
+	    strcmp(profile, "sched"))
 		return -EINVAL;
 	err = resolve_output(output);
 	if (err)
@@ -412,7 +424,7 @@ int trace_capture_start(const char *output, __u32 duration_s,
 		goto fail;
 	capture.ring_buffer = ring_buffer;
 	capture.window_s = duration_s;
-	err = write_config(duration_s, profile, ring_buffer);
+	err = write_config(duration_s, profile, perfetto_config, ring_buffer);
 	if (err)
 		goto fail;
 
@@ -442,10 +454,10 @@ int trace_capture_start(const char *output, __u32 duration_s,
 	}
 	if (ring_buffer)
 		pr_info("system Perfetto %s ring capture started (pid %d, trailing %u seconds; press Ctrl+C to save)\n",
-			profile, capture.perfetto_pid, duration_s);
+			profile_name, capture.perfetto_pid, duration_s);
 	else
-		pr_info("system Perfetto %s capture started (pid %d)\n", profile,
-			capture.perfetto_pid);
+		pr_info("system Perfetto %s capture started (pid %d)\n",
+			profile_name, capture.perfetto_pid);
 	return 0;
 
 fail:

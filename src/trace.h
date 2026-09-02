@@ -137,6 +137,7 @@ typedef struct trace_args {
 	bool trace_detail;
 	bool connect_diagnostics;
 	char *trace_profile;
+	char *perfetto_config;
 	u32 duration;
 	char *output;
 	u32  count;
