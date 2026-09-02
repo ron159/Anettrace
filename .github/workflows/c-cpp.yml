@@ -39,6 +39,7 @@ jobs:
           ./src/anettrace -h | grep -q -- '--trace-detail'
           ./src/anettrace -h | grep -q -- '--connect-diagnostics'
           ./src/anettrace -h | grep -q -- '--trace-profile'
+          ./src/anettrace -h | grep -q -- '--perfetto-config'
           ./src/anettrace -h | grep -q -- '--duration'
           ./src/anettrace -h | grep -q -- '--output'
           ./src/anettrace -h > /tmp/anettrace-help.txt
@@ -54,6 +55,26 @@ jobs:
           fi
           grep -q -- '--trace-profile must be full or sched' \
             /tmp/trace-profile-invalid.txt
+          if ./src/anettrace --perfetto-config /tmp/perfetto.pbtxt \
+            > /tmp/perfetto-config-invalid.txt 2>&1; then
+            exit 1
+          fi
+          grep -q -- '--perfetto-config requires --capture-trace' \
+            /tmp/perfetto-config-invalid.txt
+          if ./src/anettrace --capture-trace \
+            --perfetto-config /tmp/perfetto.pbtxt --trace-profile full \
+            > /tmp/perfetto-config-profile.txt 2>&1; then
+            exit 1
+          fi
+          grep -q -- '--perfetto-config and --trace-profile are mutually exclusive' \
+            /tmp/perfetto-config-profile.txt
+          if ./src/anettrace --capture-trace \
+            --perfetto-config /tmp/anettrace-config-does-not-exist.pbtxt \
+            > /tmp/perfetto-config-missing.txt 2>&1; then
+            exit 1
+          fi
+          grep -q -- 'cannot read Perfetto config' \
+            /tmp/perfetto-config-missing.txt
           if ./src/anettrace --trace-detail > /tmp/trace-detail-invalid.txt 2>&1; then
             exit 1
           fi
@@ -110,6 +131,12 @@ jobs:
             tests/perfetto_trim_test.c src/perfetto_trim.c \
             -o /tmp/perfetto-trim-test
           /tmp/perfetto-trim-test
+      - name: Run custom Perfetto config tests
+        run: |
+          gcc -O2 -Wall -Wextra -Werror -Isrc \
+            tests/perfetto_config_test.c src/perfetto_config.c \
+            -o /tmp/perfetto-config-test
+          /tmp/perfetto-config-test
       - name: Run capture orchestrator tests
         run: |
           python3 -m unittest \

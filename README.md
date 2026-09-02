@@ -56,11 +56,21 @@ sudo ./src/anettrace --diag --addr 192.0.2.10
 # 按 UID 查看 TCP 应用层流量
 sudo ./src/anettrace --traffic --proto tcp --uid 1000 --interval 2
 
+# 使用设备上的自定义 Perfetto textproto 配置联合抓取
+./anettrace --capture-trace \
+  --perfetto-config /data/local/tmp/perfetto_cfg.pbtxt \
+  --duration 10 --uid 10187 \
+  --output /data/local/tmp/custom-network.pftrace
+
 # 后台持续抓取，Ctrl+C 后保存停止前 30 秒，同时显示流量
 ./anettrace --traffic --capture-trace --ring-buffer \
   --duration 30 --interval 2 --proto tcp --uid 10187 \
   --output /data/local/tmp/browser-network.pftrace
 ```
+
+`--perfetto-config` 与 `--trace-profile` 互斥。自定义配置中的顶层 `duration_ms`
+会被忽略，普通模式统一使用 `--duration` 管理采集窗口，环形模式持续到 Ctrl+C。
+配置必须是设备上的非空普通文件，大小不超过 4 MiB。
 
 完整参数以 `anettrace -h` 和 [CLI Wiki](https://github.com/ron159/Anettrace/wiki/CLI-Reference) 为准。
 

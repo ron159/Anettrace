@@ -43,6 +43,8 @@ PING_TARGET="$(ip route get 1.1.1.1 2>/dev/null | awk '
 "$BIN" -h > "$OUT/help.txt"
 grep -q -- '--trace-detail' "$OUT/help.txt" || fail "--trace-detail help missing"
 grep -q -- '--ring-buffer' "$OUT/help.txt" || fail "--ring-buffer help missing"
+grep -q -- '--perfetto-config' "$OUT/help.txt" ||
+	fail "--perfetto-config help missing"
 for section in \
 	"Packet and owner filters" \
 	"Analysis modes" \
@@ -65,6 +67,28 @@ if "$BIN" --ring-buffer > "$OUT/ring-buffer-invalid.txt" 2>&1; then
 fi
 grep -q -- '--ring-buffer requires --capture-trace' \
 	"$OUT/ring-buffer-invalid.txt" || fail "missing --ring-buffer scope error"
+
+if "$BIN" --perfetto-config /data/local/tmp/perfetto.pbtxt \
+		> "$OUT/perfetto-config-invalid.txt" 2>&1; then
+	fail "--perfetto-config unexpectedly succeeded without trace capture"
+fi
+grep -q -- '--perfetto-config requires --capture-trace' \
+	"$OUT/perfetto-config-invalid.txt" || fail "missing config scope error"
+
+if "$BIN" --capture-trace --perfetto-config /data/local/tmp/perfetto.pbtxt \
+		--trace-profile full > "$OUT/perfetto-config-profile.txt" 2>&1; then
+	fail "custom Perfetto config unexpectedly accepted a built-in profile"
+fi
+grep -q -- '--perfetto-config and --trace-profile are mutually exclusive' \
+	"$OUT/perfetto-config-profile.txt" || fail "missing config/profile error"
+
+if "$BIN" --capture-trace \
+		--perfetto-config /data/local/tmp/anettrace-config-does-not-exist.pbtxt \
+		> "$OUT/perfetto-config-missing.txt" 2>&1; then
+	fail "missing custom Perfetto config unexpectedly succeeded"
+fi
+grep -q -- 'cannot read Perfetto config' "$OUT/perfetto-config-missing.txt" ||
+	fail "missing custom config read error"
 
 if "$BIN" --capture-trace --trace tcp > "$OUT/capture-trace-conflict.txt" 2>&1; then
 	fail "standalone --capture-trace unexpectedly combined with --trace"

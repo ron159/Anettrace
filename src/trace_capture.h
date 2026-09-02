@@ -7,7 +7,8 @@
 #include <linux/types.h>
 
 int trace_capture_start(const char *output, __u32 duration_s,
-			const char *profile, bool ring_buffer);
+			const char *profile, const char *perfetto_config,
+			bool ring_buffer);
 const char *trace_capture_network_path(void);
 void trace_capture_stop(void);
 int trace_capture_finish(void);

@@ -9,7 +9,7 @@ complete -W '-s --saddr -d --daddr --addr -p -D --dport -S --sport -P --port
 
              -t --trace --force --ret --detail --perfetto-events
              --capture-trace --ring-buffer --trace-detail --connect-diagnostics
-             --trace-profile --duration --output --date --timestamp --id --mark
+             --trace-profile --perfetto-config --duration --output --date --timestamp --id --mark
              -c --count --hooks
              --tiny-show --trace-stack --trace-matcher --trace-noclone
              --func-stats --rate-limit --btf-path
