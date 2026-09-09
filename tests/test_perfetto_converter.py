@@ -24,7 +24,7 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PerfettoConverterTest(unittest.TestCase):
-    def test_all_arguments_have_searchable_typed_companions(self) -> None:
+    def test_all_arguments_are_searchable_without_duplicates(self) -> None:
         exporter = MODULE.PerfettoExporter(MODULE.read_records(
             ROOT / "tests" / "fixtures" / "perfetto-events.jsonl"
         ))
@@ -32,13 +32,10 @@ class PerfettoConverterTest(unittest.TestCase):
         trace.ParseFromString(exporter.serialize())
         for packet in trace.packet:
             args = {a.name: a for a in packet.track_event.debug_annotations}
+            self.assertEqual(len(args), len(packet.track_event.debug_annotations))
             for key, arg in args.items():
-                if key.startswith("search."):
-                    continue
-                field = arg.WhichOneof("value")
-                value = getattr(arg, field)
-                text = str(value).lower() if field == "bool_value" else str(value)
-                self.assertEqual(args[f"search.{key}"].string_value, f"{key}={text}")
+                self.assertFalse(key.startswith("search."))
+                self.assertEqual(arg.WhichOneof("value"), "string_value")
 
     def test_native_and_python_search_encoding_and_ui_query(self) -> None:
         # Compile the actual native protobuf/annotation helpers without BPF or
@@ -46,7 +43,7 @@ class PerfettoConverterTest(unittest.TestCase):
         source = (ROOT / "src" / "perfetto_export.c").read_text()
         helpers = source[source.index("static void proto_free("):
                          source.index("static void native_packet_queue_free(")]
-        annotations = source[source.index("static void native_annotation_search("):
+        annotations = source[source.index("static void native_annotation_string("):
                              source.index("static void native_event_write(")]
         harness = """
 #include <stdbool.h>
@@ -116,9 +113,8 @@ int main(void) {
                 path = base / "search.pftrace"
                 path.write_bytes(trace.SerializeToString())
                 with TraceProcessor(trace=str(path)) as processor:
-                    for term in ("dport=443", "terminal=false", "dropped=true",
-                                 "error=-9223372036854775808", "daddr=2001:db8::1",
-                                 "maximum=18446744073709551615"):
+                    for term in ("443", "false", "true", "-9223372036854775808",
+                                 "2001:db8::1", "18446744073709551615", "dport"):
                         rows = list(processor.query(f"""
                             SELECT DISTINCT slice.id FROM slice JOIN args USING(arg_set_id)
                             WHERE slice.name = 'search test'
@@ -202,7 +198,7 @@ int main(void) {
             for annotation in rx_packets[0].debug_annotations
         }
         self.assertEqual(rx_annotations["direction"].string_value, "rx")
-        self.assertEqual(rx_annotations["owner_uid"].uint_value, 10000)
+        self.assertEqual(rx_annotations["owner_uid"].string_value, str(10000))
 
         recv_begins = [
             packet.track_event
@@ -224,7 +220,7 @@ int main(void) {
         recv_annotations = {
             annotation.name: annotation for annotation in recv_ends[0].debug_annotations
         }
-        self.assertEqual(recv_annotations["bytes"].uint_value, 512)
+        self.assertEqual(recv_annotations["bytes"].string_value, str(512))
 
         flow_begins = [
             packet.track_event
@@ -248,15 +244,15 @@ int main(void) {
         flow_annotations = {
             annotation.name: annotation for annotation in flow_ends[0].debug_annotations
         }
-        self.assertEqual(flow_annotations["tx_bytes"].uint_value, 128)
-        self.assertEqual(flow_annotations["rx_bytes"].uint_value, 512)
-        self.assertEqual(flow_annotations["tx_packets"].uint_value, 1)
-        self.assertEqual(flow_annotations["rx_packets"].uint_value, 1)
+        self.assertEqual(flow_annotations["tx_bytes"].string_value, str(128))
+        self.assertEqual(flow_annotations["rx_bytes"].string_value, str(512))
+        self.assertEqual(flow_annotations["tx_packets"].string_value, str(1))
+        self.assertEqual(flow_annotations["rx_packets"].string_value, str(1))
         self.assertEqual(
             flow_annotations["byte_scope"].string_value, "application_payload"
         )
         self.assertEqual(flow_annotations["end_reason"].string_value, "tcp_close")
-        self.assertFalse(flow_annotations["incomplete"].bool_value)
+        self.assertEqual(flow_annotations["incomplete"].string_value, "false")
 
         descriptors = {
             packet.track_descriptor.uuid: packet.track_descriptor
@@ -366,9 +362,9 @@ int main(void) {
         annotations = {
             annotation.name: annotation for annotation in packet.debug_annotations
         }
-        self.assertEqual(annotations["ip_id"].uint_value, 0x2345)
+        self.assertEqual(annotations["ip_id"].string_value, str(0x2345))
         self.assertEqual(annotations["ip_id_hex"].string_value, "0x2345")
-        self.assertEqual(annotations["dns_transaction_id"].uint_value, 0x1201)
+        self.assertEqual(annotations["dns_transaction_id"].string_value, str(0x1201))
         self.assertEqual(
             annotations["dns_transaction_id_hex"].string_value, "0x1201"
         )
@@ -675,18 +671,18 @@ int main(void) {
                     if key == "duration_ns"
                     else flow[key]
                 )
-                self.assertEqual(annotations[key].uint_value, expected)
-            self.assertEqual(annotations["owner_tid"].uint_value, owner["owner_tid"])
-            self.assertEqual(annotations["owner_tgid"].uint_value, owner["owner_tgid"])
-            self.assertEqual(annotations["owner_uid"].uint_value, owner["owner_uid"])
+                self.assertEqual(annotations[key].string_value, str(expected))
+            self.assertEqual(annotations["owner_tid"].string_value, str(owner["owner_tid"]))
+            self.assertEqual(annotations["owner_tgid"].string_value, str(owner["owner_tgid"]))
+            self.assertEqual(annotations["owner_uid"].string_value, str(owner["owner_uid"]))
             self.assertEqual(annotations["local_addr"].string_value, "10.0.0.2")
-            self.assertEqual(annotations["local_port"].uint_value, flow["local_port"])
+            self.assertEqual(annotations["local_port"].string_value, str(flow["local_port"]))
             self.assertEqual(
                 annotations["remote_addr"].string_value, flow["remote_addr"]
             )
-            self.assertEqual(annotations["remote_port"].uint_value, flow["remote_port"])
+            self.assertEqual(annotations["remote_port"].string_value, str(flow["remote_port"]))
             self.assertEqual(annotations["end_reason"].string_value, flow["end_reason"])
-            self.assertEqual(annotations["incomplete"].bool_value, flow["incomplete"])
+            self.assertEqual(annotations["incomplete"].string_value, str(flow["incomplete"]).lower())
 
         with TemporaryDirectory(prefix="anettrace-flow-") as directory:
             trace_path = Path(directory) / "interleaved-flows.pftrace"
@@ -699,17 +695,17 @@ int main(void) {
                           name,
                           dur,
                           track_id,
-                          extract_arg(arg_set_id, 'debug.tx_bytes') AS tx_bytes,
-                          extract_arg(arg_set_id, 'debug.rx_bytes') AS rx_bytes,
-                          extract_arg(arg_set_id, 'debug.tx_packets') AS tx_packets,
-                          extract_arg(arg_set_id, 'debug.rx_packets') AS rx_packets,
-                          extract_arg(arg_set_id, 'debug.owner_tid') AS owner_tid,
+                          CAST(extract_arg(arg_set_id, 'debug.tx_bytes') AS INT) AS tx_bytes,
+                          CAST(extract_arg(arg_set_id, 'debug.rx_bytes') AS INT) AS rx_bytes,
+                          CAST(extract_arg(arg_set_id, 'debug.tx_packets') AS INT) AS tx_packets,
+                          CAST(extract_arg(arg_set_id, 'debug.rx_packets') AS INT) AS rx_packets,
+                          CAST(extract_arg(arg_set_id, 'debug.owner_tid') AS INT) AS owner_tid,
                           extract_arg(arg_set_id, 'debug.local_addr') AS local_addr,
-                          extract_arg(arg_set_id, 'debug.local_port') AS local_port,
+                          CAST(extract_arg(arg_set_id, 'debug.local_port') AS INT) AS local_port,
                           extract_arg(arg_set_id, 'debug.remote_addr') AS remote_addr,
-                          extract_arg(arg_set_id, 'debug.remote_port') AS remote_port,
+                          CAST(extract_arg(arg_set_id, 'debug.remote_port') AS INT) AS remote_port,
                           extract_arg(arg_set_id, 'debug.end_reason') AS end_reason,
-                          extract_arg(arg_set_id, 'debug.incomplete') AS incomplete
+                          extract_arg(arg_set_id, 'debug.incomplete') = 'true' AS incomplete
                         FROM slice
                         WHERE category = 'anettrace.flow'
                         ORDER BY name
@@ -807,6 +803,14 @@ int main(void) {
             and row.attempt_id == "0000000000000001"
         )
         self.assertEqual(success.dur, 6_000_000)
+        self.assertEqual(success.uid, 10000)
+        self.assertEqual(success.tid, 101)
+        self.assertEqual(success.fd, 11)
+        self.assertTrue(any(row.result == -115 for row in rows))
+        self.assertEqual(
+            {row.async_pending for row in rows if row.async_pending is not None},
+            {0, 1},
+        )
 
         with TemporaryDirectory(prefix="anettrace-connect-metrics-") as directory:
             trace_path = Path(directory) / "connect.pftrace"
