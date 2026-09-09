@@ -31,6 +31,11 @@ struct capture_state {
 	bool ring_buffer;
 	bool stop_requested;
 	bool started;
+	bool system_only;
+	bool child_reaped;
+	int child_status;
+	bool config_created;
+	bool system_created;
 };
 
 static struct capture_state capture;
@@ -203,13 +208,22 @@ static int temporary_path(char *dest, size_t size, const char *suffix)
 	if (snprintf(dest, size, "%s.%s.tmp", capture.output, suffix) >=
 	    (int)size)
 		return -ENAMETOOLONG;
-	if (!access(dest, F_OK))
+	if (!access(dest, F_OK)) {
+		dest[0] = '\0';
 		return -EEXIST;
+	}
 	return 0;
 }
 
 static int system_temporary_paths(void)
 {
+	if (capture.system_only) {
+		int err = temporary_path(capture.system_trace,
+					 sizeof(capture.system_trace), "system");
+		if (err)
+			return err;
+		return temporary_path(capture.config, sizeof(capture.config), "config");
+	}
 #ifdef ANETTRACE_ANDROID_TARGET
 	struct timespec now;
 	unsigned long long nonce;
@@ -274,6 +288,7 @@ static int write_config(__u32 duration_s, const char *profile,
 		  O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
 	if (fd < 0)
 		return -errno;
+	capture.config_created = true;
 	if (custom_config) {
 		err = perfetto_config_write_custom(fd, custom_config, duration_s,
 						   ring_buffer);
@@ -369,7 +384,7 @@ static int merge_traces(void)
 	if (fd < 0)
 		return -errno;
 	err = copy_file(fd, capture.system_trace);
-	if (!err)
+	if (!err && !capture.system_only)
 		err = copy_file(fd, capture.network_trace);
 	if (!err && fsync(fd))
 		err = -errno;
@@ -386,23 +401,26 @@ static int merge_traces(void)
 
 static void cleanup_temporary(void)
 {
-	if (capture.system_trace[0])
+	if (capture.system_trace[0] &&
+	    (!capture.system_only || capture.system_created))
 		unlink(capture.system_trace);
 	if (capture.network_trace[0])
 		unlink(capture.network_trace);
-	if (capture.config[0])
+	if (capture.config_created)
 		unlink(capture.config);
 }
 
 int trace_capture_start(const char *output, __u32 duration_s,
 			const char *profile, const char *perfetto_config,
-			bool ring_buffer)
+			bool ring_buffer, bool system_only)
 {
 	struct timespec startup_wait = { .tv_nsec = 250 * 1000 * 1000 };
 	const char *profile_name = perfetto_config ? "custom" : profile;
 	int status, err;
+	int config_fd = -1, system_fd = -1;
 
 	memset(&capture, 0, sizeof(capture));
+	capture.system_only = system_only;
 	if (!duration_s || (!profile && !perfetto_config))
 		return -EINVAL;
 	if (!perfetto_config && strcmp(profile, "full") &&
@@ -415,10 +433,12 @@ int trace_capture_start(const char *output, __u32 duration_s,
 		err = -EEXIST;
 		goto fail;
 	}
-	err = temporary_path(capture.network_trace, sizeof(capture.network_trace),
-			     "anettrace");
-	if (err)
-		goto fail;
+	if (!system_only) {
+		err = temporary_path(capture.network_trace, sizeof(capture.network_trace),
+				     "anettrace");
+		if (err)
+			goto fail;
+	}
 	err = system_temporary_paths();
 	if (err)
 		goto fail;
@@ -427,6 +447,23 @@ int trace_capture_start(const char *output, __u32 duration_s,
 	err = write_config(duration_s, profile, perfetto_config, ring_buffer);
 	if (err)
 		goto fail;
+	if (system_only) {
+		/* Open as the caller, then pass descriptors across Android's exec
+		 * domain transition; perfetto need not open files in shell's directory.
+		 */
+		config_fd = open(capture.config, O_RDONLY | O_CLOEXEC);
+		if (config_fd < 0) {
+			err = -errno;
+			goto fail;
+		}
+		system_fd = open(capture.system_trace,
+				 O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+		if (system_fd < 0) {
+			err = -errno;
+			goto fail;
+		}
+		capture.system_created = true;
+	}
 
 	capture.perfetto_pid = fork();
 	if (capture.perfetto_pid < 0) {
@@ -434,11 +471,31 @@ int trace_capture_start(const char *output, __u32 duration_s,
 		goto fail;
 	}
 	if (!capture.perfetto_pid) {
+		if (system_only) {
+			if (dup2(config_fd, STDIN_FILENO) < 0 ||
+			    dup2(system_fd, STDOUT_FILENO) < 0 ||
+			    fcntl(STDIN_FILENO, F_SETFD, 0) < 0 ||
+			    fcntl(STDOUT_FILENO, F_SETFD, 0) < 0)
+				_exit(126);
+			execl("/system/bin/perfetto", "perfetto", "--txt", "-c",
+			      "-", "-o", "-", NULL);
+			execlp("perfetto", "perfetto", "--txt", "-c", "-",
+			       "-o", "-", NULL);
+			_exit(127);
+		}
 		execl("/system/bin/perfetto", "perfetto", "--txt", "-c",
 		      capture.config, "-o", capture.system_trace, NULL);
 		execlp("perfetto", "perfetto", "--txt", "-c", capture.config,
 		       "-o", capture.system_trace, NULL);
 		_exit(127);
+	}
+	if (config_fd >= 0) {
+		close(config_fd);
+		config_fd = -1;
+	}
+	if (system_fd >= 0) {
+		close(system_fd);
+		system_fd = -1;
 	}
 	capture.started = true;
 	nanosleep(&startup_wait, NULL);
@@ -449,6 +506,8 @@ int trace_capture_start(const char *output, __u32 duration_s,
 		goto fail;
 	}
 	if (err < 0) {
+		if (errno == EINTR)
+			return 0;
 		err = -errno;
 		goto fail;
 	}
@@ -461,8 +520,54 @@ int trace_capture_start(const char *output, __u32 duration_s,
 	return 0;
 
 fail:
+	if (config_fd >= 0)
+		close(config_fd);
+	if (system_fd >= 0)
+		close(system_fd);
 	trace_capture_abort();
-	pr_err("failed to start combined trace capture: %s\n", strerror(-err));
+	pr_err("failed to start trace capture: %s\n", strerror(-err));
+	return err;
+}
+
+int trace_capture_wait_system(volatile sig_atomic_t *stop)
+{
+	struct timespec start, now;
+	int err;
+
+	if (!capture.started || !capture.system_only)
+		return -EINVAL;
+	if (clock_gettime(CLOCK_MONOTONIC, &start)) {
+		err = -errno;
+		goto fail;
+	}
+	while (!*stop) {
+		pid_t result = waitpid(capture.perfetto_pid, &capture.child_status,
+				       WNOHANG);
+
+		if (result == capture.perfetto_pid) {
+			capture.child_reaped = true;
+			break;
+		}
+		if (result < 0 && errno != EINTR) {
+			err = -errno;
+			goto fail;
+		}
+		if (clock_gettime(CLOCK_MONOTONIC, &now)) {
+			err = -errno;
+			goto fail;
+		}
+		if (!capture.ring_buffer &&
+		    (double)(now.tv_sec - start.tv_sec) +
+		    (now.tv_nsec - start.tv_nsec) / 1e9 >= capture.window_s)
+			break;
+		usleep(50000);
+	}
+	if (!capture.child_reaped)
+		trace_capture_stop();
+	return trace_capture_finish();
+fail:
+	pr_err("system Perfetto wait failed: %s\n", strerror(-err));
+	trace_capture_abort();
 	return err;
 }
 
@@ -487,8 +592,13 @@ int trace_capture_finish(void)
 
 	if (!capture.started)
 		return -EINVAL;
-	err = wait_child(capture.perfetto_pid,
-			 capture.stop_requested ? 5000 : 250, &status);
+	if (capture.child_reaped) {
+		status = capture.child_status;
+		err = 0;
+	} else {
+		err = wait_child(capture.perfetto_pid,
+				 capture.stop_requested ? 5000 : 250, &status);
+	}
 	if (err == -ETIMEDOUT && !capture.stop_requested) {
 		trace_capture_stop();
 		err = wait_child(capture.perfetto_pid, 5000, &status);
@@ -503,6 +613,11 @@ int trace_capture_finish(void)
 	capture.started = false;
 	if (err) {
 		pr_err("system Perfetto did not stop cleanly: %s\n", strerror(-err));
+		goto out;
+	}
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		err = -ECHILD;
+		pr_err("system Perfetto exited unsuccessfully (status %d)\n", status);
 		goto out;
 	}
 	if (capture.ring_buffer) {
@@ -543,18 +658,21 @@ int trace_capture_finish(void)
 		pr_err("system Perfetto trace is missing or empty\n");
 		goto out;
 	}
-	err = file_nonempty(capture.network_trace);
-	if (err) {
-		pr_err("Anettrace Perfetto trace is missing or empty\n");
-		goto out;
+	if (!capture.system_only) {
+		err = file_nonempty(capture.network_trace);
+		if (err) {
+			pr_err("Anettrace Perfetto trace is missing or empty\n");
+			goto out;
+		}
 	}
 	err = merge_traces();
 	if (err) {
-		pr_err("failed to create combined trace %s: %s\n",
+		pr_err("failed to create trace %s: %s\n",
 		       capture.output, strerror(-err));
 		goto out;
 	}
-	pr_info("combined trace: %s\n", capture.output);
+	pr_info("%s trace: %s\n", capture.system_only ? "system" : "combined",
+		capture.output);
 
 out:
 	cleanup_temporary();
@@ -565,7 +683,7 @@ void trace_capture_abort(void)
 {
 	int status;
 
-	if (capture.started) {
+	if (capture.started && !capture.child_reaped) {
 		kill(capture.perfetto_pid, SIGTERM);
 		if (wait_child(capture.perfetto_pid, 2000, &status) == -ETIMEDOUT) {
 			kill(capture.perfetto_pid, SIGKILL);

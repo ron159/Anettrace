@@ -133,6 +133,7 @@ typedef struct trace_args {
 	char *tcp_flags;
 	char *perfetto_events;
 	bool capture_trace;
+	bool system_trace_only;
 	bool ring_buffer;
 	bool trace_detail;
 	bool connect_diagnostics;

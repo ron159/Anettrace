@@ -201,6 +201,9 @@ require_text '--perfetto-config and --trace-profile are mutually exclusive' \
 	src/anettrace.c
 require_text 'cannot read Perfetto config %s: %s' src/anettrace.c
 require_text 'perfetto_config_write_custom' src/trace_capture.c
+require_text '"system-trace-only"' src/anettrace.c
+require_text 'trace_capture_wait_system(&system_capture_stop)' src/anettrace.c
+require_text '"--system-trace-only"' tests/test_system_trace_only.py
 require_text '.lname = "duration"' src/anettrace.c
 require_text '.lname = "output"' src/anettrace.c
 require_text 'perfetto_export_native_open' src/anettrace.c

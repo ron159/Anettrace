@@ -146,6 +146,10 @@ jobs:
             tests/test_validate_android_connect.py \
             tests/test_soak_android_connect.py \
             tests/test_release_assets.py
+      - name: Run unprivileged system-only capture tests
+        env:
+          ANETTRACE_TEST_BIN: ${{ github.workspace }}/src/anettrace
+        run: python3 -m unittest tests/test_system_trace_only.py
       - name: Run Perfetto conversion contract
         run: |
           python3 -m venv /tmp/perfetto-venv

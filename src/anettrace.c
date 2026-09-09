@@ -256,6 +256,11 @@ static void do_parse_args(int argc, char *argv[])
 			.desc = "capture system plus Anettrace events without terminal trace output",
 		},
 		{
+			.lname = "system-trace-only", .dest = &trace_args->system_trace_only,
+			.type = OPTION_BOOL,
+			.desc = "with --capture-trace: only system Perfetto; no BPF or root requirement",
+		},
+		{
 			.lname = "ring-buffer", .dest = &trace_args->ring_buffer,
 			.type = OPTION_BOOL,
 			.desc = "run until interrupted and save the trailing --duration window",
@@ -291,7 +296,7 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "output", .dest = &trace_args->output,
 			.type = OPTION_STRING,
-			.desc = "combined .pftrace file or existing output directory",
+			.desc = "output .pftrace file or existing output directory",
 		},
 		{
 			.type = OPTION_GROUP,
@@ -457,6 +462,31 @@ static void do_parse_args(int argc, char *argv[])
 		pr_version();
 		exit(0);
 	}
+	if (trace_args->system_trace_only) {
+		const char *allowed[] = {
+			"capture-trace", "system-trace-only", "ring-buffer",
+			"trace-profile", "perfetto-config", "duration", "output",
+			"debug", "help", "version", "date", "timestamp",
+		};
+		size_t i, j;
+
+		if (!trace_args->capture_trace) {
+			pr_err("--system-trace-only requires --capture-trace\n");
+			goto err;
+		}
+		for (i = 0; i < ARRAY_SIZE(opts); i++) {
+			if (!opts[i].__is_set)
+				continue;
+			for (j = 0; j < ARRAY_SIZE(allowed); j++)
+				if (opts[i].lname && !strcmp(opts[i].lname, allowed[j]))
+					break;
+			if (j == ARRAY_SIZE(allowed)) {
+				pr_err("--system-trace-only cannot be combined with --%s\n",
+				       opts[i].lname);
+				goto err;
+			}
+		}
+	}
 	if (trace_args->traffic && trace_args->perfetto_events) {
 		pr_err("--traffic cannot be combined with --perfetto-events\n");
 		goto err;
@@ -578,10 +608,13 @@ err:
 	exit(-EINVAL);
 }
 
+static volatile sig_atomic_t system_capture_stop;
+
 static void request_exit(int code)
 {
 	(void)code;
 	trace_ctx.stop = true;
+	system_capture_stop = 1;
 }
 
 static void finish_trace(void)
@@ -616,6 +649,17 @@ int main(int argc, char *argv[])
 	output_time_init();
 	init_trace_group();
 	do_parse_args(argc, argv);
+	if (trace_ctx.args.system_trace_only) {
+		signal(SIGTERM, request_exit);
+		signal(SIGINT, request_exit);
+		if (trace_capture_start(trace_ctx.args.output,
+					trace_ctx.args.duration,
+					trace_ctx.args.trace_profile,
+					trace_ctx.args.perfetto_config,
+					trace_ctx.args.ring_buffer, true))
+			return -1;
+		return trace_capture_wait_system(&system_capture_stop) ? -1 : 0;
+	}
 	if (trace_ctx.args.traffic && !trace_ctx.args.capture_trace)
 		return traffic_run(&trace_ctx.args, &trace_ctx.bpf_args);
 
@@ -633,7 +677,7 @@ int main(int argc, char *argv[])
 					trace_ctx.args.duration,
 					trace_ctx.args.trace_profile,
 					trace_ctx.args.perfetto_config,
-					trace_ctx.args.ring_buffer))
+					trace_ctx.args.ring_buffer, false))
 			goto err;
 		if ((trace_ctx.args.ring_buffer ?
 		     perfetto_export_native_open_ring(
