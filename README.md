@@ -66,7 +66,25 @@ sudo ./src/anettrace --traffic --proto tcp --uid 1000 --interval 2
 ./anettrace --traffic --capture-trace --ring-buffer \
   --duration 30 --interval 2 --proto tcp --uid 10187 \
   --output /data/local/tmp/browser-network.pftrace
+
+# 仅系统 trace：在 adb shell 中运行，无需 su，不加载 BPF
+./anettrace --capture-trace --system-trace-only --duration 10 \
+  --output /data/local/tmp/system.pftrace
+
+# 仅系统 trace 也可使用自定义配置
+./anettrace --capture-trace --system-trace-only \
+  --perfetto-config /data/local/tmp/perfetto_cfg.pbtxt \
+  --duration 10 --output /data/local/tmp/custom-system.pftrace
 ```
+
+`--system-trace-only` 必须与 `--capture-trace` 一起使用，跳过 root 检查、BPF 探测、
+挂载和所有 Anettrace 网络事件导出。支持 `--duration`、`--output`、`--trace-profile`、
+`--perfetto-config` 和 `--ring-buffer`。不接受 `--uid`、`--pid`、`--traffic`、
+`--trace-detail` 等网络过滤、分析或 BPF 参数；系统采集范围由 Perfetto 配置决定。
+这里的无需 root 是指使用有系统 Perfetto 访问权限的 `adb shell` 用户，并不保证普通
+Android 应用身份可采集。设备 ROM 仍可能限制某些数据源。配置通过标准输入传递，输出
+通过标准输出写入调用者可写的临时文件，最终保存为单个纯系统 `.pftrace`。
+若自定义配置自身启用了系统网络数据源，这些系统事件仍由 Perfetto 正常采集。
 
 `--perfetto-config` 与 `--trace-profile` 互斥。自定义配置中的顶层 `duration_ms`
 会被忽略，普通模式统一使用 `--duration` 管理采集窗口，环形模式持续到 Ctrl+C。

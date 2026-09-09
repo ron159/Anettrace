@@ -8,7 +8,7 @@ complete -W '-s --saddr -d --daddr --addr -p -D --dport -S --sport -P --port
              --latency-summary
 
              -t --trace --force --ret --detail --perfetto-events
-             --capture-trace --ring-buffer --trace-detail --connect-diagnostics
+             --capture-trace --system-trace-only --ring-buffer --trace-detail --connect-diagnostics
              --trace-profile --perfetto-config --duration --output --date --timestamp --id --mark
              -c --count --hooks
              --tiny-show --trace-stack --trace-matcher --trace-noclone
