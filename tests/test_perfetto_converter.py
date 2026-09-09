@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import sys
+import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -23,6 +24,109 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PerfettoConverterTest(unittest.TestCase):
+    def test_all_arguments_have_searchable_typed_companions(self) -> None:
+        exporter = MODULE.PerfettoExporter(MODULE.read_records(
+            ROOT / "tests" / "fixtures" / "perfetto-events.jsonl"
+        ))
+        trace = Trace()
+        trace.ParseFromString(exporter.serialize())
+        for packet in trace.packet:
+            args = {a.name: a for a in packet.track_event.debug_annotations}
+            for key, arg in args.items():
+                if key.startswith("search."):
+                    continue
+                field = arg.WhichOneof("value")
+                value = getattr(arg, field)
+                text = str(value).lower() if field == "bool_value" else str(value)
+                self.assertEqual(args[f"search.{key}"].string_value, f"{key}={text}")
+
+    def test_native_and_python_search_encoding_and_ui_query(self) -> None:
+        # Compile the actual native protobuf/annotation helpers without BPF or
+        # Android dependencies, then decode and query their output with Perfetto.
+        source = (ROOT / "src" / "perfetto_export.c").read_text()
+        helpers = source[source.index("static void proto_free("):
+                         source.index("static void native_packet_queue_free(")]
+        annotations = source[source.index("static void native_annotation_search("):
+                             source.index("static void native_event_write(")]
+        harness = """
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+typedef unsigned long long u64;
+typedef long long s64;
+typedef uint32_t u32;
+typedef uint8_t u8;
+struct proto_buffer { unsigned char *data; size_t size, capacity; bool failed; };
+""" + helpers + annotations + """
+int main(void) {
+    struct proto_buffer event = {};
+    native_annotation_uint(&event, "dport", 443);
+    native_annotation_uint(&event, "maximum", ~0ULL);
+    native_annotation_int(&event, "error", (-9223372036854775807LL - 1));
+    native_annotation_bool(&event, "terminal", false);
+    native_annotation_bool(&event, "dropped", true);
+    native_annotation_string(&event, "daddr", "2001:db8::1");
+    native_annotation_string(&event, "empty", NULL);
+    native_annotation_id(&event, "socket_id", 0x1234);
+    char long_value[8193];
+    memset(long_value, 'x', sizeof(long_value) - 1);
+    long_value[sizeof(long_value) - 1] = 0;
+    native_annotation_string(&event, "long", long_value);
+    if (event.failed) return 1;
+    size_t written = fwrite(event.data, 1, event.size, stdout);
+    int result = written != event.size;
+    proto_free(&event);
+    return result;
+}
+"""
+        record = dict(dport=443, maximum=2**64 - 1, error=-(2**63),
+                      terminal=False, dropped=True, daddr="2001:db8::1",
+                      empty="", socket_id="0000000000001234", long="x" * 8192)
+        exporter = MODULE.PerfettoExporter(MODULE.read_records(
+            ROOT / "tests" / "fixtures" / "perfetto-events.jsonl"
+        ))
+        python_event = TrackEvent()
+        exporter.add_annotations(python_event, record, record.keys())
+        with TemporaryDirectory(prefix="anettrace-search-") as directory:
+            base = Path(directory)
+            (base / "test.c").write_text(harness)
+            subprocess.run(["cc", "-std=gnu11", "-Wall", "-Werror",
+                            "-Wno-unused-function", str(base / "test.c"),
+                            "-o", str(base / "test")], check=True)
+            native_event = TrackEvent()
+            native_event.ParseFromString(subprocess.check_output([str(base / "test")]))
+            self.assertEqual(native_event, python_event)
+            for event in (native_event, python_event):
+                trace = Trace()
+                trace.ParseFromString(exporter.serialize())
+                descriptor = trace.packet.add()
+                descriptor.trusted_packet_sequence_id = 777
+                descriptor.sequence_flags = 1
+                descriptor.track_descriptor.uuid = 987654
+                descriptor.track_descriptor.name = "search test track"
+                packet = trace.packet.add()
+                packet.trusted_packet_sequence_id = 777
+                packet.timestamp = 100000000000
+                packet.track_event.CopyFrom(event)
+                packet.track_event.type = TrackEvent.TYPE_INSTANT
+                packet.track_event.track_uuid = 987654
+                packet.track_event.name = "search test"
+                path = base / "search.pftrace"
+                path.write_bytes(trace.SerializeToString())
+                with TraceProcessor(trace=str(path)) as processor:
+                    for term in ("dport=443", "terminal=false", "dropped=true",
+                                 "error=-9223372036854775808", "daddr=2001:db8::1",
+                                 "maximum=18446744073709551615"):
+                        rows = list(processor.query(f"""
+                            SELECT DISTINCT slice.id FROM slice JOIN args USING(arg_set_id)
+                            WHERE slice.name = 'search test'
+                            AND (args.string_value GLOB '*{term}*'
+                                 OR args.key GLOB '*{term}*')
+                        """))
+                        self.assertEqual(len(rows), 1, term)
+
     def test_socket_packet_and_terminal_events(self) -> None:
         fixture = ROOT / "tests" / "fixtures" / "perfetto-events.jsonl"
         encoded = MODULE.PerfettoExporter(MODULE.read_records(fixture)).serialize()

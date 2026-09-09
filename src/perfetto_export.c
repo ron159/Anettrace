@@ -826,6 +826,29 @@ static void native_event_correlation(struct proto_buffer *event,
 		proto_uint(event, 52, correlation_id);
 }
 
+/* Perfetto's argument search indexes strings, not numeric/bool values.
+ * Keep typed arguments for SQL and add a searchable key=value companion.
+ */
+static void native_annotation_search(struct proto_buffer *event,
+				     const char *name, const char *value)
+{
+	struct proto_buffer annotation = {}, key = {}, text = {};
+
+	value = value ?: "";
+	proto_bytes(&key, "search.", 7);
+	proto_bytes(&key, name, strlen(name));
+	proto_bytes(&text, name, strlen(name));
+	proto_bytes(&text, "=", 1);
+	proto_bytes(&text, value, strlen(value));
+	/* String and message fields share the length-delimited wire format. */
+	proto_message(&annotation, 10, &key);
+	proto_message(&annotation, 6, &text);
+	proto_message(event, 4, &annotation);
+	proto_free(&text);
+	proto_free(&key);
+	proto_free(&annotation);
+}
+
 static void native_annotation_string(struct proto_buffer *event,
 				     const char *name, const char *value)
 {
@@ -835,28 +858,35 @@ static void native_annotation_string(struct proto_buffer *event,
 	proto_string(&annotation, 6, value ?: "");
 	proto_message(event, 4, &annotation);
 	proto_free(&annotation);
+	native_annotation_search(event, name, value);
 }
 
 static void native_annotation_uint(struct proto_buffer *event,
 				   const char *name, u64 value)
 {
 	struct proto_buffer annotation = {};
+	char text[32];
 
 	proto_string(&annotation, 10, name);
 	proto_uint(&annotation, 3, value);
 	proto_message(event, 4, &annotation);
 	proto_free(&annotation);
+	snprintf(text, sizeof(text), "%llu", value);
+	native_annotation_search(event, name, text);
 }
 
 static void native_annotation_int(struct proto_buffer *event,
 				  const char *name, s64 value)
 {
 	struct proto_buffer annotation = {};
+	char text[32];
 
 	proto_string(&annotation, 10, name);
 	proto_uint(&annotation, 4, (u64)value);
 	proto_message(event, 4, &annotation);
 	proto_free(&annotation);
+	snprintf(text, sizeof(text), "%lld", value);
+	native_annotation_search(event, name, text);
 }
 
 static void native_annotation_bool(struct proto_buffer *event,
@@ -868,6 +898,7 @@ static void native_annotation_bool(struct proto_buffer *event,
 	proto_uint(&annotation, 2, value);
 	proto_message(event, 4, &annotation);
 	proto_free(&annotation);
+	native_annotation_search(event, name, value ? "true" : "false");
 }
 
 static void native_annotation_id(struct proto_buffer *event, const char *name,

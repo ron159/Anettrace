@@ -72,6 +72,14 @@ sudo ./src/anettrace --traffic --proto tcp --uid 1000 --interval 2
 会被忽略，普通模式统一使用 `--duration` 管理采集窗口，环形模式持续到 Ctrl+C。
 配置必须是设备上的非空普通文件，大小不超过 4 MiB。
 
+从 0.6.4 起，所有导出的网络事件附加参数都带有 `debug.search.*` 字符串副本。
+在 Perfetto 顶部搜索框输入 `dport=443`、`ip_id_hex=0x1234`、
+`dns_transaction_id_hex=0x1201` 或 `terminal=false`，即可定位对应事件；
+原始参数类型和简洁的流标签保持不变。搜索为文本匹配，并非 SQL 精确条件。
+`dport` 表示当前包的目的端口，收包时通常是手机本地端口。
+已有 trace 需重新抓取，或用新版转换工具重新转换原始 JSONL。
+字符串副本会增加 trace 大小，固定字节容量的环形缓冲可能更早触及容量上限。
+
 完整参数以 `anettrace -h` 和 [CLI Wiki](https://github.com/ron159/Anettrace/wiki/CLI-Reference) 为准。
 
 ## 使用文档
