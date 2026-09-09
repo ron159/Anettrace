@@ -258,21 +258,10 @@ class PerfettoExporter:
             value = record[key]
             annotation = event.debug_annotations.add()
             annotation.name = key
-            if isinstance(value, bool):
-                annotation.bool_value = value
-            elif isinstance(value, int):
-                if value >= 0:
-                    annotation.uint_value = value
-                else:
-                    annotation.int_value = value
-            else:
-                annotation.string_value = str(value)
-            # Perfetto searches argument strings/keys, not numeric/bool values.
-            # Preserve the original type for SQL and mirror every exported arg.
-            searchable = event.debug_annotations.add()
-            searchable.name = f"search.{key}"
-            text = str(value).lower() if isinstance(value, bool) else str(value)
-            searchable.string_value = f"{key}={text}"
+            # Searchable values with one field per argument in the details UI.
+            annotation.string_value = (
+                str(value).lower() if isinstance(value, bool) else str(value)
+            )
 
     def event(
         self,
