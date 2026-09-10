@@ -26,7 +26,7 @@ struct traffic_row {
 	traffic_flow_value_t value;
 };
 
-#define TRAFFIC_MAX_LINKS 12
+#define TRAFFIC_MAX_LINKS 15
 
 struct traffic_session {
 	trace_args_t *args;
@@ -121,6 +121,10 @@ static void traffic_format_endpoint(const struct traffic_row *row, bool local,
 	const traffic_addr_t *addr = local ? &row->key.laddr : &row->key.raddr;
 	u16 port = local ? row->key.lport : row->key.rport;
 
+	if (row->key.flags & TRAFFIC_ENDPOINT_UNKNOWN) {
+		snprintf(endpoint, endpoint_size, "?");
+		return;
+	}
 	if (row->key.family == AF_INET) {
 		inet_ntop(AF_INET, &addr->v4, address, sizeof(address));
 		snprintf(endpoint, endpoint_size, "%s:%u", address, port);
@@ -204,9 +208,14 @@ static void traffic_report_drops(struct traffic *skel, u64 *previous)
 		if (bpf_map_lookup_elem(map_fd, &index, &current) ||
 		    current == previous[index])
 			continue;
-		pr_warn("traffic: %llu samples dropped in %s map\n",
-			 current - previous[index],
-			 index == TRAFFIC_STAT_INFLIGHT_DROP ? "inflight" : "flow");
+		if (index == TRAFFIC_STAT_UDP_ENDPOINT_MISS)
+			pr_warn("traffic: %llu UDP samples have unknown endpoints (?)"
+				"; payload counters are retained\n",
+				current - previous[index]);
+		else
+			pr_warn("traffic: %llu samples dropped in %s map\n",
+				current - previous[index],
+				index == TRAFFIC_STAT_INFLIGHT_DROP ? "inflight" : "flow");
 		previous[index] = current;
 	}
 }
@@ -241,10 +250,27 @@ static int traffic_attach_pair(struct bpf_program *entry,
 	return 0;
 }
 
+static int traffic_attach_endpoint(struct bpf_program *program,
+				   const char *target, struct bpf_link **links,
+				   int *link_count)
+{
+	struct bpf_link *link = bpf_program__attach_kprobe(program, false, target);
+	long err = libbpf_get_error(link);
+
+	if (err) {
+		pr_err("traffic: cannot attach UDP endpoint probe %s: %s\n",
+		       target, strerror(-err));
+		return -1;
+	}
+	links[(*link_count)++] = link;
+	return 0;
+}
+
 static int traffic_attach_probes(struct traffic *skel, u8 protocol,
 				 struct bpf_link **links, int *link_count)
 {
 	int tcp_tx = 0, tcp_rx = 0, udp_tx = 0, udp_rx = 0;
+	int udp6_tx = 0;
 
 	if (!protocol || protocol == IPPROTO_TCP) {
 		tcp_tx = traffic_attach_pair(skel->progs.traffic_tcp_send_entry,
@@ -266,9 +292,10 @@ static int traffic_attach_probes(struct traffic *skel, u8 protocol,
 		udp_rx += traffic_attach_pair(skel->progs.traffic_udp4_recv_entry,
 			skel->progs.traffic_udp4_recv_exit, "udp_recvmsg",
 			links, link_count) == 0;
-		udp_tx += traffic_attach_pair(skel->progs.traffic_udp6_send_entry,
+		udp6_tx = traffic_attach_pair(skel->progs.traffic_udp6_send_entry,
 			skel->progs.traffic_udp6_send_exit, "udpv6_sendmsg",
 			links, link_count) == 0;
+		udp_tx += udp6_tx;
 		udp_rx += traffic_attach_pair(skel->progs.traffic_udp6_recv_entry,
 			skel->progs.traffic_udp6_recv_exit, "udpv6_recvmsg",
 			links, link_count) == 0;
@@ -276,6 +303,13 @@ static int traffic_attach_probes(struct traffic *skel, u8 protocol,
 			pr_err("traffic: UDP send/receive probes are incomplete\n");
 			return -1;
 		}
+		if (traffic_attach_endpoint(skel->progs.traffic_udp4_endpoints,
+				"udp_send_skb", links, link_count) ||
+		    (udp6_tx && traffic_attach_endpoint(skel->progs.traffic_udp6_endpoints,
+				"udp_v6_send_skb", links, link_count)) ||
+		    traffic_attach_endpoint(skel->progs.traffic_udp_receive_endpoints,
+				"skb_consume_udp", links, link_count))
+			return -1;
 	}
 
 	return 0;

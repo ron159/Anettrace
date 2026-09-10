@@ -119,6 +119,10 @@ jobs:
             /tmp/traffic-proto.txt
       - name: Run source contract checks
         run: ./tests/source-contracts.sh
+      - name: Verify UDP endpoints and payload counters on the running kernel
+        run: |
+          sudo python3 tests/traffic_udp_integration.py ./src/anettrace
+          sudo python3 tests/traffic_udp_integration.py ./src/anettrace --protocol all
       - name: Run timezone offset tests
         run: |
           gcc -O2 -Wall -Wextra -Iutils \
