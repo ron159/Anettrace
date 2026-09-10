@@ -15,24 +15,27 @@ def endpoint(address, port):
     return f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
 
 
-def exercise(binary):
+def exercise(binary, protocol):
     lines = []
     ready = threading.Event()
+    command = [str(binary), "--traffic", "--interval", "1", "--pid", str(os.getpid())]
+    if protocol == "udp":
+        command += ["--proto", "udp"]
     process = subprocess.Popen(
-        [str(binary), "--traffic", "--proto", "udp", "--interval", "1",
-         "--pid", str(os.getpid())],
+        command,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
 
     def read_output():
         for line in process.stdout:
             lines.append(line)
-            if "Traffic UDP (" in line:
+            if "(cumulative application payload per flow)" in line:
                 ready.set()
 
     reader = threading.Thread(target=read_output, daemon=True)
     reader.start()
     expected = {}
+    expected_tcp = {}
     try:
         if not ready.wait(20):
             raise AssertionError("UDP tracer did not become ready")
@@ -111,6 +114,24 @@ def exercise(binary):
             expected[endpoint("127.0.0.1", corked.getsockname()[1]),
                      endpoint("127.0.0.1", first.getsockname()[1])] = (0.5, 1.0)
             expected["?", "?"] = (1.0, 0)
+            # Exercise the shared inflight layout and all 15 attached links.
+            # In UDP-only mode the same TCP workload must produce no TCP rows.
+            listener = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            tcp_client = stack.enter_context(socket.create_connection(listener.getsockname(), 3))
+            accepted, _ = listener.accept()
+            tcp_server = stack.enter_context(accepted)
+            tcp_server.settimeout(3)
+            tcp_client.sendall(b"t" * 1024)
+            assert tcp_server.recv(1024, socket.MSG_WAITALL) == b"t" * 1024
+            tcp_server.sendall(b"r" * 2048)
+            assert tcp_client.recv(2048, socket.MSG_WAITALL) == b"r" * 2048
+            if protocol == "all":
+                client_endpoint = endpoint(*tcp_client.getsockname())
+                server_endpoint = endpoint(*tcp_server.getsockname())
+                expected_tcp[client_endpoint, server_endpoint] = (1.0, 2.0)
+                expected_tcp[server_endpoint, client_endpoint] = (2.0, 1.0)
     finally:
         process.send_signal(signal.SIGINT)
         try:
@@ -123,25 +144,29 @@ def exercise(binary):
         print(output, end="")
     assert process.returncode == 0, f"tracer exited {process.returncode}"
     observed = {}
+    observed_tcp = {}
     for line in lines:
         fields = line.split()
-        if len(fields) != 9 or fields[0] != str(os.getpid()) or fields[3] != "UDP":
+        if len(fields) != 9 or fields[0] != str(os.getpid()) or fields[3] not in ("UDP", "TCP"):
             continue
         local, remote = fields[5:7]
         assert not local.startswith(("0.0.0.0:", "[::]:")), line
         assert not remote.startswith(("0.0.0.0:", "[::]:")), line
         tx, rx = map(float, fields[7:9])
-        old_tx, old_rx = observed.get((local, remote), (0, 0))
-        observed[local, remote] = (max(tx, old_tx), max(rx, old_rx))
+        rows = observed if fields[3] == "UDP" else observed_tcp
+        old_tx, old_rx = rows.get((local, remote), (0, 0))
+        rows[local, remote] = (max(tx, old_tx), max(rx, old_rx))
     for key, counters in expected.items():
         assert observed.get(key) == counters, (key, counters, observed.get(key))
+    assert observed_tcp == expected_tcp, (observed_tcp, expected_tcp)
     assert "samples dropped" not in output, output
     assert "UDP samples have unknown endpoints (?)" in output, output
-    print(f"UDP endpoint integration passed: {len(expected)} client flows")
+    print(f"UDP endpoint integration passed ({protocol}): {len(expected)} flow expectations")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
+    parser.add_argument("--protocol", choices=("udp", "all"), default="udp")
     args = parser.parse_args()
-    exercise(args.binary.resolve())
+    exercise(args.binary.resolve(), args.protocol)
