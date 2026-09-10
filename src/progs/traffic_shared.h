@@ -6,6 +6,7 @@
 #define TRAFFIC_COMM_LEN 16
 #define TRAFFIC_MAX_FLOWS 16384
 #define TRAFFIC_STALE_NS (300ULL * 1000000000ULL)
+#define TRAFFIC_ENDPOINT_UNKNOWN 1
 
 enum traffic_operation {
 	TRAFFIC_OP_TCP_TX = 1,
@@ -19,6 +20,7 @@ enum traffic_operation {
 enum traffic_stat_index {
 	TRAFFIC_STAT_INFLIGHT_DROP,
 	TRAFFIC_STAT_FLOW_DROP,
+	TRAFFIC_STAT_UDP_ENDPOINT_MISS,
 	TRAFFIC_STAT_MAX,
 };
 
@@ -34,7 +36,7 @@ typedef struct {
 	u16 lport;
 	u16 rport;
 	u8 protocol;
-	u8 pad;
+	u8 flags;
 	traffic_addr_t laddr;
 	traffic_addr_t raddr;
 	char comm[TRAFFIC_COMM_LEN];

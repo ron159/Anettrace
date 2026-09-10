@@ -99,6 +99,18 @@ def exercise(binary):
             mapped = udp(socket.AF_INET6)
             mapped.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
             exchange(mapped, first, "127.0.0.1", "127.0.0.1")
+            # Corked writes have no skb until the flush: preserve those bytes
+            # under an explicit unknown endpoint instead of inventing an IP.
+            corked = udp(socket.AF_INET)
+            corked.sendto(b"x" * 1024, socket.MSG_MORE, first.getsockname())
+            corked.sendto(b"z" * 512, first.getsockname())
+            request, peer = first.recvfrom(2048)
+            assert request == b"x" * 1024 + b"z" * 512
+            first.sendto(b"y" * 1024, peer)
+            assert corked.recv(2048) == b"y" * 1024
+            expected[endpoint("127.0.0.1", corked.getsockname()[1]),
+                     endpoint("127.0.0.1", first.getsockname()[1])] = (0.5, 1.0)
+            expected["?", "?"] = (1.0, 0)
     finally:
         process.send_signal(signal.SIGINT)
         try:
@@ -124,6 +136,7 @@ def exercise(binary):
     for key, counters in expected.items():
         assert observed.get(key) == counters, (key, counters, observed.get(key))
     assert "samples dropped" not in output, output
+    assert "UDP samples have unknown endpoints (?)" in output, output
     print(f"UDP endpoint integration passed: {len(expected)} client flows")
 
 
