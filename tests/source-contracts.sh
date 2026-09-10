@@ -322,4 +322,6 @@ require_text '--latest' .github/workflows/release.yml
 require_text 'uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' \
 	.github/workflows/release.yml
 
+python3 -m unittest discover -s "$ROOT/tests" -p 'test_network_syscalls.py'
+
 echo "source contracts: ok"

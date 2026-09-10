@@ -29,6 +29,8 @@ typedef struct {
 	bool connect_diagnostics;
 	u32  connect_syscall_nr;
 	u32  getsockopt_syscall_nr;
+	u32  network_syscall_nr[4]; /* sendto, recvfrom, sendmsg, recvmsg */
+	bool network_socket_filter;
 	u32  first_rtt;
 	u32  last_rtt;
 	u32  rate_limit;
@@ -120,6 +122,7 @@ enum {
 	FUNC_TYPE_TINY,
 	FUNC_TYPE_TRACING_RET,
 	FUNC_TYPE_CONNECT,
+	FUNC_TYPE_SYSCALL,
 	FUNC_TYPE_MAX,
 };
 
@@ -152,6 +155,33 @@ typedef struct {
 } connect_event_t;
 
 #define CONNECT_EVENT_ASYNC_PENDING (1 << 0)
+
+enum network_syscall_kind {
+	NETWORK_SYS_SENDTO, NETWORK_SYS_RECVFROM,
+	NETWORK_SYS_SENDMSG, NETWORK_SYS_RECVMSG,
+};
+
+typedef struct {
+	u16 meta;
+	u16 kind;
+	u32 syscall_nr;
+	u64 start_ts;
+	u64 ts;
+	u64 socket_key;
+	u64 requested_bytes;
+	s64 result;
+	u32 socket_generation;
+	u32 tid;
+	u32 tgid;
+	u32 uid;
+	s32 fd;
+	u32 flags;
+	u8 finished;
+	u8 requested_valid;
+	u8 require_socket;
+	u8 pad;
+	char task[16];
+} network_syscall_event_t;
 
 enum {
 	PACKET_DIRECTION_UNKNOWN,

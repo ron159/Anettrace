@@ -556,6 +556,10 @@ static void do_parse_args(int argc, char *argv[])
 		bpf_args->connect_syscall_nr = SYS_connect;
 		bpf_args->getsockopt_syscall_nr = SYS_getsockopt;
 	}
+	bpf_args->network_syscall_nr[NETWORK_SYS_SENDTO] = SYS_sendto;
+	bpf_args->network_syscall_nr[NETWORK_SYS_RECVFROM] = SYS_recvfrom;
+	bpf_args->network_syscall_nr[NETWORK_SYS_SENDMSG] = SYS_sendmsg;
+	bpf_args->network_syscall_nr[NETWORK_SYS_RECVMSG] = SYS_recvmsg;
 
 /* convert the args to the eBPF pkt_arg struct */
 #define FILL_ADDR_PROTO(name, subfix, args, pf) if (name##_pf == pf) {	\

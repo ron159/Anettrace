@@ -565,11 +565,13 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		&trace_dev_hard_start_xmit,
 	};
 	static char perfetto_compact_traces[] =
+		"network_sys_enter,network_sys_exit,"
 		"sk_alloc,inet_sock_set_state,tcp_sendmsg,tcp_recvmsg,tcp_close,"
 		"__tcp_transmit_skb,udp_sendmsg,udpv6_sendmsg,"
 		"ip_output,ip6_output,tcp_v4_rcv,tcp_v6_rcv,"
 		"udp_rcv,udpv6_rcv,udp_recvmsg,udpv6_recvmsg";
 	static char perfetto_detailed_traces[] =
+		"network_sys_enter,network_sys_exit,"
 		"sk_alloc,inet_sock_set_state,inet_listen,tcp_sendmsg,"
 		"tcp_sendmsg_locked,"
 		"tcp_recvmsg,tcp_close,tcp_v4_destroy_sock,tcp_skb_entail,"
@@ -709,6 +711,7 @@ static int trace_prepare_args()
 		goto err;
 	}
 	bpf_args->__rate_limit = bpf_args->rate_limit;
+	bpf_args->network_socket_filter = trace_has_pkt_filter() || bpf_args->netns;
 	bpf_args->has_filter = trace_has_pkt_filter() || bpf_args->pid ||
 		bpf_args->uid_enabled;
 	if (bpf_args->perfetto && !bpf_args->has_filter && !args->force) {

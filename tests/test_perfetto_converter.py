@@ -24,6 +24,58 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PerfettoConverterTest(unittest.TestCase):
+    def test_network_syscall_duration_error_and_thread_track(self) -> None:
+        records = MODULE.read_records(ROOT / "tests/fixtures/perfetto-events.jsonl")
+        clock = records[0]
+        start = int(clock["monotonic_ns"]) + 100000
+        calls = [dict(schema=MODULE.SCHEMA, type="network_syscall",
+                      start_ts_ns=start, ts_ns=start + 2000,
+                      syscall="recvfrom", tid=70, tgid=60, uid=10000,
+                      fd=9, flags=0, result=-11, error=11, bytes=0,
+                      requested_bytes=4096, requested_valid=True,
+                      call_id="abc", socket_id="def", flow_id="123",
+                      flow_tag="tcp-1", incomplete=False)]
+        trace = Trace()
+        trace.ParseFromString(MODULE.PerfettoExporter([clock] + calls).serialize())
+        begins = [p for p in trace.packet if p.track_event.type == TrackEvent.TYPE_SLICE_BEGIN]
+        ends = [p for p in trace.packet if p.track_event.type == TrackEvent.TYPE_SLICE_END]
+        self.assertEqual(len(begins), 1)
+        self.assertEqual(len(ends), 1)
+        self.assertIn("recvfrom", begins[0].track_event.name)
+        self.assertIn("tcp-1", begins[0].track_event.name)
+        self.assertEqual(ends[0].timestamp - begins[0].timestamp, 2000)
+        args = {a.name: a.string_value for a in begins[0].track_event.debug_annotations}
+        self.assertEqual(args["error"], "11")
+        self.assertEqual(args["result"], "-11")
+        descriptors = {p.track_descriptor.uuid: p.track_descriptor for p in trace.packet
+                       if p.HasField("track_descriptor")}
+        track = descriptors[begins[0].track_event.track_uuid]
+        self.assertEqual(track.name, "Network syscalls")
+        self.assertEqual(descriptors[track.parent_uuid].thread.tid, 70)
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "syscall.pftrace"
+            path.write_bytes(trace.SerializeToString())
+            with TraceProcessor(trace=str(path)) as processor:
+                slices = list(processor.query(
+                    "SELECT dur FROM slice WHERE category = 'anettrace.syscall'"))
+                self.assertEqual([row.dur for row in slices], [2000])
+
+    def test_incomplete_syscall_does_not_claim_success(self) -> None:
+        clock = MODULE.read_records(ROOT / "tests/fixtures/perfetto-events.jsonl")[0]
+        start = int(clock["monotonic_ns"]) + 100000
+        call = dict(schema=MODULE.SCHEMA, type="network_syscall", syscall="recvmsg",
+                    start_ts_ns=start, ts_ns=start + 1000, tid=1, tgid=1, fd=3,
+                    requested_valid=False, requested_bytes=0, result=0, bytes=0,
+                    error=0, incomplete=True)
+        trace = Trace()
+        trace.ParseFromString(MODULE.PerfettoExporter([clock, call]).serialize())
+        event = next(p.track_event for p in trace.packet
+                     if p.track_event.type == TrackEvent.TYPE_SLICE_BEGIN)
+        args = {a.name: a.string_value for a in event.debug_annotations}
+        self.assertEqual(args["incomplete"], "true")
+        self.assertNotIn("result", args)
+        self.assertNotIn("requested_bytes", args)
+
     def test_all_arguments_are_searchable_without_duplicates(self) -> None:
         exporter = MODULE.PerfettoExporter(MODULE.read_records(
             ROOT / "tests" / "fixtures" / "perfetto-events.jsonl"

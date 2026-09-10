@@ -77,6 +77,14 @@ sudo ./src/anettrace --traffic --proto tcp --uid 1000 --interval 2
   --duration 10 --output /data/local/tmp/custom-system.pftrace
 ```
 
+网络采集的精简模式和 `--trace-detail` 详细模式均默认增加线程下的
+`Network syscalls` 轨道，记录 `sendto/recvfrom/sendmsg/recvmsg` 的起止、耗时、
+fd、flags、返回字节数和错误；可靠关联时显示 `tcp-N/dns-N` 流标记。
+这层不额外累加流量，调用耗时包含阻塞和调度等待，并不代表对端收包耗时。
+目前覆盖原生 64 位 ABI，不包含 32 位兼容应用、`read/write`、批量收发及 libc uprobe。
+采集结束时仍未返回的调用标为 `incomplete`；未获取请求长度时
+`requested_valid=false`。此能力不在纯系统采集或连接专项诊断模式中启用。
+
 `--system-trace-only` 必须与 `--capture-trace` 一起使用，跳过 root 检查、BPF 探测、
 挂载和所有 Anettrace 网络事件导出。支持 `--duration`、`--output`、`--trace-profile`、
 `--perfetto-config` 和 `--ring-buffer`。不接受 `--uid`、`--pid`、`--traffic`、
