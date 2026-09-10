@@ -85,14 +85,17 @@ def exercise(binary):
             connected4 = udp(socket.AF_INET)
             exchange(connected4, first, "127.0.0.1", "127.0.0.1", connected=True)
             # sendto can override even a connected UDP socket's default peer.
-            exchange(connected4, second, "127.0.0.1", "127.0.0.2")
-            for family, address in [(socket.AF_INET6, "::1")]:
-                server6 = udp(family, address)
-                other6 = udp(family, address)
-                client6 = udp(family)
-                exchange(client6, server6, address, address)
-                exchange(client6, other6, address, address, peek=True)
-                exchange(udp(family), server6, address, address, connected=True)
+            # The socket still filters incoming packets by its connected peer.
+            connected4.sendto(b"x" * 1024, second.getsockname())
+            assert second.recv(2048) == b"x" * 1024
+            expected[endpoint("127.0.0.1", connected4.getsockname()[1]),
+                     endpoint("127.0.0.2", second.getsockname()[1])] = (1.0, 0)
+            server6 = udp(socket.AF_INET6, "::1")
+            other6 = udp(socket.AF_INET6, "::1")
+            client6 = udp(socket.AF_INET6)
+            exchange(client6, server6, "::1", "::1")
+            exchange(client6, other6, "::1", "::1", peek=True)
+            exchange(udp(socket.AF_INET6), server6, "::1", "::1", connected=True)
             mapped = udp(socket.AF_INET6)
             mapped.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
             exchange(mapped, first, "127.0.0.1", "127.0.0.1")
