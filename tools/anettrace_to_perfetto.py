@@ -751,6 +751,30 @@ class PerfettoExporter:
             ),
         )
 
+    def export_network_syscall(self, record: dict[str, Any]) -> None:
+        start = int(record["start_ts_ns"])
+        end = int(record["ts_ns"])
+        if end < start:
+            raise ValueError("network syscall ends before it starts")
+        tgid, tid = int(record.get("tgid", 0)), int(record.get("tid", 0))
+        parent = self.thread_track(record)
+        track = stable_uuid("network-syscalls", tgid, tid)
+        self.descriptor(track, "Network syscalls", parent)
+        name = str(record["syscall"])
+        if record.get("flow_tag"):
+            name += " · " + str(record["flow_tag"])
+        name += f" · fd={record.get('fd', -1)}"
+        args = dict(record, end_ts_ns=end, duration_ns=end - start)
+        if not record.get("requested_valid"):
+            args.pop("requested_bytes", None)
+        if record.get("incomplete"):
+            for key in ("result", "bytes", "error"):
+                args.pop(key, None)
+        self.event(start, track, TrackEvent.TYPE_SLICE_BEGIN, name,
+                   "anettrace.syscall",
+                   annotations=(args, tuple(k for k in args if k not in ("schema", "type"))))
+        self.event(end, track, TrackEvent.TYPE_SLICE_END, category="anettrace.syscall")
+
     def export_meta_event(self, record: dict[str, Any]) -> None:
         self.descriptor(self.global_track, "Anettrace metadata")
         self.event(
@@ -798,6 +822,8 @@ class PerfettoExporter:
                 self.export_io_start(record, "tx")
             elif record_type == "tx_write_end":
                 self.export_io_end(record, "tx")
+            elif record_type == "network_syscall":
+                self.export_network_syscall(record)
             elif record_type.startswith("connect_"):
                 self.export_connect_event(record)
             elif record_type in ("lost_events", "trace_end"):

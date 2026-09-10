@@ -100,6 +100,7 @@ typedef struct {
 	connect_pending_t connect_pending;
 	connect_getsockopt_t connect_getsockopt;
 	connect_event_t connect_event;
+	network_syscall_event_t network_syscall;
 	detail_socket_create_event_t socket_create_event;
 } perfetto_scratch_t;
 
@@ -150,6 +151,13 @@ struct {
 	__uint(value_size, sizeof(perfetto_scratch_t));
 	__uint(max_entries, 1);
 } m_perfetto_scratch SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(key_size, sizeof(u64));
+	__uint(value_size, sizeof(network_syscall_event_t));
+	__uint(max_entries, 16384);
+} m_network_syscalls SEC(".maps");
 
 /* Keep the detailed drop event off the 512-byte combined BPF stack. */
 struct {
@@ -461,6 +469,28 @@ static __always_inline u32 perfetto_socket_generation(struct sock *sk,
 	if (stored)
 		return *stored;
 	return generation;
+}
+
+/* Associate by the active task, never by a cached fd (fds can be reused).
+ * Called only after the normal packet/owner/netns filters have passed.
+ */
+static __always_inline void network_syscall_bind(context_info_t *info)
+{
+	u64 pid_tgid = bpf_get_current_pid_tgid();
+	network_syscall_event_t *pending;
+
+	if (info->is_return || !info->sk || !perfetto_socket_io(info->func))
+		return;
+	pending = bpf_map_lookup_elem(&m_network_syscalls, &pid_tgid);
+	if (!pending)
+		return;
+	pending->socket_key = (u64)(void *)info->sk;
+	pending->socket_generation = perfetto_socket_generation(info->sk, false);
+	/* All six TCP/UDP protocol entry points take the byte count in arg 3.
+ * This avoids reading ABI-dependent user msghdr/iovec layouts.
+ */
+	pending->requested_bytes = (u64)info_get_arg(info, 2);
+	pending->requested_valid = true;
 }
 
 static __always_inline bool perfetto_resolve_socket_owner(
@@ -867,6 +897,8 @@ static int auto_inline handle_entry(context_info_t *info)
 
 	if (filter_by_netns(info) && filter)
 		goto err;
+	if (args->perfetto)
+		network_syscall_bind(info);
 
 	/* latency total mode with filter condition case */
 	if (info->no_event)
@@ -1355,6 +1387,98 @@ static __always_inline void connect_forget(const connect_pending_t *pending)
 	bpf_map_delete_elem(&m_connect_fd, &fd_key);
 	if (socket_key)
 		bpf_map_delete_elem(&m_connect_socket, &socket_key);
+}
+
+/* Syscall numbers below are the binary's native ABI. Never interpret compat
+ * syscall numbers as native ones. arm64 TIF_32BIT is bit 22; x86 TIF_ADDR32
+ * (bit 29) also excludes x32. Compat tracing can be added with its own table.
+ */
+static __always_inline bool network_native_task(void)
+{
+#if defined(__TARGET_ARCH_arm64) || defined(__TARGET_ARCH_x86)
+	struct task_struct *task = (void *)bpf_get_current_task();
+	unsigned long flags = _C(task, thread_info.flags);
+#ifdef __TARGET_ARCH_arm64
+	return !(flags & (1UL << 22));
+#else
+	return !(flags & (1UL << 29));
+#endif
+#else
+	return true;
+#endif
+}
+
+SEC("tp/raw_syscalls/sys_enter")
+int TRACE_NAME(network_sys_enter)(struct trace_event_raw_sys_enter *ctx)
+{
+	bpf_args_t *args = (void *)CONFIG();
+	u64 pid_tgid = bpf_get_current_pid_tgid();
+	u32 tid = (u32)pid_tgid, uid = (u32)bpf_get_current_uid_gid();
+	long nr = _(ctx->id);
+	u32 zero = 0;
+	int kind = -1, i;
+	perfetto_scratch_t *scratch;
+	network_syscall_event_t *event;
+
+	if (!args->ready || !args->perfetto ||
+	    !perfetto_current_matches(args, tid, uid))
+		return 0;
+#pragma clang loop unroll(full)
+	for (i = 0; i < 4; i++)
+		if (nr == args->network_syscall_nr[i])
+			kind = i;
+	if (kind < 0 || !network_native_task())
+		return 0;
+	scratch = bpf_map_lookup_elem(&m_perfetto_scratch, &zero);
+	if (!scratch)
+		return 0;
+	event = &scratch->network_syscall;
+	__builtin_memset(event, 0, sizeof(*event));
+	event->meta = FUNC_TYPE_SYSCALL;
+	event->kind = kind;
+	event->syscall_nr = nr;
+	event->start_ts = event->ts = bpf_ktime_get_ns();
+	event->tid = tid;
+	event->tgid = pid_tgid >> 32;
+	event->uid = uid;
+	event->fd = (s32)_(ctx->args[0]);
+	event->require_socket = args->network_socket_filter;
+	if (kind == NETWORK_SYS_SENDTO || kind == NETWORK_SYS_RECVFROM) {
+		event->requested_bytes = _(ctx->args[2]);
+		event->requested_valid = true;
+		event->flags = _(ctx->args[3]);
+	} else {
+		event->flags = _(ctx->args[2]);
+	}
+	bpf_get_current_comm(event->task, sizeof(event->task));
+	if (bpf_map_update_elem(&m_network_syscalls, &pid_tgid, event, BPF_ANY))
+		return 0;
+	EVENT_OUTPUT_PTR(ctx, event, sizeof(*event));
+	args->event_count++;
+	return 0;
+}
+
+SEC("tp/raw_syscalls/sys_exit")
+int TRACE_NAME(network_sys_exit)(struct trace_event_raw_sys_exit *ctx)
+{
+	bpf_args_t *args = (void *)CONFIG();
+	u64 pid_tgid = bpf_get_current_pid_tgid();
+	network_syscall_event_t *event;
+
+	if (!args->ready || !args->perfetto)
+		return 0;
+	event = bpf_map_lookup_elem(&m_network_syscalls, &pid_tgid);
+	if (!event)
+		return 0;
+	if (event->syscall_nr == _(ctx->id)) {
+		event->ts = bpf_ktime_get_ns();
+		event->result = _(ctx->ret);
+		event->finished = true;
+		EVENT_OUTPUT_PTR(ctx, event, sizeof(*event));
+		args->event_count++;
+	}
+	bpf_map_delete_elem(&m_network_syscalls, &pid_tgid);
+	return 0;
 }
 
 SEC("tp/raw_syscalls/sys_enter")

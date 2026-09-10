@@ -44,6 +44,7 @@ enum native_track_kind {
 	NATIVE_TRACK_SOCKET,
 	NATIVE_TRACK_FLOW,
 	NATIVE_TRACK_CONNECT,
+	NATIVE_TRACK_SYSCALL,
 	NATIVE_TRACK_GLOBAL,
 };
 
@@ -123,6 +124,16 @@ static size_t native_track_capacity;
 static struct pending_io *pending_ios;
 static size_t pending_io_count;
 static size_t pending_io_capacity;
+/* Bounded per-thread syscall pairing. END records are self-contained so an
+ * entry lost in the perf buffer does not discard an otherwise complete call.
+ */
+static struct {
+	network_syscall_event_t event;
+	u64 flow_id;
+	u64 completed_ts;
+	bool active;
+} pending_syscalls[4096];
+static size_t pending_syscall_count;
 static struct flow_state *flows;
 static size_t flow_count;
 static size_t flow_capacity;
@@ -1445,6 +1456,16 @@ static void pending_io_finish(struct pending_io *pending, u64 timestamp_ns,
 	if (!flow)
 		flow = flow_find_by_socket(pending->socket_id, protocol);
 	if (flow) {
+		/* Reuse this call's established I/O association, not the last flow
+		 * seen on a socket shared by several threads.
+		 */
+		for (size_t i = 0; i < pending_syscall_count; i++) {
+			network_syscall_event_t *call = &pending_syscalls[i].event;
+			if (pending_syscalls[i].active && call->tid == pending->tid &&
+			    call->tgid == pending->tgid &&
+			    call->start_ts <= pending->start_ts)
+				pending_syscalls[i].flow_id = flow->id;
+		}
 		pending_io_emit_start(pending, trace, flow);
 		if (timestamp_ns > flow->last_ts)
 			flow->last_ts = timestamp_ns;
@@ -1493,6 +1514,18 @@ static void pending_io_start(const detail_event_t *detail, trace_t *trace,
 	struct flow_state *flow;
 	u64 socket_id = detail_socket_instance_id(detail);
 	bool tx = trace_is_tx_write(trace);
+
+	for (size_t i = 0; i < pending_syscall_count; i++) {
+		network_syscall_event_t *call = &pending_syscalls[i].event;
+		if (!pending_syscalls[i].active || call->tid != event->tid ||
+		    call->tgid != event->tgid || call->start_ts > event->ske.ts)
+			continue;
+		/* Retain the binding even if capture ends while recv is blocked. */
+		call->socket_key = detail->owner_socket_key ?
+			detail->owner_socket_key : event->key;
+		call->socket_generation = detail->owner_socket_key ?
+			detail->owner_socket_generation : event->key_generation;
+	}
 
 	pending = pending_io_find(event->func, event->tid);
 	if (pending)
@@ -1860,6 +1893,8 @@ static void export_state_start(void)
 	pending_ios = NULL;
 	pending_io_count = 0;
 	pending_io_capacity = 0;
+	memset(pending_syscalls, 0, sizeof(pending_syscalls));
+	pending_syscall_count = 0;
 	free(flows);
 	flows = NULL;
 	flow_count = 0;
@@ -2304,6 +2339,154 @@ static void native_export_connect_event(const connect_event_t *connect, int cpu)
 	}
 }
 
+static void export_network_syscall(const network_syscall_event_t *call,
+				   u64 flow_id, bool incomplete)
+{
+	static const char *names[] = { "sendto", "recvfrom", "sendmsg", "recvmsg" };
+	struct proto_buffer event = {};
+	struct native_track *thread;
+	struct flow_state *flow = flow_find_any(flow_id);
+	u64 socket_id = call->socket_key ?
+		socket_instance_id(call->socket_key, call->socket_generation) : 0;
+	u64 call_id = native_uuid("syscall-call", ((u64)call->tgid << 32) |
+				  call->tid, call->start_ts);
+	u64 uuid = native_uuid("syscalls", call->tgid, call->tid);
+	u64 bytes = !incomplete && call->result > 0 ? call->result : 0;
+	u64 error = !incomplete && call->result < 0 ? -call->result : 0;
+	u64 display_start = call->start_ts;
+	u64 latest = call->ts > native_ring_latest_ns ? call->ts : native_ring_latest_ns;
+	char label[32] = "", name[96];
+
+	if (call->kind >= 4 || call->ts < call->start_ts ||
+	    (call->require_socket && !socket_id))
+		return;
+	/* A flow pointer is useful only if the socket instance agrees. */
+	if (!flow || !socket_id || flow->socket_id != socket_id) {
+		flow_id = 0;
+		flow = NULL;
+	}
+	if (flow)
+		format_flow_label(flow, label, sizeof(label));
+	snprintf(name, sizeof(name), "%s%s%s · fd=%d", names[call->kind],
+		 label[0] ? " · " : "", label, call->fd);
+	if (export_file) {
+		fprintf(export_file,
+			"{\"schema\":\"%s\",\"type\":\"network_syscall\","
+			"\"ts_ns\":%llu,\"start_ts_ns\":%llu,\"duration_ns\":%llu,"
+			"\"syscall\":\"%s\",\"call_id\":\"%016llx\","
+			"\"tid\":%u,\"tgid\":%u,\"uid\":%u,\"fd\":%d,"
+			"\"flags\":%u,\"requested_bytes\":%llu,\"requested_valid\":%s,"
+			"\"result\":%lld,\"bytes\":%llu,\"error\":%llu,"
+			"\"incomplete\":%s,\"socket_id\":\"%016llx\","
+			"\"flow_id\":\"%016llx\",\"flow_tag\":\"%s\"}\n",
+			PERFETTO_SCHEMA, call->ts, call->start_ts,
+			call->ts - call->start_ts, names[call->kind], call_id,
+			call->tid, call->tgid, call->uid, call->fd, call->flags,
+			call->requested_bytes, call->requested_valid ? "true" : "false",
+			call->result, bytes, error, incomplete ? "true" : "false",
+			socket_id, flow_id, label);
+	}
+	if (!native_file)
+		return;
+	/* A recv may start before the retained ring window. Keep a clipped
+	 * BEGIN so its END does not become an orphan, and retain the real time
+	 * in the arguments. Entirely expired calls need no packets.
+	 */
+	if (native_ring_window_ns && latest > native_ring_window_ns) {
+		u64 cutoff = latest - native_ring_window_ns;
+		if (call->ts < cutoff)
+			return;
+		if (display_start < cutoff)
+			display_start = cutoff;
+	}
+	if (!native_find_track(uuid)) {
+		thread = native_thread_track(call->tgid, call->tid, call->task);
+		if (!thread)
+			return;
+		/* native_add_track may realloc the thread pointer. */
+		u64 parent_uuid = thread->uuid;
+		if (!native_add_track(uuid, ((u64)call->tgid << 32) | call->tid,
+				      NATIVE_TRACK_SYSCALL))
+			return;
+		native_descriptor(uuid, "Network syscalls", parent_uuid,
+				  NATIVE_TRACK_SYSCALL, call->tgid, call->tid);
+	}
+	native_event_start(&event, 1, uuid, name, "anettrace.syscall");
+	native_annotation_string(&event, "syscall", names[call->kind]);
+	native_annotation_id(&event, "call_id", call_id);
+	native_annotation_id(&event, "socket_id", socket_id);
+	native_annotation_id(&event, "flow_id", flow_id);
+	native_annotation_string(&event, "flow_tag", label);
+	native_annotation_uint(&event, "tid", call->tid);
+	native_annotation_uint(&event, "tgid", call->tgid);
+	native_annotation_uint(&event, "uid", call->uid);
+	native_annotation_int(&event, "fd", call->fd);
+	native_annotation_uint(&event, "flags", call->flags);
+	native_annotation_uint(&event, "start_ts_ns", call->start_ts);
+	native_annotation_uint(&event, "end_ts_ns", call->ts);
+	native_annotation_uint(&event, "duration_ns", call->ts - call->start_ts);
+	native_annotation_bool(&event, "requested_valid", call->requested_valid);
+	if (call->requested_valid)
+		native_annotation_uint(&event, "requested_bytes", call->requested_bytes);
+	native_annotation_bool(&event, "incomplete", incomplete);
+	native_annotation_bool(&event, "start_clipped", display_start != call->start_ts);
+	if (!incomplete) {
+		native_annotation_int(&event, "result", call->result);
+		native_annotation_uint(&event, "bytes", bytes);
+		native_annotation_uint(&event, "error", error);
+	}
+	native_event_write(display_start, &event);
+	proto_free(&event);
+	native_event_start(&event, 2, uuid, NULL, "anettrace.syscall");
+	native_event_write(call->ts, &event);
+	proto_free(&event);
+}
+
+static void handle_network_syscall(const network_syscall_event_t *call)
+{
+	size_t i;
+	u64 flow_id = 0;
+
+	if (call->kind >= 4)
+		return;
+	for (i = 0; i < pending_syscall_count; i++)
+		if (pending_syscalls[i].event.tid == call->tid &&
+		    pending_syscalls[i].event.tgid == call->tgid)
+			break;
+	if (i == pending_syscall_count) {
+		if (i == ARRAY_SIZE(pending_syscalls)) {
+			if (call->finished)
+				export_network_syscall(call, 0, false);
+			else
+				lost_events++;
+			return;
+		}
+		pending_syscall_count++;
+		pending_syscalls[i].event = *call;
+	}
+	if (call->finished) {
+		if (pending_syscalls[i].active &&
+		    pending_syscalls[i].event.start_ts == call->start_ts) {
+			flow_id = pending_syscalls[i].flow_id;
+			pending_syscalls[i].active = false;
+		}
+		if (call->start_ts > pending_syscalls[i].completed_ts)
+			pending_syscalls[i].completed_ts = call->start_ts;
+		export_network_syscall(call, flow_id, false);
+	} else if (call->start_ts > pending_syscalls[i].completed_ts) {
+		if (pending_syscalls[i].active) {
+			if (call->start_ts <= pending_syscalls[i].event.start_ts)
+				return;
+			pending_syscalls[i].event.ts = call->start_ts;
+			export_network_syscall(&pending_syscalls[i].event,
+				pending_syscalls[i].flow_id, true);
+		}
+		pending_syscalls[i].event = *call;
+		pending_syscalls[i].flow_id = 0;
+		pending_syscalls[i].active = true;
+	}
+}
+
 void perfetto_export_event(const void *data, int cpu, u32 size)
 {
 	const detail_event_t *detail = data;
@@ -2315,6 +2498,16 @@ void perfetto_export_event(const void *data, int cpu, u32 size)
 	if ((!export_file && !native_file) || !data || size < sizeof(u16))
 		return;
 	meta = *(const u16 *)data;
+	if (meta == FUNC_TYPE_SYSCALL) {
+		if (size < sizeof(network_syscall_event_t))
+			return;
+		pthread_mutex_lock(&export_lock);
+		write_clock_snapshot_if_due();
+		handle_network_syscall(data);
+		exported_events++;
+		pthread_mutex_unlock(&export_lock);
+		return;
+	}
 	if (meta == FUNC_TYPE_CONNECT) {
 		const connect_event_t *connect = data;
 
@@ -2482,6 +2675,15 @@ void perfetto_export_close(u64 event_count)
 
 		for (i = 0; i < pending_io_count; i++)
 			pending_io_finish(&pending_ios[i], end_ts, 0, true);
+		for (i = 0; i < pending_syscall_count; i++) {
+			if (!pending_syscalls[i].active)
+				continue;
+			pending_syscalls[i].event.ts = end_ts;
+			export_network_syscall(&pending_syscalls[i].event,
+				pending_syscalls[i].flow_id, true);
+		}
+		memset(pending_syscalls, 0, sizeof(pending_syscalls));
+		pending_syscall_count = 0;
 		for (i = 0; i < flow_count; i++)
 			flow_finish(&flows[i], end_ts, "trace_end", true);
 	}

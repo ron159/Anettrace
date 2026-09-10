@@ -616,7 +616,7 @@ void perfetto_poll_handler(void *ctx, int cpu, void *data, u32 size)
 	if (size < sizeof(meta))
 		return;
 	meta = *(u16 *)data;
-	if (meta == FUNC_TYPE_CONNECT)
+	if (meta == FUNC_TYPE_CONNECT || meta == FUNC_TYPE_SYSCALL)
 		return;
 
 	if (size >= sizeof(*ret) && ret->meta == FUNC_TYPE_RET) {
