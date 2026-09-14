@@ -590,7 +590,7 @@ __attribute__((noinline)) int perfetto_io_exit(u16 func)
 #if defined(NO_BTF) || defined(INLINE_MODE)
 static
 #endif
-__attribute__((noinline)) u32 perfetto_packet_generation(u64 key, bool release)
+__attribute__((noinline)) u32 perfetto_packet_generation(u64 key, bool release, bool udp_consume)
 {
 	struct sk_buff *skb = (void *)key;
 	u64 head = (u64)_C(skb, head);
@@ -612,7 +612,10 @@ __attribute__((noinline)) u32 perfetto_packet_generation(u64 key, bool release)
 	}
 	if (!packet)
 		return 0;
-	if (release)
+	/* Modern UDP can inline the final free/defer path. The last reference
+	 * at skb_consume_udp is a definitive end even without a free probe.
+	 * Shared/peeked skbs keep their identity. */
+	if (release || (udp_consume && _C(skb, users.refs.counter) == 1))
 		packet->released = true;
 	return packet->generation;
 }
@@ -678,7 +681,7 @@ __attribute__((noinline)) int perfetto_record_identity(detail_event_t *detail,
 	}
 	if (skb_key)
 		detail->key_generation = perfetto_packet_generation(
-			skb_key, func_is_free(func_status));
+			skb_key, func_is_free(func_status), func == INDEX_skb_consume_udp);
 	if (is_return)
 		perfetto_io_exit(func);
 	return 0;
