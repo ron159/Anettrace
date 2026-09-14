@@ -205,6 +205,23 @@ struct {
 	__uint(max_entries, 1);
 } m_drop_scratch SEC(".maps");
 
+/* Probe event payloads share CPU-local storage, as drop events already do.
+ * BPF execution does not migrate CPUs; synchronous output finishes before
+ * the next invocation reuses this buffer. Keep owner scratch separate. */
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(key_size, sizeof(u32));
+	__uint(value_size, MAX_EVENT_SIZE);
+	__uint(max_entries, 1);
+} m_event_scratch SEC(".maps");
+
+static __always_inline void *trace_event_buffer(void)
+{
+	u32 key = 0;
+	return bpf_map_lookup_elem(&m_event_scratch, &key);
+}
+
+
 struct {
 #ifdef BPF_MAP_TYPE_LRU_HASH
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -1204,46 +1221,21 @@ err:
 
 static inline int default_handle_entry(context_info_t *info)
 {
-	bool detail = info->args->detail;
-	detail_event_t __e;
-#ifndef __F_INIT_EVENT
-	int size;
-#endif
+	detail_event_t *storage = trace_event_buffer();
 	int err;
 
-	info->e = (void *)&__e;
-
-#ifndef __F_INIT_EVENT
-	if (!detail) {
-		size = sizeof(event_t);
-		__builtin_memset(&__e, 0, size);
-	} else {
-		size = sizeof(__e);
-		__builtin_memset(&__e, 0, size);
-	}
-#else
-	/* the kernel of version 4.X can't spill const variable to stack,
-	 * so we need to initialize the whole event.
-	 */
-	__builtin_memset(&__e, 0, sizeof(__e));
-#endif
-
+	if (!storage)
+		return -1;
+	__builtin_memset(storage, 0, sizeof(*storage));
+	info->e = (void *)storage;
 	err = handle_entry(info);
 	if (!err) {
-#ifdef __F_INIT_EVENT
-#ifdef __F_OUTPUT_WHOLE
-		/* output the whole detail event, as the compiler can save
-		 * the size to stack sometimes.
-		 */
-		do_event_output(info, sizeof(__e));
+#if defined(__F_INIT_EVENT) && defined(__F_OUTPUT_WHOLE)
+		do_event_output(info, sizeof(*storage));
 #else
-		do_event_output(info, detail ? sizeof(__e) : sizeof(event_t));
-#endif
-#else
-		do_event_output(info, size);
+		do_event_output(info, info->args->detail ? sizeof(*storage) : sizeof(event_t));
 #endif
 	}
-
 	return err;
 }
 
