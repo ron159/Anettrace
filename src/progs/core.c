@@ -981,7 +981,6 @@ static int auto_inline handle_entry(context_info_t *info)
 	bpf_args_t *args = (void *)info->args;
 	struct sk_buff *skb = info->skb;
 	struct sock *sk = info->sk;
-	struct sk_buff *skb = info->skb;
 	struct net_device *dev;
 	detail_event_t *detail;
 	event_t *e = info->e;
