@@ -276,17 +276,18 @@ static __attribute__((noinline)) int filter_by_netns(context_info_t *info)
 	struct net *net = NULL;
 	u32 netns = 0;
 
-	if (!sk && info->skb)
+	/* Probe reads fail safely for NULL kernel pointers. Avoid branching at
+	 * every pointer hop: those branches multiply with packet/owner parsing
+	 * when the verifier explores the complete probe. */
+	if (!sk)
 		sk = _C(skb, sk);
 	if (sk)
 		net = _C(sk, __sk_common.skc_net.net);
-	else if (info->skb) {
+	else {
 		dev = _C(skb, dev);
-		if (dev)
-			net = _C(dev, nd_net.net);
+		net = _C(dev, nd_net.net);
 	}
-	if (net)
-		netns = _C(net, ns.inum);
+	netns = _C(net, ns.inum);
 	if (info->args->detail)
 		((detail_event_t *)info->e)->netns = netns;
 	return info->args->netns && netns != info->args->netns;
