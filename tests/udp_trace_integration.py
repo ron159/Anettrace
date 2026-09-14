@@ -16,7 +16,7 @@ def exercise(binary):
         events = Path(tmp) / 'events.jsonl'
         log = Path(tmp) / 'capture.log'
         with log.open('w') as output:
-            tracer = subprocess.Popen([str(binary), '--perfetto-events', str(events),
+            tracer = subprocess.Popen([str(binary), '--libbpf-debug', '--perfetto-events', str(events),
                                        '--pid', str(os.getpid())],
                                       stdout=output, stderr=subprocess.STDOUT)
             try:
