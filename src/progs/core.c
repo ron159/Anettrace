@@ -618,8 +618,12 @@ static __attribute__((noinline)) void perfetto_record_identity(context_info_t *i
 		    (packet->released && !func_is_free(info->func_status))) {
 			u32 zero = 0, *counter = bpf_map_lookup_elem(&m_perfetto_packet_counter, &zero);
 			if (counter) {
+				/* The compatibility BPF target has XADD but not fetch-XADD.
+				 * The skb address is part of identity, so generations need
+				 * only distinguish reuse of the same address. */
+				__sync_fetch_and_add(counter, 1);
 				perfetto_packet_instance_t fresh = {
-					.head = head, .generation = __sync_fetch_and_add(counter, 1) + 1,
+					.head = head, .generation = *counter,
 				};
 				bpf_map_update_elem(&m_perfetto_packets, &key, &fresh, BPF_ANY);
 			}
