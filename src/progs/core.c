@@ -271,16 +271,17 @@ static inline void try_trace_stack(context_info_t *info) { }
 static inline int filter_by_netns(context_info_t *info)
 {
 	struct sock *sk = info->sk;
+	struct sk_buff *skb = info->skb;
 	struct net_device *dev;
 	struct net *net = NULL;
 	u32 netns = 0;
 
 	if (!sk && info->skb)
-		sk = _C(info->skb, sk);
+		sk = _C(skb, sk);
 	if (sk)
 		net = _C(sk, __sk_common.skc_net.net);
 	else if (info->skb) {
-		dev = _C(info->skb, dev);
+		dev = _C(skb, dev);
 		if (dev)
 			net = _C(dev, nd_net.net);
 	}
@@ -611,8 +612,9 @@ static __attribute__((noinline)) void perfetto_record_identity(context_info_t *i
 		}
 	}
 	if (info->skb) {
-		u64 key = (u64)info->skb;
-		u64 head = (u64)_C(info->skb, head);
+		struct sk_buff *skb = info->skb;
+		u64 key = (u64)skb;
+		u64 head = (u64)_C(skb, head);
 		perfetto_packet_instance_t *packet = bpf_map_lookup_elem(&m_perfetto_packets, &key);
 		if (!packet || packet->head != head ||
 		    (packet->released && !func_is_free(info->func_status))) {
@@ -979,6 +981,7 @@ static int auto_inline handle_entry(context_info_t *info)
 	bpf_args_t *args = (void *)info->args;
 	struct sk_buff *skb = info->skb;
 	struct sock *sk = info->sk;
+	struct sk_buff *skb = info->skb;
 	struct net_device *dev;
 	detail_event_t *detail;
 	event_t *e = info->e;
