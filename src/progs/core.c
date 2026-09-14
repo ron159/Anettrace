@@ -991,7 +991,7 @@ static inline void try_set_latency(bpf_args_t *args, event_t *e,
  *    0: valid
  *    1: valid and no output
  */
-static int auto_inline handle_entry(context_info_t *info)
+static __always_inline int handle_entry(context_info_t *info)
 {
 	bpf_args_t *args = (void *)info->args;
 	struct sk_buff *skb = info->skb;
