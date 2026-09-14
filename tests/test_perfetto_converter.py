@@ -95,8 +95,8 @@ class PerfettoConverterTest(unittest.TestCase):
             path.write_bytes(trace.SerializeToString())
             with TraceProcessor(trace=str(path)) as processor:
                 rows = list(processor.query(
-                    "SELECT extract_arg(arg_set_id, 'evidence') AS evidence, "
-                    "extract_arg(arg_set_id, 'copy_bytes') AS copy_bytes "
+                    "SELECT extract_arg(arg_set_id, 'debug.evidence') AS evidence, "
+                    "extract_arg(arg_set_id, 'debug.copy_bytes') AS copy_bytes "
                     "FROM slice WHERE category = 'anettrace.io.link' ORDER BY ts"))
                 self.assertEqual([(row.evidence, row.copy_bytes) for row in rows],
                                  [("submission_context", "0"), ("copy_attempt", "512")])
