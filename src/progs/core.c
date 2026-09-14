@@ -559,7 +559,10 @@ static __always_inline void network_syscall_bind(context_info_t *info)
 	}
 }
 
-static __always_inline void perfetto_io_exit(u16 func)
+#if defined(NO_BTF) || defined(INLINE_MODE)
+static
+#endif
+__attribute__((noinline)) void perfetto_io_exit(u16 func)
 {
 	u64 task = bpf_get_current_pid_tgid();
 	perfetto_io_t *io;
@@ -607,30 +610,40 @@ __attribute__((noinline)) u32 perfetto_packet_generation(u64 key, bool release)
 	return packet->generation;
 }
 
+#if defined(NO_BTF) || defined(INLINE_MODE)
+static
+#endif
+__attribute__((noinline)) void perfetto_io_enter(u64 sk_key, u64 ts, u16 func, u8 func_status)
+{
+	u64 task = bpf_get_current_pid_tgid();
+	perfetto_io_t *io;
+	io = bpf_map_lookup_elem(&m_perfetto_io, &task);
+	if (io && io->socket_key == sk_key) {
+		io->depth++;
+	} else {
+		perfetto_io_t fresh = {
+			.start_ts = ts,
+			.socket_key = sk_key,
+			.socket_generation = perfetto_socket_generation((void *)sk_key, false),
+			.depth = 1, .func = func,
+			.tx = !!(func_status & FUNC_STATUS_TX),
+		};
+		network_syscall_event_t *call = bpf_map_lookup_elem(&m_network_syscalls, &task);
+		if (call)
+			fresh.syscall_start_ts = call->start_ts;
+		bpf_map_update_elem(&m_perfetto_io, &task, &fresh, BPF_ANY);
+	}
+}
+
 static __attribute__((noinline)) void perfetto_record_identity(context_info_t *info)
 {
 	detail_event_t *detail = (void *)info->e;
 	u64 task = bpf_get_current_pid_tgid();
 	perfetto_io_t *io;
 
-	if (perfetto_socket_io(info->func) && !info->is_return) {
-		io = bpf_map_lookup_elem(&m_perfetto_io, &task);
-		if (io && io->socket_key == (u64)info->sk) {
-			io->depth++;
-		} else {
-			perfetto_io_t fresh = {
-				.start_ts = info->e->pkt.ts,
-				.socket_key = (u64)info->sk,
-				.socket_generation = perfetto_socket_generation(info->sk, false),
-				.depth = 1, .func = info->func,
-				.tx = !!(info->func_status & FUNC_STATUS_TX),
-			};
-			network_syscall_event_t *call = bpf_map_lookup_elem(&m_network_syscalls, &task);
-			if (call)
-				fresh.syscall_start_ts = call->start_ts;
-			bpf_map_update_elem(&m_perfetto_io, &task, &fresh, BPF_ANY);
-		}
-	}
+	if (perfetto_socket_io(info->func) && !info->is_return)
+		perfetto_io_enter((u64)info->sk, info->e->pkt.ts,
+				  info->func, info->func_status);
 	io = bpf_map_lookup_elem(&m_perfetto_io, &task);
 	if (io) {
 		bool copy = info->func == INDEX_skb_copy_datagram_iter;
@@ -991,7 +1004,7 @@ static inline void try_set_latency(bpf_args_t *args, event_t *e,
  *    0: valid
  *    1: valid and no output
  */
-static __always_inline int handle_entry(context_info_t *info)
+static int auto_inline handle_entry(context_info_t *info)
 {
 	bpf_args_t *args = (void *)info->args;
 	struct sk_buff *skb = info->skb;
