@@ -268,17 +268,16 @@ static inline void try_trace_stack(context_info_t *info)
 static inline void try_trace_stack(context_info_t *info) { }
 #endif
 
-static __attribute__((noinline)) int filter_by_netns(context_info_t *info)
+#if defined(NO_BTF) || defined(INLINE_MODE)
+static
+#endif
+__attribute__((noinline)) u32 read_packet_netns(u64 sk_address, u64 skb_address)
 {
-	struct sock *sk = info->sk;
-	struct sk_buff *skb = info->skb;
+	struct sock *sk = (void *)sk_address;
+	struct sk_buff *skb = (void *)skb_address;
 	struct net_device *dev;
-	struct net *net = NULL;
-	u32 netns = 0;
+	struct net *net;
 
-	/* Probe reads fail safely for NULL kernel pointers. Avoid branching at
-	 * every pointer hop: those branches multiply with packet/owner parsing
-	 * when the verifier explores the complete probe. */
 	if (!sk)
 		sk = _C(skb, sk);
 	if (sk)
@@ -287,7 +286,12 @@ static __attribute__((noinline)) int filter_by_netns(context_info_t *info)
 		dev = _C(skb, dev);
 		net = _C(dev, nd_net.net);
 	}
-	netns = _C(net, ns.inum);
+	return _C(net, ns.inum);
+}
+
+static __always_inline int filter_by_netns(context_info_t *info)
+{
+	u32 netns = read_packet_netns((u64)info->sk, (u64)info->skb);
 	if (info->args->detail)
 		((detail_event_t *)info->e)->netns = netns;
 	return info->args->netns && netns != info->args->netns;
