@@ -36,51 +36,28 @@ typedef struct {
 	DEFINE_KPROBE_INIT(name, name, arg_count,		\
 			   .skb = ctx_get_arg(ctx, skb_index))
 
-/* BPF_NO_GLOBAL_DATA means this kernel version is old, we need to initialize
- * all the event data.
- */
-#if defined(BPF_NO_GLOBAL_DATA) || defined(__F_INIT_EVENT)
-#define DECLARE_EVENT(type, name)				\
-	pure_##type __attribute__((__unused__)) *name;		\
-	type __attribute__((__unused__))__##name;		\
-	detail_##type __detail_##name = {0};			\
-	info->e = (void *)&__detail_##name;			\
-	if (info->args->detail) {				\
-		WRITE_ONCE(name, (void *)info->e +		\
-		       offsetof(detail_##type, __event_filed));	\
-	} else {						\
-		WRITE_ONCE(name, (void *)info->e +		\
-		       offsetof(type, __event_filed));		\
+/* Keep both ordinary and extended event payloads off the 512-byte BPF
+ * call-chain stack. Initialize the whole record to avoid stale map bytes. */
+#define DECLARE_EVENT(type, name) \
+	pure_##type __attribute__((__unused__)) *name; \
+	int name##_size; \
+	const int name##_full_size __attribute__((__unused__)) = sizeof(detail_##type); \
+	_Static_assert(sizeof(detail_##type) <= MAX_EVENT_SIZE, "event buffer too small"); \
+	info->e = trace_event_buffer(); \
+	if (!info->e) \
+		return -1; \
+	__builtin_memset(info->e, 0, sizeof(detail_##type)); \
+	if (info->args->detail) { \
+		name##_size = sizeof(detail_##type); \
+		name = (void *)info->e + offsetof(detail_##type, __event_filed); \
+	} else { \
+		name##_size = sizeof(type); \
+		name = (void *)info->e + offsetof(type, __event_filed); \
 	}
 
-#ifdef __F_OUTPUT_WHOLE
-#define handle_event_output(info, e)		\
-	do_event_output(info, sizeof(__detail_##e))
+#if (defined(BPF_NO_GLOBAL_DATA) || defined(__F_INIT_EVENT)) && defined(__F_OUTPUT_WHOLE)
+#define handle_event_output(info, e) do_event_output(info, e##_full_size)
 #else
-#define handle_event_output(info, e)		\
-	do_event_output(info, (info->args->detail ? sizeof(__detail_##e) : sizeof(__##e)))
-#endif
-
-#else
-/* initialize only part event data if not detail */
-#define DECLARE_EVENT(type, name)				\
-	pure_##type __attribute__((__unused__)) *name;		\
-	type __attribute__((__unused__))__##name;		\
-	detail_##type __detail_##name;				\
-	info->e = (void *)&__detail_##name;			\
-	int name##_size;					\
-	if (info->args->detail) {				\
-		name##_size = sizeof(detail_##type);		\
-		__builtin_memset(info->e, 0, name##_size);	\
-		name = offsetof(detail_##type, __event_filed) +	\
-		       (void *)info->e;				\
-	} else {						\
-		name##_size = sizeof(type);			\
-		__builtin_memset(info->e, 0, name##_size);	\
-		name = offsetof(type, __event_filed) +		\
-		       (void *)info->e;				\
-	}
-
 #define handle_event_output(info, e) do_event_output(info, e##_size)
 #endif
 

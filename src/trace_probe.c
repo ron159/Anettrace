@@ -141,7 +141,7 @@ static int probe_trace_load()
 	DECLARE_LIBBPF_OPTS(bpf_object_open_opts, opts,
 		.btf_custom_path = trace_ctx.args.btf_path,
 	);
-	int i = 0;
+	int i = 0, load_err;
 
 	skel = kprobe__open_opts(&opts);
 	if (!skel) {
@@ -155,8 +155,11 @@ static int probe_trace_load()
 	bpf_func_init(skel, BPF_PROG_TYPE_KPROBE);
 
 	trace_ctx.obj = skel->obj;
-	if (trace_pre_load() || kprobe__load(skel)) {
-		pr_err("failed to load kprobe-based eBPF\n");
+	load_err = trace_pre_load();
+	if (!load_err)
+		load_err = kprobe__load(skel);
+	if (load_err) {
+		pr_err("failed to load kprobe-based eBPF (error %d); use --libbpf-debug for verifier details\n", load_err);
 		goto err;
 	}
 	pr_debug("eBPF is loaded successfully\n");
