@@ -571,6 +571,38 @@ static __always_inline void perfetto_io_exit(u16 func)
 		bpf_map_delete_elem(&m_perfetto_io, &task);
 }
 
+/* Scalar arguments let modern kernels verify this map operation once,
+ * independently of the many packet parsing and ownership paths. */
+#if defined(NO_BTF) || defined(INLINE_MODE)
+static
+#endif
+__attribute__((noinline)) u32 perfetto_packet_generation(u64 key, bool release)
+{
+	struct sk_buff *skb = (void *)key;
+	u64 head = (u64)_C(skb, head);
+	perfetto_packet_instance_t *packet = bpf_map_lookup_elem(&m_perfetto_packets, &key);
+	if (!packet || packet->head != head ||
+	    (packet->released && !release)) {
+		u32 zero = 0, *counter = bpf_map_lookup_elem(&m_perfetto_packet_counter, &zero);
+		if (counter) {
+			/* The compatibility BPF target has XADD but not fetch-XADD.
+			 * The skb address is part of identity, so generations need
+			 * only distinguish reuse of the same address. */
+			__sync_fetch_and_add(counter, 1);
+			perfetto_packet_instance_t fresh = {
+				.head = head, .generation = *counter,
+			};
+			bpf_map_update_elem(&m_perfetto_packets, &key, &fresh, BPF_ANY);
+		}
+		packet = bpf_map_lookup_elem(&m_perfetto_packets, &key);
+	}
+	if (!packet)
+		return 0;
+	if (release)
+		packet->released = true;
+	return packet->generation;
+}
+
 static __attribute__((noinline)) void perfetto_record_identity(context_info_t *info)
 {
 	detail_event_t *detail = (void *)info->e;
@@ -612,31 +644,9 @@ static __attribute__((noinline)) void perfetto_record_identity(context_info_t *i
 			}
 		}
 	}
-	if (info->skb) {
-		struct sk_buff *skb = info->skb;
-		u64 key = (u64)skb;
-		u64 head = (u64)_C(skb, head);
-		perfetto_packet_instance_t *packet = bpf_map_lookup_elem(&m_perfetto_packets, &key);
-		if (!packet || packet->head != head ||
-		    (packet->released && !func_is_free(info->func_status))) {
-			u32 zero = 0, *counter = bpf_map_lookup_elem(&m_perfetto_packet_counter, &zero);
-			if (counter) {
-				/* The compatibility BPF target has XADD but not fetch-XADD.
-				 * The skb address is part of identity, so generations need
-				 * only distinguish reuse of the same address. */
-				__sync_fetch_and_add(counter, 1);
-				perfetto_packet_instance_t fresh = {
-					.head = head, .generation = *counter,
-				};
-				bpf_map_update_elem(&m_perfetto_packets, &key, &fresh, BPF_ANY);
-			}
-			packet = bpf_map_lookup_elem(&m_perfetto_packets, &key);
-		}
-		if (packet)
-			info->e->key_generation = packet->generation;
-		if (packet && func_is_free(info->func_status))
-			packet->released = true;
-	}
+	if (info->skb)
+		info->e->key_generation = perfetto_packet_generation(
+			(u64)info->skb, func_is_free(info->func_status));
 	if (info->is_return)
 		perfetto_io_exit(info->func);
 }
