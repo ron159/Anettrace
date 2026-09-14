@@ -667,7 +667,7 @@ __attribute__((noinline)) int perfetto_record_identity(detail_event_t *detail,
 	}
 	if (skb_key)
 		detail->key_generation = perfetto_packet_generation(
-			sk_keyb, func_is_free(func_status));
+			skb_key, func_is_free(func_status));
 	if (is_return)
 		perfetto_io_exit(func);
 	return 0;
