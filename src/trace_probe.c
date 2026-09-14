@@ -103,7 +103,11 @@ again:
 	}
 
 	if (!auto_attach && kprobe__attach(skel)) {
-		/* failed to auto attach, attach manually */
+		/* libbpf may have attached earlier programs before failing.
+		 * Drop those skeleton-owned links before manually retrying,
+		 * otherwise the same probe emits every event twice. Explicit
+		 * manual links are not owned by the skeleton and remain intact. */
+		kprobe__detach(skel);
 		auto_attach = true;
 		pr_warn("failed to auto attach kprobe, trying manual attach...\n");
 		goto again;
