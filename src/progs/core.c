@@ -268,7 +268,7 @@ static inline void try_trace_stack(context_info_t *info)
 static inline void try_trace_stack(context_info_t *info) { }
 #endif
 
-static inline int filter_by_netns(context_info_t *info)
+static __attribute__((noinline)) int filter_by_netns(context_info_t *info)
 {
 	struct sock *sk = info->sk;
 	struct sk_buff *skb = info->skb;
@@ -1049,13 +1049,11 @@ static int auto_inline handle_entry(context_info_t *info)
 	if (filter && err)
 		goto err;
 
-	if (args->perfetto && filter_by_netns(info))
+	if (filter_by_netns(info) && (args->perfetto || filter))
 		goto err;
 	if (args->perfetto && perfetto_handle_owner(info, sk, (void *)e, filter))
 		goto err;
 
-	if (filter_by_netns(info) && filter)
-		goto err;
 	if (args->perfetto)
 		network_syscall_bind(info);
 
