@@ -123,6 +123,8 @@ jobs:
         run: |
           sudo python3 tests/traffic_udp_integration.py ./src/anettrace
           sudo python3 tests/traffic_udp_integration.py ./src/anettrace --protocol all
+      - name: Verify ordinary UDP trace and application I/O association
+        run: sudo python3 tests/udp_trace_integration.py ./src/anettrace
       - name: Run timezone offset tests
         run: |
           gcc -O2 -Wall -Wextra -Iutils \

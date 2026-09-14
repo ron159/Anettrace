@@ -511,6 +511,21 @@ class PerfettoExporter:
             ),
         )
 
+    def export_packet_io_link(self, record: dict[str, Any]) -> None:
+        self.event(
+            int(record["ts_ns"]), self.thread_track(record),
+            TrackEvent.TYPE_INSTANT,
+            "packet submitted by call" if record.get("direction") == "tx"
+            else ("packet released by receive" if record.get("evidence") == "receive_release"
+                  else "packet copy to application"),
+            "anettrace.io.link",
+            linked_flow_ids=tuple(id_value(str(record[key]))
+                                  for key in ("packet_id", "io_id", "call_id")
+                                  if record.get(key) and id_value(str(record[key]))),
+            annotations=(record, tuple(k for k in record
+                                      if k not in ("schema", "type", "ts_ns", "task"))),
+        )
+
     def export_connect_event(self, record: dict[str, Any]) -> None:
         record_type = str(record["type"])
         attempt_id = self.connect_attempt_id(record)
@@ -631,6 +646,9 @@ class PerfettoExporter:
                 flow_record,
                 (
                     "flow_id",
+                    "tuple_id",
+                    "netns",
+                    "start_reason",
                     "flow_tag",
                     "protocol",
                     "socket_id",
@@ -695,7 +713,7 @@ class PerfettoExporter:
         self.active_flows.discard(flow_id)
 
     def export_io_start(self, record: dict[str, Any], direction: str) -> None:
-        key = (direction, str(record["stage"]), int(record["tid"]))
+        key = (direction, str(record.get("io_id") or record["stage"]), int(record["tid"]))
         track = self.thread_track(record)
         category = f"anettrace.{direction}.{'write' if direction == 'tx' else 'read'}"
         if key in self.pending_io:
@@ -711,9 +729,13 @@ class PerfettoExporter:
             TrackEvent.TYPE_SLICE_BEGIN,
             str(record["stage"]),
             category,
+            flow_id=id_value(str(record["io_id"])) if record.get("io_id") else None,
             annotations=(
                 record,
                 (
+                    "io_id",
+                    "call_id",
+                    "association",
                     "socket_id",
                     "flow_id",
                     "protocol",
@@ -728,7 +750,7 @@ class PerfettoExporter:
         self.pending_io[key] = track
 
     def export_io_end(self, record: dict[str, Any], direction: str) -> None:
-        key = (direction, str(record["stage"]), int(record["tid"]))
+        key = (direction, str(record.get("io_id") or record["stage"]), int(record["tid"]))
         track = self.pending_io.pop(key, None)
         if track is None:
             return
@@ -738,9 +760,14 @@ class PerfettoExporter:
             track,
             TrackEvent.TYPE_SLICE_END,
             category=category,
+            flow_id=id_value(str(record["io_id"])) if record.get("io_id") else None,
+            terminating_flow=True,
             annotations=(
                 record,
                 (
+                    "io_id",
+                    "call_id",
+                    "association",
                     "socket_id",
                     "flow_id",
                     "result",
@@ -772,6 +799,7 @@ class PerfettoExporter:
                 args.pop(key, None)
         self.event(start, track, TrackEvent.TYPE_SLICE_BEGIN, name,
                    "anettrace.syscall",
+                   flow_id=id_value(str(record["call_id"])) if record.get("call_id") else None,
                    annotations=(args, tuple(k for k in args if k not in ("schema", "type"))))
         self.event(end, track, TrackEvent.TYPE_SLICE_END, category="anettrace.syscall")
 
@@ -810,6 +838,8 @@ class PerfettoExporter:
                 self.export_socket_event(record)
             elif record_type == "packet_event":
                 self.export_packet_event(record)
+            elif record_type == "packet_io_link":
+                self.export_packet_io_link(record)
             elif record_type == "flow_start":
                 self.export_flow_start(record)
             elif record_type == "flow_end":

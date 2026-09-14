@@ -6,6 +6,16 @@
 #include "skb_shared.h"
 #include "kprobe_trace.h"
 
+enum network_syscall_kind {
+	NETWORK_SYS_SENDTO, NETWORK_SYS_RECVFROM,
+	NETWORK_SYS_SENDMSG, NETWORK_SYS_RECVMSG,
+	NETWORK_SYS_SENDMMSG, NETWORK_SYS_RECVMMSG,
+	NETWORK_SYS_READ, NETWORK_SYS_WRITE,
+	NETWORK_SYS_READV, NETWORK_SYS_WRITEV,
+	NETWORK_SYS_SEND, NETWORK_SYS_RECV,
+	NETWORK_SYS_COUNT,
+};
+
 typedef struct {
 	pkt_args_t pkt;
 	u32  trace_mode;
@@ -29,7 +39,8 @@ typedef struct {
 	bool connect_diagnostics;
 	u32  connect_syscall_nr;
 	u32  getsockopt_syscall_nr;
-	u32  network_syscall_nr[4]; /* sendto, recvfrom, sendmsg, recvmsg */
+	u32  network_syscall_nr[NETWORK_SYS_COUNT];
+	u32  compat_network_syscall_nr[NETWORK_SYS_COUNT];
 	bool network_socket_filter;
 	u32  first_rtt;
 	u32  last_rtt;
@@ -110,6 +121,14 @@ typedef struct {
 	u8		direction;
 	u8		owner_valid;
 	u16		owner_pad;
+	/* Actual protocol call in whose context this packet was submitted/copied. */
+	u64 io_start_ts;
+	u64 syscall_start_ts;
+	u32 io_tid;
+	u32 io_tgid;
+	u32 io_offset;
+	u32 io_bytes;
+	u8 io_role; /* 1 TX submission, 2 RX copy attempt, 3 RX buffer release */
 	int		__event_filed[0];
 } detail_event_t;
 
@@ -156,10 +175,7 @@ typedef struct {
 
 #define CONNECT_EVENT_ASYNC_PENDING (1 << 0)
 
-enum network_syscall_kind {
-	NETWORK_SYS_SENDTO, NETWORK_SYS_RECVFROM,
-	NETWORK_SYS_SENDMSG, NETWORK_SYS_RECVMSG,
-};
+
 
 typedef struct {
 	u16 meta;
@@ -179,7 +195,8 @@ typedef struct {
 	u8 finished;
 	u8 requested_valid;
 	u8 require_socket;
-	u8 pad;
+	u8 abi; /* 0 native, 1 compat32, 2 x32 */
+	u32 requested_messages;
 	char task[16];
 } network_syscall_event_t;
 

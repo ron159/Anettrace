@@ -60,6 +60,47 @@ class PerfettoConverterTest(unittest.TestCase):
                     "SELECT dur FROM slice WHERE category = 'anettrace.syscall'"))
                 self.assertEqual([row.dur for row in slices], [2000])
 
+    def test_packet_io_links_preserve_ids_and_searchable_evidence(self) -> None:
+        clock = MODULE.read_records(ROOT / "tests/fixtures/perfetto-events.jsonl")[0]
+        start = int(clock["monotonic_ns"]) + 100000
+        records = [dict(schema=MODULE.SCHEMA, type="packet_io_link", ts_ns=start,
+                        io_id="0000000000001001", call_id="0000000000002001",
+                        packet_id="0000000000003001", flow_id="0000000000004001",
+                        tid=70, tgid=60, direction="tx", offset=0, copy_bytes=0,
+                        evidence="submission_context"),
+                   dict(schema=MODULE.SCHEMA, type="packet_io_link", ts_ns=start + 1000,
+                        io_id="0000000000001002", call_id="0000000000002002",
+                        packet_id="0000000000003002", flow_id="0000000000004001",
+                        tid=71, tgid=60, direction="rx", offset=12, copy_bytes=512,
+                        evidence="copy_attempt")]
+        trace = Trace()
+        trace.ParseFromString(MODULE.PerfettoExporter([clock] + records).serialize())
+        links = [packet.track_event for packet in trace.packet
+                 if packet.HasField("track_event")
+                 and "anettrace.io.link" in packet.track_event.categories]
+        self.assertEqual(len(links), 2)
+        descriptors = {packet.track_descriptor.uuid: packet.track_descriptor
+                       for packet in trace.packet if packet.HasField("track_descriptor")}
+        for link, record in zip(links, records):
+            self.assertEqual(link.type, TrackEvent.TYPE_INSTANT)
+            self.assertEqual(set(link.flow_ids),
+                             {int(record[key], 16) for key in ("packet_id", "io_id", "call_id")})
+            self.assertEqual(len(link.flow_ids), 3)
+            args = {arg.name: arg.string_value for arg in link.debug_annotations}
+            for key in ("packet_id", "io_id", "call_id", "flow_id", "offset", "copy_bytes", "evidence"):
+                self.assertEqual(args[key], str(record[key]))
+            self.assertEqual(descriptors[link.track_uuid].thread.tid, record["tid"])
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "packet-io-links.pftrace"
+            path.write_bytes(trace.SerializeToString())
+            with TraceProcessor(trace=str(path)) as processor:
+                rows = list(processor.query(
+                    "SELECT extract_arg(arg_set_id, 'debug.evidence') AS evidence, "
+                    "extract_arg(arg_set_id, 'debug.copy_bytes') AS copy_bytes "
+                    "FROM slice WHERE category = 'anettrace.io.link' ORDER BY ts"))
+                self.assertEqual([(row.evidence, row.copy_bytes) for row in rows],
+                                 [("submission_context", "0"), ("copy_attempt", "512")])
+
     def test_incomplete_syscall_does_not_claim_success(self) -> None:
         clock = MODULE.read_records(ROOT / "tests/fixtures/perfetto-events.jsonl")[0]
         start = int(clock["monotonic_ns"]) + 100000

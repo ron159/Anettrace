@@ -150,6 +150,8 @@ static inline int handle_exit(struct pt_regs *ctx, int func)
 		.tid = (u32)bpf_get_current_pid_tgid(),
 	};
 
+	if (args->perfetto)
+		perfetto_io_exit(func);
 	if (func == INDEX_skb_clone)
 		init_ctx_match((void *)event.val, func, false);
 

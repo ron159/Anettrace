@@ -18,7 +18,9 @@ class NetworkSyscallContracts(unittest.TestCase):
 
     def test_native_syscall_numbers_are_configured(self):
         source = (ROOT / "src/anettrace.c").read_text()
-        for name in ("sendto", "recvfrom", "sendmsg", "recvmsg"):
+        for name in ("sendto", "recvfrom", "sendmsg", "recvmsg",
+                     "sendmmsg", "recvmmsg", "read", "write", "readv", "writev",
+                     "send", "recv"):
             self.assertIn("SYS_" + name, source)
 
     def test_pairing_is_per_task_and_consumed_on_exit(self):
@@ -39,6 +41,8 @@ class NetworkSyscallContracts(unittest.TestCase):
     def test_native_pairing_results_and_fd_reuse(self):
         """Compile real pairing/export functions; mock only native writer/track plumbing."""
         shared = (ROOT / "src/progs/shared.h").read_text()
+        enum_start = shared.index("enum network_syscall_kind {")
+        enum_end = shared.index("\n};", enum_start) + 3
         struct_end = shared.index("} network_syscall_event_t;") + len("} network_syscall_event_t;")
         struct_start = shared.rfind("typedef struct {", 0, struct_end)
         source = (ROOT / "src/perfetto_export.c").read_text()
@@ -59,7 +63,7 @@ typedef uint8_t u8;
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define PERFETTO_SCHEMA "anettrace.perfetto.v1"
 #define NATIVE_TRACK_SYSCALL 1
-''' + shared[struct_start:struct_end] + r'''
+''' + shared[enum_start:enum_end] + shared[struct_start:struct_end] + r'''
 struct proto_buffer { int unused; };
 struct native_track { u64 uuid; };
 struct flow_state { u64 id, socket_id; };
@@ -90,6 +94,7 @@ static void native_annotation_bool(struct proto_buffer *e,const char *k,bool v) 
 static void native_event_write(u64 ts,struct proto_buffer *e) {
     if(event_type==1) { begins++; begin_ts=ts; } else { ends++; end_ts=ts; }
 }
+static void native_event_flow(struct proto_buffer *e, u64 id, bool terminating) {}
 static void proto_free(struct proto_buffer *e) {}
 ''' + functions + r'''
 int main(void) {
@@ -126,6 +131,21 @@ int main(void) {
     call.start_ts=3000; call.ts=3050;
     handle_network_syscall(&call); /* older completed call must not be dropped */
     assert(!pending_syscalls[0].active && begins==6 && ends==6);
+    call.kind=NETWORK_SYS_READ; call.require_socket=1; call.socket_key=0;
+    call.start_ts=5000; call.ts=5020; call.result=64;
+    export_network_syscall(&call,0,false); /* ordinary file read is not network I/O */
+    assert(begins==6 && ends==6);
+    call.socket_key=98; call.socket_generation=1; call.abi=1;
+    for (unsigned kind=NETWORK_SYS_SENDMMSG; kind<NETWORK_SYS_COUNT; kind++) {
+        bool batch=kind==NETWORK_SYS_SENDMMSG || kind==NETWORK_SYS_RECVMMSG;
+        call.kind=kind; call.start_ts=6000+kind*100; call.ts=call.start_ts+20;
+        call.result=batch ? 2 : 64; call.requested_messages=batch ? 4 : 0;
+        call.requested_valid=!batch; call.requested_bytes=batch ? 0 : 128;
+        export_network_syscall(&call,123,false);
+    }
+    assert(begins==14 && ends==14);
+    call.kind=NETWORK_SYS_COUNT; export_network_syscall(&call,0,false);
+    assert(begins==14 && ends==14); /* invalid enum cannot index names[] */
     return 0;
 }
 '''
@@ -138,7 +158,7 @@ int main(void) {
             self.assertEqual(result.returncode, 0, result.stderr)
             run = subprocess.run([str(binary)], check=True, capture_output=True, text=True)
         records = [json.loads(line) for line in run.stdout.splitlines()]
-        self.assertEqual(len(records), 6)
+        self.assertEqual(len(records), 14)
         self.assertEqual(records[0]["bytes"], 5)  # partial write, not requested size
         self.assertEqual(records[0]["flow_tag"], "tcp-1")
         self.assertEqual(records[0]["duration_ns"], 20)
@@ -146,6 +166,18 @@ int main(void) {
         self.assertEqual(records[1]["bytes"], 0)
         self.assertEqual(records[1]["flow_id"], "0000000000000000")
         self.assertTrue(records[2]["incomplete"])
+        self.assertEqual([record["syscall"] for record in records[6:]],
+                         ["sendmmsg", "recvmmsg", "read", "write", "readv", "writev", "send", "recv"])
+        for record in records[6:8]:
+            self.assertEqual(record["result_unit"], "messages")
+            self.assertEqual(record["requested_messages"], 4)
+            self.assertEqual(record["result"], 2)
+            self.assertEqual(record["bytes"], 0)  # message counts must not become byte counts
+        for record in records[8:]:
+            self.assertEqual(record["result_unit"], "bytes")
+            self.assertEqual(record["bytes"], 64)
+            self.assertEqual(record["flow_tag"], "tcp-1")
+            self.assertEqual(record["abi"], 1)
 
 
 if __name__ == "__main__":

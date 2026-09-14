@@ -556,10 +556,58 @@ static void do_parse_args(int argc, char *argv[])
 		bpf_args->connect_syscall_nr = SYS_connect;
 		bpf_args->getsockopt_syscall_nr = SYS_getsockopt;
 	}
+	memset(bpf_args->network_syscall_nr, 0xff, sizeof(bpf_args->network_syscall_nr));
+	memset(bpf_args->compat_network_syscall_nr, 0xff,
+	       sizeof(bpf_args->compat_network_syscall_nr));
+#ifdef SYS_sendto
 	bpf_args->network_syscall_nr[NETWORK_SYS_SENDTO] = SYS_sendto;
+#endif
+#ifdef SYS_recvfrom
 	bpf_args->network_syscall_nr[NETWORK_SYS_RECVFROM] = SYS_recvfrom;
+#endif
+#ifdef SYS_sendmsg
 	bpf_args->network_syscall_nr[NETWORK_SYS_SENDMSG] = SYS_sendmsg;
+#endif
+#ifdef SYS_recvmsg
 	bpf_args->network_syscall_nr[NETWORK_SYS_RECVMSG] = SYS_recvmsg;
+#endif
+#ifdef SYS_sendmmsg
+	bpf_args->network_syscall_nr[NETWORK_SYS_SENDMMSG] = SYS_sendmmsg;
+#endif
+#ifdef SYS_recvmmsg
+	bpf_args->network_syscall_nr[NETWORK_SYS_RECVMMSG] = SYS_recvmmsg;
+#endif
+#ifdef SYS_read
+	bpf_args->network_syscall_nr[NETWORK_SYS_READ] = SYS_read;
+#endif
+#ifdef SYS_write
+	bpf_args->network_syscall_nr[NETWORK_SYS_WRITE] = SYS_write;
+#endif
+#ifdef SYS_readv
+	bpf_args->network_syscall_nr[NETWORK_SYS_READV] = SYS_readv;
+#endif
+#ifdef SYS_writev
+	bpf_args->network_syscall_nr[NETWORK_SYS_WRITEV] = SYS_writev;
+#endif
+#ifdef SYS_send
+	bpf_args->network_syscall_nr[NETWORK_SYS_SEND] = SYS_send;
+#endif
+#ifdef SYS_recv
+	bpf_args->network_syscall_nr[NETWORK_SYS_RECV] = SYS_recv;
+#endif
+	/* Linux arch/arm64/include/asm/unistd32.h and x86 syscall_32.tbl. */
+#if defined(__aarch64__)
+	const u32 compat_calls[NETWORK_SYS_COUNT] = {
+		290, 292, 296, 297, 374, 365, 3, 4, 145, 146, 289, 291
+	};
+#elif defined(__x86_64__)
+	const u32 compat_calls[NETWORK_SYS_COUNT] = {
+		369, 371, 370, 372, 345, 337, 3, 4, 145, 146, ~0U, ~0U
+	};
+#endif
+#if defined(__aarch64__) || defined(__x86_64__)
+	memcpy(bpf_args->compat_network_syscall_nr, compat_calls, sizeof(compat_calls));
+#endif
 
 /* convert the args to the eBPF pkt_arg struct */
 #define FILL_ADDR_PROTO(name, subfix, args, pf) if (name##_pf == pf) {	\
