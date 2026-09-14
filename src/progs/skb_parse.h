@@ -424,6 +424,10 @@ static inline int probe_parse_sk(struct sock *sk, sock_t *ske,
 		if (filter_ipv6_check(args, saddr, daddr))
 			goto err;
 		l3_proto = ETH_P_IPV6;
+#ifndef NT_DISABLE_IPV6
+		__builtin_memcpy(ske->l3.ipv6.saddr, saddr, 16);
+		__builtin_memcpy(ske->l3.ipv6.daddr, daddr, 16);
+#endif
 		break;
 	default:
 		/* shouldn't happen, as we only use sk for IP and 
@@ -485,7 +489,8 @@ static inline int probe_parse_sk(struct sock *sk, sock_t *ske,
 	ske->proto_l4 = l4_proto;
 	ske->state = _C(skc, skc_state);
 
-	if (!bpf_core_type_exists(struct inet_connection_sock))
+	if (l4_proto != IPPROTO_TCP ||
+	    !bpf_core_type_exists(struct inet_connection_sock))
 		return 0;
 
 	icsk = __ptr(sk);

@@ -31,7 +31,7 @@ require_text 'runs-on: ubuntu-24.04-arm' \
 require_text 'packet mark must remain the final field' src/progs/skb_shared.h
 require_text $'\t\t} ipv4;\n#ifndef NT_DISABLE_IPV6\n\t\tstruct {' \
 	src/progs/skb_shared.h
-require_text $'\t\t} ipv4;\n#if 0\n\t\tstruct {' src/progs/skb_shared.h
+require_text $'\t\t} ipv4;\n#ifndef NT_DISABLE_IPV6\n\t\tstruct {' src/progs/skb_shared.h
 require_text 'pkt->mark = _C(skb, mark);' src/progs/skb_parse.h
 require_text 'pkt->l3.ipv4.id = bpf_ntohs(_C(ipv4, id));' src/progs/skb_parse.h
 require_text $'u16\tdns_transaction_id;' src/progs/skb_shared.h
@@ -158,13 +158,13 @@ require_text 'native_socket_track(flow->socket_id, flow->owner_tgid' \
 require_text '"idle_timeout"' src/perfetto_export.c
 require_text 'flow->tx_bytes += bytes;' src/perfetto_export.c
 require_text 'flow->rx_bytes += bytes;' src/perfetto_export.c
-require_text 'if (flows[capacity].closed)' src/perfetto_export.c
+require_text 'static struct flow_state *flow_create' src/perfetto_export.c
 require_text 'flow->closed = !strcmp(reason, "tcp_close");' \
 	src/perfetto_export.c
 require_text 'ipv6_is_v4_mapped' src/perfetto_export.c
 require_text 'pending_io_find_logical' src/perfetto_export.c
 require_text '!strcmp(trace->name, "ip_output")' src/perfetto_export.c
-require_text 'sock->proto_l3 != ETH_P_IP' src/perfetto_export.c
+require_text 'sock->proto_l3 != ETH_P_IP && sock->proto_l3 != ETH_P_IPV6' src/perfetto_export.c
 require_text 'if ((args->pid || args->uid_enabled) && !current_matches' \
 	src/progs/core.c
 require_text '\"skb_id\":' src/perfetto_export.c
@@ -322,6 +322,9 @@ require_text '--latest' .github/workflows/release.yml
 require_text 'uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' \
 	.github/workflows/release.yml
 
-python3 -m unittest discover -s "$ROOT/tests" -p 'test_network_syscalls.py'
+if [[ "${ANETTRACE_STATIC_ONLY:-0}" != 1 ]]; then
+	python3 -m unittest discover -s "$ROOT/tests" -p 'test_network_syscalls.py'
+	python3 -m unittest discover -s "$ROOT/tests" -p 'test_flow_identity.py'
+fi
 
 echo "source contracts: ok"

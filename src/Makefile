@@ -80,7 +80,7 @@ else
 	CFLAGS += -D__F_STACK_TRACE
 endif
 
-progs/kprobe_trace.h:
+progs/kprobe_trace.h: trace.yaml
 	python3 gen_trace.py probe > progs/kprobe_trace.h
 
 trace_group.c: trace.yaml

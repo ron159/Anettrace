@@ -47,6 +47,10 @@ bool trace_event_visible(const trace_t *trace, const event_t *event)
 		"tcp_sendmsg",
 		"tcp_recvmsg",
 		"tcp_close",
+		"udp_destroy_sock",
+		"udpv6_destroy_sock",
+		"skb_consume_udp",
+		"skb_copy_datagram_iter",
 		"tcp_v4_rcv",
 		"tcp_v6_rcv",
 		"udp_sendmsg",
@@ -96,6 +100,13 @@ const char *trace_event_name(const trace_t *trace, const event_t *event)
 		return "socket create";
 	if (trace_name_matches(trace, "inet_sock_set_state"))
 		return "TCP state change";
+	if (trace_name_matches(trace, "udp_destroy_sock") ||
+	    trace_name_matches(trace, "udpv6_destroy_sock"))
+		return "UDP socket destroy";
+	if (trace_name_matches(trace, "skb_copy_datagram_iter"))
+		return "socket data copy to application";
+	if (trace_name_matches(trace, "skb_consume_udp"))
+		return "UDP receive buffer release";
 	if (trace_name_matches(trace, "tcp_close"))
 		return "TCP socket close";
 	if (trace_name_matches(trace, "tcp_sendmsg"))
@@ -104,10 +115,14 @@ const char *trace_event_name(const trace_t *trace, const event_t *event)
 		return "TCP read";
 	if (trace_name_matches(trace, "udp_sendmsg") ||
 	    trace_name_matches(trace, "udpv6_sendmsg"))
-		return "DNS write";
+		return event && (ntohs(event->ske.l4.min.sport) == 53 ||
+			 ntohs(event->ske.l4.min.dport) == 53) ?
+		       "DNS write" : "UDP write";
 	if (trace_name_matches(trace, "udp_recvmsg") ||
 	    trace_name_matches(trace, "udpv6_recvmsg"))
-		return "DNS read";
+		return event && (ntohs(event->ske.l4.min.sport) == 53 ||
+			 ntohs(event->ske.l4.min.dport) == 53) ?
+		       "DNS read" : "UDP read";
 	if (!event)
 		return trace->name;
 
@@ -128,6 +143,12 @@ const char *trace_event_name(const trace_t *trace, const event_t *event)
 			return tx ? "TCP FIN send" : "TCP FIN receive";
 		return tx ? "TCP packet send" : "TCP packet receive";
 	}
+	if ((ip_output || trace_name_matches(trace, "udp_rcv") ||
+	     trace_name_matches(trace, "udpv6_rcv")) &&
+	    packet->proto_l4 == IPPROTO_UDP &&
+	    ntohs(packet->l4.min.sport) != 53 &&
+	    ntohs(packet->l4.min.dport) != 53)
+		return ip_output ? "UDP packet send" : "UDP packet receive";
 	if (ip_output)
 		return packet->proto_l4 == IPPROTO_UDP &&
 		       ntohs(packet->l4.min.dport) == 53 ?
@@ -550,7 +571,8 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		&trace_udp6_unicast_rcv_skb, &trace_udp_queue_rcv_skb,
 		&trace_udpv6_queue_rcv_skb, &trace___udp_queue_rcv_skb,
 		&trace___udp_enqueue_schedule_skb, &trace_udp_recvmsg,
-		&trace_udpv6_recvmsg,
+		&trace_udpv6_recvmsg, &trace_skb_consume_udp,
+		&trace_skb_copy_datagram_iter,
 	};
 	static trace_t *perfetto_tx_traces[] = {
 		&trace_tcp_sendmsg, &trace_tcp_sendmsg_locked,
@@ -567,12 +589,15 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 	static char perfetto_compact_traces[] =
 		"network_sys_enter,network_sys_exit,"
 		"sk_alloc,inet_sock_set_state,tcp_sendmsg,tcp_recvmsg,tcp_close,"
+		"udp_destroy_sock,udpv6_destroy_sock,skb_consume_udp,skb_copy_datagram_iter,"
+		"consume_skb,kfree_skb,__kfree_skb,"
 		"__tcp_transmit_skb,udp_sendmsg,udpv6_sendmsg,"
 		"ip_output,ip6_output,tcp_v4_rcv,tcp_v6_rcv,"
 		"udp_rcv,udpv6_rcv,udp_recvmsg,udpv6_recvmsg";
 	static char perfetto_detailed_traces[] =
 		"network_sys_enter,network_sys_exit,"
 		"sk_alloc,inet_sock_set_state,inet_listen,tcp_sendmsg,"
+		"udp_destroy_sock,udpv6_destroy_sock,skb_consume_udp,skb_copy_datagram_iter,"
 		"tcp_sendmsg_locked,"
 		"tcp_recvmsg,tcp_close,tcp_v4_destroy_sock,tcp_skb_entail,"
 		"skb_entail,"

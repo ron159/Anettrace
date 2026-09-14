@@ -460,12 +460,20 @@ children:
       monitor: 1
     - name: __udp_enqueue_schedule_skb/0:1
       monitor: 1
+    - name: skb_consume_udp/0:1
+      monitor: 1
+    - name: skb_copy_datagram_iter:0
+      monitor: 1
+    - name: udp_destroy_sock/0
+      monitor: 1
+    - name: udpv6_destroy_sock/0
+      monitor: 1
     - name: udp_recvmsg/0
       monitor: 1
     - name: udpv6_recvmsg/0
       monitor: 1
   - name: udp-out
-    desc: DNS UDP packets sent by the application
+    desc: UDP packets sent by the application
     visual: true
     children:
     - name: udp_sendmsg/0

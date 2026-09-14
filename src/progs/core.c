@@ -61,6 +61,7 @@ typedef struct {
 	u16 proto_l3;
 	u8 proto_l4;
 	u8 pad;
+	u32 netns;
 } perfetto_flow_key_t;
 
 typedef struct {
@@ -159,6 +160,43 @@ struct {
 	__uint(max_entries, 16384);
 } m_network_syscalls SEC(".maps");
 
+typedef struct {
+	u64 head;
+	u32 generation;
+	u8 released;
+} perfetto_packet_instance_t;
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 65536);
+	__type(key, u64);
+	__type(value, perfetto_packet_instance_t);
+} m_perfetto_packets SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u32);
+} m_perfetto_packet_counter SEC(".maps");
+
+typedef struct {
+	u64 start_ts;
+	u64 syscall_start_ts;
+	u64 socket_key;
+	u32 socket_generation;
+	u32 depth;
+	u16 func;
+	u8 tx;
+} perfetto_io_t;
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, u64);
+	__type(value, perfetto_io_t);
+} m_perfetto_io SEC(".maps");
+
 /* Keep the detailed drop event off the 512-byte combined BPF stack. */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -231,8 +269,26 @@ static inline void try_trace_stack(context_info_t *info) { }
 #endif
 
 static inline int filter_by_netns(context_info_t *info)
-{	
-	return 0;
+{
+	struct sock *sk = info->sk;
+	struct net_device *dev;
+	struct net *net = NULL;
+	u32 netns = 0;
+
+	if (!sk && info->skb)
+		sk = _C(info->skb, sk);
+	if (sk)
+		net = _C(sk, __sk_common.skc_net.net);
+	else if (info->skb) {
+		dev = _C(info->skb, dev);
+		if (dev)
+			net = _C(dev, nd_net.net);
+	}
+	if (net)
+		netns = _C(net, ns.inum);
+	if (info->args->detail)
+		((detail_event_t *)info->e)->netns = netns;
+	return info->args->netns && netns != info->args->netns;
 }
 
 static __always_inline void do_event_output(context_info_t *info,
@@ -337,12 +393,8 @@ static __always_inline bool perfetto_owner_matches(bpf_args_t *args,
 
 static __always_inline bool perfetto_packet_supported(packet_t *pkt)
 {
-	if (pkt->proto_l4 == IPPROTO_TCP)
-		return true;
-	if (pkt->proto_l4 != IPPROTO_UDP)
-		return false;
-	return pkt->l4.min.sport == bpf_htons(53) ||
-	       pkt->l4.min.dport == bpf_htons(53);
+	return pkt->proto_l4 == IPPROTO_TCP ||
+	       pkt->proto_l4 == IPPROTO_UDP;
 }
 
 static __always_inline bool perfetto_packet_is_dns(packet_t *pkt)
@@ -354,12 +406,8 @@ static __always_inline bool perfetto_packet_is_dns(packet_t *pkt)
 
 static __always_inline bool perfetto_socket_supported(sock_t *sock)
 {
-	if (sock->proto_l4 == IPPROTO_TCP)
-		return true;
-	if (sock->proto_l4 != IPPROTO_UDP)
-		return false;
-	return sock->l4.min.sport == bpf_htons(53) ||
-	       sock->l4.min.dport == bpf_htons(53);
+	return sock->proto_l4 == IPPROTO_TCP ||
+	       sock->proto_l4 == IPPROTO_UDP;
 }
 
 static __always_inline bool perfetto_socket_io(u16 func)
@@ -370,8 +418,9 @@ static __always_inline bool perfetto_socket_io(u16 func)
 }
 
 static __always_inline void perfetto_flow_key(packet_t *pkt,
-					       perfetto_flow_key_t *key)
+					       perfetto_flow_key_t *key, u32 netns)
 {
+	key->netns = netns;
 	key->proto_l3 = pkt->proto_l3;
 	key->proto_l4 = pkt->proto_l4;
 	key->sport = pkt->l4.min.sport;
@@ -388,20 +437,28 @@ static __always_inline void perfetto_flow_key(packet_t *pkt,
 }
 
 static __always_inline perfetto_flow_owner_t *perfetto_lookup_flow(
-	packet_t *pkt, perfetto_flow_key_t *key)
+	packet_t *pkt, perfetto_flow_key_t *key, u32 netns)
 {
+	perfetto_flow_owner_t *flow;
+	perfetto_owner_t *owner;
 	if (!perfetto_packet_supported(pkt))
 		return NULL;
 	__builtin_memset(key, 0, sizeof(*key));
-	perfetto_flow_key(pkt, key);
-	return bpf_map_lookup_elem(&m_perfetto_flow_owner, key);
+	perfetto_flow_key(pkt, key, netns);
+	flow = bpf_map_lookup_elem(&m_perfetto_flow_owner, key);
+	if (!flow || !flow->owner.socket_key)
+		return NULL;
+	owner = bpf_map_lookup_elem(&m_perfetto_socket_owner, &flow->owner.socket_key);
+	if (!owner || owner->socket_generation != flow->owner.socket_generation)
+		return NULL;
+	return flow;
 }
 
 static __always_inline void perfetto_store_flow(packet_t *pkt,
 							 perfetto_owner_t *owner,
 							 u8 direction,
 							 perfetto_flow_key_t *key,
-							 perfetto_flow_owner_t *value)
+							 perfetto_flow_owner_t *value, u32 netns)
 {
 	u32 address;
 	u16 port;
@@ -412,7 +469,7 @@ static __always_inline void perfetto_store_flow(packet_t *pkt,
 	__builtin_memset(key, 0, sizeof(*key));
 	value->owner = *owner;
 	value->direction = direction;
-	perfetto_flow_key(pkt, key);
+	perfetto_flow_key(pkt, key, netns);
 	bpf_map_update_elem(&m_perfetto_flow_owner, key, value, BPF_ANY);
 
 #pragma clang loop unroll(full)
@@ -489,8 +546,92 @@ static __always_inline void network_syscall_bind(context_info_t *info)
 	/* All six TCP/UDP protocol entry points take the byte count in arg 3.
  * This avoids reading ABI-dependent user msghdr/iovec layouts.
  */
-	pending->requested_bytes = (u64)info_get_arg(info, 2);
-	pending->requested_valid = true;
+	if (pending->kind != NETWORK_SYS_SENDMMSG &&
+	    pending->kind != NETWORK_SYS_RECVMMSG) {
+		pending->requested_bytes = (u64)info_get_arg(info, 2);
+		pending->requested_valid = true;
+	}
+}
+
+static __always_inline void perfetto_io_exit(u16 func)
+{
+	u64 task = bpf_get_current_pid_tgid();
+	perfetto_io_t *io;
+
+	if (!perfetto_socket_io(func))
+		return;
+	io = bpf_map_lookup_elem(&m_perfetto_io, &task);
+	if (!io)
+		return;
+	if (io->depth > 1)
+		io->depth--;
+	else
+		bpf_map_delete_elem(&m_perfetto_io, &task);
+}
+
+static __attribute__((noinline)) void perfetto_record_identity(context_info_t *info)
+{
+	detail_event_t *detail = (void *)info->e;
+	u64 task = bpf_get_current_pid_tgid();
+	perfetto_io_t *io;
+
+	if (perfetto_socket_io(info->func) && !info->is_return) {
+		io = bpf_map_lookup_elem(&m_perfetto_io, &task);
+		if (io && io->socket_key == (u64)info->sk) {
+			io->depth++;
+		} else {
+			perfetto_io_t fresh = {
+				.start_ts = info->e->pkt.ts,
+				.socket_key = (u64)info->sk,
+				.socket_generation = perfetto_socket_generation(info->sk, false),
+				.depth = 1, .func = info->func,
+				.tx = !!(info->func_status & FUNC_STATUS_TX),
+			};
+			network_syscall_event_t *call = bpf_map_lookup_elem(&m_network_syscalls, &task);
+			if (call)
+				fresh.syscall_start_ts = call->start_ts;
+			bpf_map_update_elem(&m_perfetto_io, &task, &fresh, BPF_ANY);
+		}
+	}
+	io = bpf_map_lookup_elem(&m_perfetto_io, &task);
+	if (io) {
+		bool copy = info->func == INDEX_skb_copy_datagram_iter;
+		bool tx = io->tx && detail->direction == PACKET_DIRECTION_TX &&
+			detail->owner_socket_key == io->socket_key;
+		if (!info->skb || copy || tx) {
+			detail->io_start_ts = io->start_ts;
+			detail->syscall_start_ts = io->syscall_start_ts;
+			detail->io_tid = (u32)task;
+			detail->io_tgid = task >> 32;
+			detail->io_role = info->skb ? (copy ? 2 : 1) : 0;
+			if (copy) {
+				detail->io_offset = (u32)(u64)info_get_arg(info, 1);
+				detail->io_bytes = (u32)(u64)info_get_arg(info, 3);
+			}
+		}
+	}
+	if (info->skb) {
+		u64 key = (u64)info->skb;
+		u64 head = (u64)_C(info->skb, head);
+		perfetto_packet_instance_t *packet = bpf_map_lookup_elem(&m_perfetto_packets, &key);
+		if (!packet || packet->head != head ||
+		    (packet->released && !func_is_free(info->func_status))) {
+			u32 zero = 0, *counter = bpf_map_lookup_elem(&m_perfetto_packet_counter, &zero);
+			if (counter) {
+				perfetto_packet_instance_t fresh = {
+					.head = head, .generation = __sync_fetch_and_add(counter, 1) + 1,
+				};
+				bpf_map_update_elem(&m_perfetto_packets, &key, &fresh, BPF_ANY);
+			}
+			packet = bpf_map_lookup_elem(&m_perfetto_packets, &key);
+		}
+		if (packet)
+			info->e->key_generation = packet->generation;
+		if (packet && func_is_free(info->func_status))
+			packet->released = true;
+	}
+	if (info->is_return)
+		perfetto_io_exit(info->func);
 }
 
 static __always_inline bool perfetto_resolve_socket_owner(
@@ -551,6 +692,11 @@ static __attribute__((noinline)) int perfetto_handle_owner(
 	owner = &scratch->owner;
 	__builtin_memset(owner, 0, sizeof(*owner));
 
+	if (!sk && info->func == INDEX_skb_copy_datagram_iter) {
+		perfetto_io_t *io = bpf_map_lookup_elem(&m_perfetto_io, &pid_tgid);
+		if (io && !io->tx)
+			sk = (void *)io->socket_key;
+	}
 	if (!sk && skb)
 		sk = _C(skb, sk);
 	owner_valid = perfetto_resolve_socket_owner(
@@ -562,7 +708,7 @@ static __attribute__((noinline)) int perfetto_handle_owner(
 		if (!perfetto_packet_supported(&event->pkt))
 			return -1;
 		flow_owner = perfetto_lookup_flow(&event->pkt,
-						  &scratch->flow_key);
+						  &scratch->flow_key, detail->netns);
 		if (flow_owner) {
 			if (!owner_valid ||
 			    (!owner->tid && owner->uid == flow_owner->owner.uid))
@@ -603,7 +749,7 @@ static __attribute__((noinline)) int perfetto_handle_owner(
 				perfetto_store_socket_owner(sk, owner);
 		}
 		perfetto_store_flow(&event->pkt, owner, direction,
-				    &scratch->flow_key, &scratch->flow_value);
+				    &scratch->flow_key, &scratch->flow_value, detail->netns);
 	}
 
 	detail->direction = direction;
@@ -845,6 +991,11 @@ static int auto_inline handle_entry(context_info_t *info)
 	u32 tgid = (u32)(pid_tgid >> 32);
 	u32 uid = (u32)bpf_get_current_uid_gid();
 
+	if (args->perfetto && !sk && info->func == INDEX_skb_copy_datagram_iter) {
+		perfetto_io_t *io = bpf_map_lookup_elem(&m_perfetto_io, &pid_tgid);
+		if (io && !io->tx)
+			info->sk = sk = (void *)io->socket_key;
+	}
 	mode_ctx = mode_has_context(args) && skb;
 	filter = !info->matched;
 	direction = args->perfetto ? perfetto_status_direction(info->func_status) :
@@ -892,6 +1043,8 @@ static int auto_inline handle_entry(context_info_t *info)
 	if (filter && err)
 		goto err;
 
+	if (args->perfetto && filter_by_netns(info))
+		goto err;
 	if (args->perfetto && perfetto_handle_owner(info, sk, (void *)e, filter))
 		goto err;
 
@@ -925,6 +1078,8 @@ out:
 	pr_debug_skb("pkt matched");
 	try_trace_stack(info);
 	pkt->ts = bpf_ktime_get_ns();
+	if (args->perfetto)
+		perfetto_record_identity(info);
 #ifdef __PROG_TYPE_TRACING
 	e->key = skb ? (u64)(void *)_(skb) : (u64)(void *)_(info->sk);
 #else
@@ -945,7 +1100,9 @@ out:
 #endif
 	if (args->perfetto && sk &&
 	    (info->func == INDEX_tcp_close ||
-	     info->func == INDEX_tcp_v4_destroy_sock)) {
+	     info->func == INDEX_tcp_v4_destroy_sock ||
+	     info->func == INDEX_udp_destroy_sock ||
+	     info->func == INDEX_udpv6_destroy_sock)) {
 		u64 socket_key = (u64)(void *)sk;
 
 		bpf_map_delete_elem(&m_perfetto_socket_owner, &socket_key);
@@ -956,6 +1113,14 @@ out:
 		get_ret(info);
 	return 0;
 err:
+	if (args->perfetto && skb && func_is_free(info->func_status)) {
+		u64 key = (u64)skb;
+		perfetto_packet_instance_t *packet = bpf_map_lookup_elem(&m_perfetto_packets, &key);
+		if (packet)
+			packet->released = true;
+	}
+	if (args->perfetto && info->is_return)
+		perfetto_io_exit(info->func);
 	return -1;
 }
 
@@ -1389,23 +1554,54 @@ static __always_inline void connect_forget(const connect_pending_t *pending)
 		bpf_map_delete_elem(&m_connect_socket, &socket_key);
 }
 
-/* Syscall numbers below are the binary's native ABI. Never interpret compat
- * syscall numbers as native ones. arm64 TIF_32BIT is bit 22; x86 TIF_ADDR32
- * (bit 29) also excludes x32. Compat tracing can be added with its own table.
- */
-static __always_inline bool network_native_task(void)
+/* Decode the task ABI before comparing numbers. x32 uses the native register
+ * layout but a separate syscall namespace; unsupported numbers stay unknown. */
+static __always_inline u8 network_task_abi(long nr)
 {
 #if defined(__TARGET_ARCH_arm64) || defined(__TARGET_ARCH_x86)
 	struct task_struct *task = (void *)bpf_get_current_task();
 	unsigned long flags = _C(task, thread_info.flags);
 #ifdef __TARGET_ARCH_arm64
-	return !(flags & (1UL << 22));
+	return !!(flags & (1UL << 22));
 #else
-	return !(flags & (1UL << 29));
+	if (nr & 0x40000000UL)
+		return 2;
+	return !!(flags & (1UL << 29));
 #endif
 #else
-	return true;
+	return 0;
 #endif
+}
+
+static __always_inline int network_call_kind(bpf_args_t *args, long nr, u8 abi)
+{
+	int i;
+#ifdef __TARGET_ARCH_x86
+	if (abi == 2) {
+		switch (nr & ~0x40000000UL) {
+		case 0: return NETWORK_SYS_READ;
+		case 1: return NETWORK_SYS_WRITE;
+		case 44: return NETWORK_SYS_SENDTO;
+		case 515: return NETWORK_SYS_READV;
+		case 516: return NETWORK_SYS_WRITEV;
+		case 517: return NETWORK_SYS_RECVFROM;
+		case 518: return NETWORK_SYS_SENDMSG;
+		case 519: return NETWORK_SYS_RECVMSG;
+		case 537: return NETWORK_SYS_RECVMMSG;
+		case 538: return NETWORK_SYS_SENDMMSG;
+		default: return -1;
+		}
+	}
+#endif
+	/* time64 recvmmsg on 32-bit Linux. */
+	if (abi == 1 && nr == 417)
+		return NETWORK_SYS_RECVMMSG;
+#pragma clang loop unroll(full)
+	for (i = 0; i < NETWORK_SYS_COUNT; i++)
+		if (nr >= 0 && (u32)nr == (abi == 1 ?
+		    args->compat_network_syscall_nr[i] : args->network_syscall_nr[i]))
+			return i;
+	return -1;
 }
 
 SEC("tp/raw_syscalls/sys_enter")
@@ -1416,19 +1612,49 @@ int TRACE_NAME(network_sys_enter)(struct trace_event_raw_sys_enter *ctx)
 	u32 tid = (u32)pid_tgid, uid = (u32)bpf_get_current_uid_gid();
 	long nr = _(ctx->id);
 	u32 zero = 0;
-	int kind = -1, i;
+	u8 abi = network_task_abi(nr);
+	int kind;
+	u64 fd = _(ctx->args[0]), arg2 = _(ctx->args[2]);
+	u64 arg3 = _(ctx->args[3]);
 	perfetto_scratch_t *scratch;
 	network_syscall_event_t *event;
 
 	if (!args->ready || !args->perfetto ||
 	    !perfetto_current_matches(args, tid, uid))
 		return 0;
-#pragma clang loop unroll(full)
-	for (i = 0; i < 4; i++)
-		if (nr == args->network_syscall_nr[i])
-			kind = i;
-	if (kind < 0 || !network_native_task())
+	kind = network_call_kind(args, nr, abi);
+#ifdef __TARGET_ARCH_x86
+	/* i386 socketcall multiplexes network calls through a u32 user array. */
+	if (abi == 1 && nr == 102) {
+		u32 call_args[4];
+		switch (fd) {
+		case 9: kind = NETWORK_SYS_SEND; break;
+		case 10: kind = NETWORK_SYS_RECV; break;
+		case 11: kind = NETWORK_SYS_SENDTO; break;
+		case 12: kind = NETWORK_SYS_RECVFROM; break;
+		case 16: kind = NETWORK_SYS_SENDMSG; break;
+		case 17: kind = NETWORK_SYS_RECVMSG; break;
+		case 19: kind = NETWORK_SYS_RECVMMSG; break;
+		case 20: kind = NETWORK_SYS_SENDMMSG; break;
+		default: return 0;
+		}
+		/* sendmsg/recvmsg only have three arguments. */
+		if (bpf_probe_read_user(call_args, 3 * sizeof(u32),
+				(void *)(u64)(u32)_(ctx->args[1])))
+			return 0;
+		arg3 = 0;
+		if (kind != NETWORK_SYS_SENDMSG && kind != NETWORK_SYS_RECVMSG &&
+		    bpf_probe_read_user(&call_args[3], sizeof(u32),
+				(void *)((u64)(u32)_(ctx->args[1]) + 12)))
+			return 0;
+		fd = call_args[0]; arg2 = call_args[2];
+		if (kind != NETWORK_SYS_SENDMSG && kind != NETWORK_SYS_RECVMSG)
+			arg3 = call_args[3];
+	}
+#endif
+	if (kind < 0)
 		return 0;
+
 	scratch = bpf_map_lookup_elem(&m_perfetto_scratch, &zero);
 	if (!scratch)
 		return 0;
@@ -1441,14 +1667,21 @@ int TRACE_NAME(network_sys_enter)(struct trace_event_raw_sys_enter *ctx)
 	event->tid = tid;
 	event->tgid = pid_tgid >> 32;
 	event->uid = uid;
-	event->fd = (s32)_(ctx->args[0]);
-	event->require_socket = args->network_socket_filter;
-	if (kind == NETWORK_SYS_SENDTO || kind == NETWORK_SYS_RECVFROM) {
-		event->requested_bytes = _(ctx->args[2]);
+	event->fd = (s32)fd;
+	event->abi = abi;
+	/* Ordinary file I/O must never appear as network I/O. */
+	event->require_socket = args->network_socket_filter ||
+		(kind >= NETWORK_SYS_READ && kind <= NETWORK_SYS_WRITEV);
+	if (kind == NETWORK_SYS_SENDMMSG || kind == NETWORK_SYS_RECVMMSG) {
+		event->requested_messages = arg2;
+		event->flags = arg3;
+	} else if (kind == NETWORK_SYS_SENDMSG || kind == NETWORK_SYS_RECVMSG) {
+		event->flags = arg2;
+	} else if (kind != NETWORK_SYS_READV && kind != NETWORK_SYS_WRITEV) {
+		event->requested_bytes = abi == 1 ? (u32)arg2 : arg2;
 		event->requested_valid = true;
-		event->flags = _(ctx->args[3]);
-	} else {
-		event->flags = _(ctx->args[2]);
+		if (kind != NETWORK_SYS_READ && kind != NETWORK_SYS_WRITE)
+			event->flags = arg3;
 	}
 	bpf_get_current_comm(event->task, sizeof(event->task));
 	if (bpf_map_update_elem(&m_network_syscalls, &pid_tgid, event, BPF_ANY))
@@ -1472,7 +1705,7 @@ int TRACE_NAME(network_sys_exit)(struct trace_event_raw_sys_exit *ctx)
 		return 0;
 	if (event->syscall_nr == _(ctx->id)) {
 		event->ts = bpf_ktime_get_ns();
-		event->result = _(ctx->ret);
+		event->result = event->abi ? (s32)_(ctx->ret) : _(ctx->ret);
 		event->finished = true;
 		EVENT_OUTPUT_PTR(ctx, event, sizeof(*event));
 		args->event_count++;
