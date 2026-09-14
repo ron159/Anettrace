@@ -926,6 +926,18 @@ static inline bool trace_mode_latency(bpf_args_t *args)
  *    0: valid and continue
  *    1: valid and return
  */
+/* Lifetime cleanup must run before context/pid filters can discard a free. */
+#if defined(NO_BTF) || defined(INLINE_MODE)
+static
+#endif
+__attribute__((noinline)) int perfetto_retire_packet(u64 key)
+{
+	perfetto_packet_instance_t *packet = bpf_map_lookup_elem(&m_perfetto_packets, &key);
+	if (packet)
+		packet->released = true;
+	return 0;
+}
+
 static inline int pre_handle_entry(context_info_t *info, u16 func)
 {
 	bpf_args_t *args = (void *)info->args;
@@ -938,6 +950,8 @@ static inline int pre_handle_entry(context_info_t *info, u16 func)
 		return -1;
 
 	info->func_status = get_func_status(info->args, func);
+	if (args->perfetto && info->skb && func_is_free(info->func_status))
+		perfetto_retire_packet((u64)info->skb);
 	if (mode_has_context(args) && info->skb) {
 		match_val_t *match_val = bpf_map_lookup_elem(&m_matched,
 							     &info->skb);
