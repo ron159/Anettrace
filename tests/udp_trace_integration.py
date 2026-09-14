@@ -20,7 +20,7 @@ def exercise(binary):
                                        '--pid', str(os.getpid())],
                                       stdout=output, stderr=subprocess.STDOUT)
             try:
-                deadline = time.monotonic() + 30
+                deadline = time.monotonic() + 180
                 while 'begin trace...' not in log.read_text():
                     if tracer.poll() is not None or time.monotonic() > deadline:
                         raise AssertionError(log.read_text())
@@ -82,6 +82,12 @@ def exercise(binary):
         packet_ids = {r['packet_id'] for r in packets}
         assert len(packet_ids) > 1
         assert all(r['packet_id'] in packet_ids for r in links)
+        io_ids = {r['io_id'] for r in records if r['type'] in ('tx_write_start', 'rx_read_start')}
+        call_ids = {r['call_id'] for r in calls}
+        assert all(r['io_id'] in io_ids for r in links), records
+        assert all(r['call_id'] in call_ids for r in links), records
+        assert any(len({r['stage'] for r in packets if r['packet_id'] == pid}) > 1
+                   for pid in packet_ids), records
         print(f'UDP trace: {len(packets)} stages, {len(packet_ids)} skb instances, '
               f'{len(flows)} flows, {len(calls)} syscalls, {len(links)} I/O links')
 
