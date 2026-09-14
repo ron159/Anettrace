@@ -649,6 +649,9 @@ __attribute__((noinline)) int perfetto_record_identity(detail_event_t *detail,
 	u64 task = bpf_get_current_pid_tgid();
 	perfetto_io_t *io;
 
+	if (!detail)
+		return 0;
+
 	if (perfetto_socket_io(func) && !is_return)
 		perfetto_io_enter(sk_key, detail->pkt.ts,
 				  func, func_status);
