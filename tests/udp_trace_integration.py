@@ -80,7 +80,7 @@ def exercise(binary):
         assert any(r['evidence'] in ('copy_attempt', 'receive_release') for r in links), records
         assert any(r['type'] == 'flow_end' and r['end_reason'] == 'socket_destroy' for r in records)
         packet_ids = {r['packet_id'] for r in packets}
-        assert len(packet_ids) > 1
+        assert len(packet_ids) > 1, records
         assert all(r['packet_id'] in packet_ids for r in links)
         io_ids = {r['io_id'] for r in records if r['type'] in ('tx_write_start', 'rx_read_start')}
         call_ids = {r['call_id'] for r in calls}

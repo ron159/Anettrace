@@ -592,7 +592,7 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		"network_sys_enter,network_sys_exit,"
 		"sk_alloc,inet_sock_set_state,tcp_sendmsg,tcp_recvmsg,tcp_close,"
 		"udp_destroy_sock,udpv6_destroy_sock,skb_consume_udp,skb_copy_datagram_iter,skb_copy_and_csum_datagram_msg,"
-		"consume_skb,kfree_skb,__kfree_skb,"
+		"consume_skb,kfree_skb,__kfree_skb,kfree_skb_partial,skb_attempt_defer_free,"
 		"__tcp_transmit_skb,udp_sendmsg,udpv6_sendmsg,"
 		"ip_output,ip6_output,tcp_v4_rcv,tcp_v6_rcv,"
 		"udp_rcv,udpv6_rcv,udp_recvmsg,udpv6_recvmsg";
@@ -608,7 +608,7 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		"__ip_queue_xmit,__ip_local_out,ip_output,ip_finish_output,"
 		"ip6_local_out,ip6_output,ip6_finish_output,"
 		"__dev_queue_xmit,dev_hard_start_xmit,consume_skb,kfree_skb,"
-		"__kfree_skb,napi_gro_receive_entry,__netif_receive_skb_core,"
+		"__kfree_skb,kfree_skb_partial,skb_attempt_defer_free,napi_gro_receive_entry,__netif_receive_skb_core,"
 		"ip_rcv,ip_rcv_core,ip_rcv_finish,ip_local_deliver,"
 		"ip_local_deliver_finish,ipv6_rcv,ip6_rcv_core,"
 		"ip6_rcv_finish,ip6_input,ip6_input_finish,tcp_v4_rcv,"
