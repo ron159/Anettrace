@@ -423,6 +423,12 @@ static __always_inline bool perfetto_socket_io(u16 func)
 	       func == INDEX_udp_recvmsg || func == INDEX_udpv6_recvmsg;
 }
 
+static __always_inline bool perfetto_rx_copy(u16 func)
+{
+	return func == INDEX_skb_copy_datagram_iter ||
+	       func == INDEX_skb_copy_and_csum_datagram_msg;
+}
+
 static __always_inline void perfetto_flow_key(packet_t *pkt,
 					       perfetto_flow_key_t *key, u32 netns)
 {
@@ -657,15 +663,17 @@ __attribute__((noinline)) int perfetto_record_identity(detail_event_t *detail,
 				  func, func_status);
 	io = bpf_map_lookup_elem(&m_perfetto_io, &task);
 	if (io) {
-		bool copy = func == INDEX_skb_copy_datagram_iter;
+		bool copy = perfetto_rx_copy(func);
+		bool release = func == INDEX_skb_consume_udp && !io->tx &&
+			io->socket_key == sk_key;
 		bool tx = io->tx && detail->direction == PACKET_DIRECTION_TX &&
 			detail->owner_socket_key == io->socket_key;
-		if (!skb_key || copy || tx) {
+		if (!skb_key || copy || release || tx) {
 			detail->io_start_ts = io->start_ts;
 			detail->syscall_start_ts = io->syscall_start_ts;
 			detail->io_tid = (u32)task;
 			detail->io_tgid = task >> 32;
-			detail->io_role = skb_key ? (copy ? 2 : 1) : 0;
+			detail->io_role = skb_key ? (copy ? 2 : (release ? 3 : 1)) : 0;
 		}
 	}
 	if (skb_key)
@@ -734,7 +742,7 @@ static __attribute__((noinline)) int perfetto_handle_owner(
 	owner = &scratch->owner;
 	__builtin_memset(owner, 0, sizeof(*owner));
 
-	if (!sk && info->func == INDEX_skb_copy_datagram_iter) {
+	if (!sk && perfetto_rx_copy(info->func)) {
 		perfetto_io_t *io = bpf_map_lookup_elem(&m_perfetto_io, &pid_tgid);
 		if (io && !io->tx)
 			sk = (void *)io->socket_key;
@@ -1033,7 +1041,7 @@ static int auto_inline handle_entry(context_info_t *info)
 	u32 tgid = (u32)(pid_tgid >> 32);
 	u32 uid = (u32)bpf_get_current_uid_gid();
 
-	if (args->perfetto && !sk && info->func == INDEX_skb_copy_datagram_iter) {
+	if (args->perfetto && !sk && perfetto_rx_copy(info->func)) {
 		perfetto_io_t *io = bpf_map_lookup_elem(&m_perfetto_io, &pid_tgid);
 		if (io && !io->tx)
 			info->sk = sk = (void *)io->socket_key;
@@ -1120,9 +1128,14 @@ out:
 	pkt->ts = bpf_ktime_get_ns();
 	if (args->perfetto && args->detail) {
 		detail = (void *)e;
-		if (info->func == INDEX_skb_copy_datagram_iter) {
+		if (perfetto_rx_copy(info->func)) {
 			detail->io_offset = (u32)(u64)info_get_arg(info, 1);
-			detail->io_bytes = (u32)(u64)info_get_arg(info, 3);
+			if (info->func == INDEX_skb_copy_datagram_iter)
+				detail->io_bytes = (u32)(u64)info_get_arg(info, 3);
+			else {
+				u32 len = _C(skb, len);
+				detail->io_bytes = len > detail->io_offset ? len - detail->io_offset : 0;
+			}
 		}
 		perfetto_record_identity(detail, (u64)info->sk, (u64)skb,
 			(u32)info->func | ((u32)info->func_status << 16) |

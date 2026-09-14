@@ -464,6 +464,8 @@ children:
       monitor: 1
     - name: skb_copy_datagram_iter:0
       monitor: 1
+    - name: skb_copy_and_csum_datagram_msg:0
+      monitor: 1
     - name: udp_destroy_sock/0
       monitor: 1
     - name: udpv6_destroy_sock/0

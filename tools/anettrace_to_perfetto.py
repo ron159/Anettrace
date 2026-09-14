@@ -516,7 +516,8 @@ class PerfettoExporter:
             int(record["ts_ns"]), self.thread_track(record),
             TrackEvent.TYPE_INSTANT,
             "packet submitted by call" if record.get("direction") == "tx"
-            else "packet copy to application",
+            else ("packet released by receive" if record.get("evidence") == "receive_release"
+                  else "packet copy to application"),
             "anettrace.io.link",
             linked_flow_ids=tuple(id_value(str(record[key]))
                                   for key in ("packet_id", "io_id", "call_id")

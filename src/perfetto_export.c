@@ -1637,6 +1637,8 @@ static void export_packet_io_link(const detail_event_t *detail, struct flow_stat
 	struct pending_io *pending;
 	struct proto_buffer link = {};
 	struct native_track *thread;
+	const char *evidence = detail->io_role == 1 ? "submission_context" :
+		(detail->io_role == 2 ? "copy_attempt" : "receive_release");
 
 	if (!detail->io_start_ts || !detail->io_role)
 		return;
@@ -1667,14 +1669,15 @@ static void export_packet_io_link(const detail_event_t *detail, struct flow_stat
 			PERFETTO_SCHEMA, event->pkt.ts, io_id, call_id, pkt_id,
 			flow ? flow->id : 0, detail->io_tid, detail->io_tgid,
 			detail->io_role == 1 ? "tx" : "rx", detail->io_offset, detail->io_bytes,
-			detail->io_role == 1 ? "submission_context" : "copy_attempt");
+			evidence);
 	if (!native_file)
 		return;
 	thread = native_thread_track(detail->io_tgid, detail->io_tid, detail->task);
 	if (!thread)
 		return;
 	native_event_start(&link, 3, thread->uuid,
-		detail->io_role == 1 ? "packet submitted by call" : "packet copy to application",
+		detail->io_role == 1 ? "packet submitted by call" :
+		(detail->io_role == 2 ? "packet copy to application" : "packet released by receive"),
 		"anettrace.io.link");
 	native_event_flow(&link, pkt_id, false);
 	native_event_flow(&link, io_id, false);
@@ -1685,8 +1688,7 @@ static void export_packet_io_link(const detail_event_t *detail, struct flow_stat
 	native_annotation_id(&link, "flow_id", flow ? flow->id : 0);
 	native_annotation_uint(&link, "offset", detail->io_offset);
 	native_annotation_uint(&link, "copy_bytes", detail->io_bytes);
-	native_annotation_string(&link, "evidence", detail->io_role == 1 ?
-		"submission_context" : "copy_attempt");
+	native_annotation_string(&link, "evidence", evidence);
 	native_event_write(event->pkt.ts, &link);
 	proto_free(&link);
 }

@@ -51,6 +51,7 @@ bool trace_event_visible(const trace_t *trace, const event_t *event)
 		"udpv6_destroy_sock",
 		"skb_consume_udp",
 		"skb_copy_datagram_iter",
+		"skb_copy_and_csum_datagram_msg",
 		"tcp_v4_rcv",
 		"tcp_v6_rcv",
 		"udp_sendmsg",
@@ -103,7 +104,8 @@ const char *trace_event_name(const trace_t *trace, const event_t *event)
 	if (trace_name_matches(trace, "udp_destroy_sock") ||
 	    trace_name_matches(trace, "udpv6_destroy_sock"))
 		return "UDP socket destroy";
-	if (trace_name_matches(trace, "skb_copy_datagram_iter"))
+	if (trace_name_matches(trace, "skb_copy_datagram_iter") ||
+	    trace_name_matches(trace, "skb_copy_and_csum_datagram_msg"))
 		return "socket data copy to application";
 	if (trace_name_matches(trace, "skb_consume_udp"))
 		return "UDP receive buffer release";
@@ -572,7 +574,7 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		&trace_udpv6_queue_rcv_skb, &trace___udp_queue_rcv_skb,
 		&trace___udp_enqueue_schedule_skb, &trace_udp_recvmsg,
 		&trace_udpv6_recvmsg, &trace_skb_consume_udp,
-		&trace_skb_copy_datagram_iter,
+		&trace_skb_copy_datagram_iter, &trace_skb_copy_and_csum_datagram_msg,
 	};
 	static trace_t *perfetto_tx_traces[] = {
 		&trace_tcp_sendmsg, &trace_tcp_sendmsg_locked,
@@ -589,7 +591,7 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 	static char perfetto_compact_traces[] =
 		"network_sys_enter,network_sys_exit,"
 		"sk_alloc,inet_sock_set_state,tcp_sendmsg,tcp_recvmsg,tcp_close,"
-		"udp_destroy_sock,udpv6_destroy_sock,skb_consume_udp,skb_copy_datagram_iter,"
+		"udp_destroy_sock,udpv6_destroy_sock,skb_consume_udp,skb_copy_datagram_iter,skb_copy_and_csum_datagram_msg,"
 		"consume_skb,kfree_skb,__kfree_skb,"
 		"__tcp_transmit_skb,udp_sendmsg,udpv6_sendmsg,"
 		"ip_output,ip6_output,tcp_v4_rcv,tcp_v6_rcv,"
@@ -597,7 +599,7 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 	static char perfetto_detailed_traces[] =
 		"network_sys_enter,network_sys_exit,"
 		"sk_alloc,inet_sock_set_state,inet_listen,tcp_sendmsg,"
-		"udp_destroy_sock,udpv6_destroy_sock,skb_consume_udp,skb_copy_datagram_iter,"
+		"udp_destroy_sock,udpv6_destroy_sock,skb_consume_udp,skb_copy_datagram_iter,skb_copy_and_csum_datagram_msg,"
 		"tcp_sendmsg_locked,"
 		"tcp_recvmsg,tcp_close,tcp_v4_destroy_sock,tcp_skb_entail,"
 		"skb_entail,"

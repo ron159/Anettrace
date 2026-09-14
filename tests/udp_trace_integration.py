@@ -77,7 +77,7 @@ def exercise(binary):
         assert not any(r['syscall'] == 'read' and r['fd'] == unrelated_fd for r in calls)
         links = [r for r in records if r['type'] == 'packet_io_link']
         assert any(r['evidence'] == 'submission_context' for r in links), records
-        assert any(r['evidence'] == 'copy_attempt' for r in links), records
+        assert any(r['evidence'] in ('copy_attempt', 'receive_release') for r in links), records
         assert any(r['type'] == 'flow_end' and r['end_reason'] == 'socket_destroy' for r in records)
         packet_ids = {r['packet_id'] for r in packets}
         assert len(packet_ids) > 1

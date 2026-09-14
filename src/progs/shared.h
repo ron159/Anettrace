@@ -128,7 +128,7 @@ typedef struct {
 	u32 io_tgid;
 	u32 io_offset;
 	u32 io_bytes;
-	u8 io_role; /* 1 TX submission, 2 RX copy attempt */
+	u8 io_role; /* 1 TX submission, 2 RX copy attempt, 3 RX buffer release */
 	int		__event_filed[0];
 } detail_event_t;
 
