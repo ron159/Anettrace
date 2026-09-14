@@ -562,20 +562,21 @@ static __always_inline void network_syscall_bind(context_info_t *info)
 #if defined(NO_BTF) || defined(INLINE_MODE)
 static
 #endif
-__attribute__((noinline)) void perfetto_io_exit(u16 func)
+__attribute__((noinline)) int perfetto_io_exit(u16 func)
 {
 	u64 task = bpf_get_current_pid_tgid();
 	perfetto_io_t *io;
 
 	if (!perfetto_socket_io(func))
-		return;
+		return 0;
 	io = bpf_map_lookup_elem(&m_perfetto_io, &task);
 	if (!io)
-		return;
+		return 0;
 	if (io->depth > 1)
 		io->depth--;
 	else
 		bpf_map_delete_elem(&m_perfetto_io, &task);
+	return 0;
 }
 
 /* Scalar arguments let modern kernels verify this map operation once,
@@ -613,7 +614,7 @@ __attribute__((noinline)) u32 perfetto_packet_generation(u64 key, bool release)
 #if defined(NO_BTF) || defined(INLINE_MODE)
 static
 #endif
-__attribute__((noinline)) void perfetto_io_enter(u64 sk_key, u64 ts, u16 func, u8 func_status)
+__attribute__((noinline)) int perfetto_io_enter(u64 sk_key, u64 ts, u16 func, u8 func_status)
 {
 	u64 task = bpf_get_current_pid_tgid();
 	perfetto_io_t *io;
@@ -633,6 +634,7 @@ __attribute__((noinline)) void perfetto_io_enter(u64 sk_key, u64 ts, u16 func, u
 			fresh.syscall_start_ts = call->start_ts;
 		bpf_map_update_elem(&m_perfetto_io, &task, &fresh, BPF_ANY);
 	}
+	return 0;
 }
 
 static __attribute__((noinline)) void perfetto_record_identity(context_info_t *info)
