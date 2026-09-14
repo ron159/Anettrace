@@ -637,37 +637,40 @@ __attribute__((noinline)) int perfetto_io_enter(u64 sk_key, u64 ts, u16 func, u8
 	return 0;
 }
 
-static __attribute__((noinline)) void perfetto_record_identity(context_info_t *info)
+#if defined(NO_BTF) || defined(INLINE_MODE)
+static
+#endif
+__attribute__((noinline)) int perfetto_record_identity(detail_event_t *detail,
+	u64 sk_key, u64 skb_key, u32 flags)
 {
-	detail_event_t *detail = (void *)info->e;
+	u16 func = flags;
+	u8 func_status = flags >> 16;
+	bool is_return = flags & (1U << 24);
 	u64 task = bpf_get_current_pid_tgid();
 	perfetto_io_t *io;
 
-	if (perfetto_socket_io(info->func) && !info->is_return)
-		perfetto_io_enter((u64)info->sk, info->e->pkt.ts,
-				  info->func, info->func_status);
+	if (perfetto_socket_io(func) && !is_return)
+		perfetto_io_enter(sk_key, detail->pkt.ts,
+				  func, func_status);
 	io = bpf_map_lookup_elem(&m_perfetto_io, &task);
 	if (io) {
-		bool copy = info->func == INDEX_skb_copy_datagram_iter;
+		bool copy = func == INDEX_skb_copy_datagram_iter;
 		bool tx = io->tx && detail->direction == PACKET_DIRECTION_TX &&
 			detail->owner_socket_key == io->socket_key;
-		if (!info->skb || copy || tx) {
+		if (!skb_key || copy || tx) {
 			detail->io_start_ts = io->start_ts;
 			detail->syscall_start_ts = io->syscall_start_ts;
 			detail->io_tid = (u32)task;
 			detail->io_tgid = task >> 32;
-			detail->io_role = info->skb ? (copy ? 2 : 1) : 0;
-			if (copy) {
-				detail->io_offset = (u32)(u64)info_get_arg(info, 1);
-				detail->io_bytes = (u32)(u64)info_get_arg(info, 3);
-			}
+			detail->io_role = skb_key ? (copy ? 2 : 1) : 0;
 		}
 	}
-	if (info->skb)
-		info->e->key_generation = perfetto_packet_generation(
-			(u64)info->skb, func_is_free(info->func_status));
-	if (info->is_return)
-		perfetto_io_exit(info->func);
+	if (skb_key)
+		detail->key_generation = perfetto_packet_generation(
+			sk_keyb, func_is_free(func_status));
+	if (is_return)
+		perfetto_io_exit(func);
+	return 0;
 }
 
 static __always_inline bool perfetto_resolve_socket_owner(
@@ -1112,8 +1115,16 @@ out:
 	pr_debug_skb("pkt matched");
 	try_trace_stack(info);
 	pkt->ts = bpf_ktime_get_ns();
-	if (args->perfetto)
-		perfetto_record_identity(info);
+	if (args->perfetto && args->detail) {
+		detail = (void *)e;
+		if (info->func == INDEX_skb_copy_datagram_iter) {
+			detail->io_offset = (u32)(u64)info_get_arg(info, 1);
+			detail->io_bytes = (u32)(u64)info_get_arg(info, 3);
+		}
+		perfetto_record_identity(detail, (u64)info->sk, (u64)skb,
+			(u32)info->func | ((u32)info->func_status << 16) |
+			((u32)info->is_return << 24));
+	}
 #ifdef __PROG_TYPE_TRACING
 	e->key = skb ? (u64)(void *)_(skb) : (u64)(void *)_(info->sk);
 #else
