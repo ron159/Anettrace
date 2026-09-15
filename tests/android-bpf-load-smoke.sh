@@ -81,6 +81,11 @@ run_profile() {
     [ ! -e "$expired" ] || fail "$profile timed out; inspect $log"
     [ "$result" = 0 ] || fail "$profile exited $result; inspect $log"
     [ "$ready" = 1 ] || fail "$profile never became ready; inspect $log"
+    # Loading succeeds even when a tracepoint attach is rejected. That is a
+    # coverage failure, not a successful smoke test (e.g. short TP contexts).
+    if grep -Eq 'failed to (auto|manually) attach|failed to attach to tracepoint|tracepoint .* unavailable:' "$log"; then
+        fail "$profile has missing probe coverage; inspect $log"
+    fi
     [ -s "$events" ] || fail "$profile produced no event file"
     if [ "$profile" = compact ]; then
         stage='UDP packet send'

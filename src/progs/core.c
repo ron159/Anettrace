@@ -446,6 +446,21 @@ static __always_inline bool perfetto_rx_copy(u16 func)
 	       func == INDEX_skb_copy_and_csum_datagram_msg;
 }
 
+/* func is a compile-time constant at each function probe entry. Keeping
+ * register reads here prevents shared handlers from treating a short
+ * tracepoint record as pt_regs (and inflating its max_ctx_offset). */
+static __always_inline void prepare_function_io_args(context_info_t *info,
+						     u16 func)
+{
+	if (perfetto_socket_io(func))
+		info->io_args.requested_bytes = (u64)info_get_arg(info, 2);
+	else if (perfetto_rx_copy(func)) {
+		info->io_args.copy.offset = (u32)(u64)info_get_arg(info, 1);
+		if (func == INDEX_skb_copy_datagram_iter)
+			info->io_args.copy.bytes = (u32)(u64)info_get_arg(info, 3);
+	}
+}
+
 static __always_inline void perfetto_flow_key(packet_t *pkt,
 					       perfetto_flow_key_t *key, u32 netns)
 {
@@ -577,7 +592,7 @@ static __always_inline void network_syscall_bind(context_info_t *info)
  */
 	if (pending->kind != NETWORK_SYS_SENDMMSG &&
 	    pending->kind != NETWORK_SYS_RECVMMSG) {
-		pending->requested_bytes = (u64)info_get_arg(info, 2);
+		pending->requested_bytes = info->io_args.requested_bytes;
 		pending->requested_valid = true;
 	}
 }
@@ -1163,9 +1178,9 @@ out:
 	if (args->perfetto && args->detail) {
 		detail = (void *)e;
 		if (perfetto_rx_copy(info->func)) {
-			detail->io_offset = (u32)(u64)info_get_arg(info, 1);
+			detail->io_offset = info->io_args.copy.offset;
 			if (info->func == INDEX_skb_copy_datagram_iter)
-				detail->io_bytes = (u32)(u64)info_get_arg(info, 3);
+				detail->io_bytes = info->io_args.copy.bytes;
 			else {
 				u32 len = _C(skb, len);
 				detail->io_bytes = len > detail->io_offset ? len - detail->io_offset : 0;
