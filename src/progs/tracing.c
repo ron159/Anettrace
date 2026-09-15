@@ -37,6 +37,7 @@
 			.is_return = 1,			\
 			info_init				\
 		};						\
+		prepare_function_io_args(&info, INDEX_##name);\
 		if (pre_handle_entry(&info, INDEX_##name))	\
 			return 0;				\
 		handle_entry_finish(&info, fake__##name(&info));\
@@ -51,6 +52,7 @@
 			.args = (void *)CONFIG(),		\
 			info_init				\
 		};						\
+		prepare_function_io_args(&info, INDEX_##name);\
 		if (pre_handle_entry(&info, INDEX_##name))	\
 			return 0;				\
 		handle_entry_finish(&info, fake__##name(&info));\

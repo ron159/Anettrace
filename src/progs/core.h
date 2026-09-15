@@ -16,6 +16,14 @@ typedef struct {
 	event_t *e;
 	/* the filter condition stored in map */
 	bpf_args_t *args;
+	/* Decoded only at function-probe entry, never from a tracepoint ctx. */
+	union {
+		u64 requested_bytes;
+		struct {
+			u32 offset;
+			u32 bytes;
+		} copy;
+	} io_args;
 	union {
 		/* used by fexit to pass the retval to event */
 		u64 retval;

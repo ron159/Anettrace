@@ -38,8 +38,8 @@ static int probe_trace_attach_manual(trace_t *trace, char *prog_name,
 		link = bpf_program__attach_tracepoint(prog, category, event);
 		err = libbpf_get_error(link);
 		if (err) {
-			pr_err("failed to manually attach tracepoint %s\n",
-			       trace->tp);
+			pr_warn("tracepoint %s unavailable: %s (%d); its events will be missing\n",
+				trace->tp, strerror(-err), err);
 			return err;
 		}
 		pr_verb("manually attach tracepoint %s success\n", trace->tp);
