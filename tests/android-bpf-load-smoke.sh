@@ -67,10 +67,16 @@ run_profile() {
         sleep 1
     done
     if [ "$ready" = 1 ]; then
-        # Sending to an unused loopback port still traverses IPv4 ip_output.
-        # nc may report the subsequent ICMP rejection; the trace is the proof.
-        timeout -s KILL 2 nc -u -w 1 127.0.0.1 "$PORT" < "$OUT/payload.txt" \
-            > "$OUT/$profile-workload.log" 2>&1 || true
+        if [ "$profile" = tcp-reset ]; then
+            # A refused loopback connection exercises the custom reset probe.
+            timeout -s KILL 2 nc -w 1 127.0.0.1 "$PORT" < "$OUT/payload.txt" \
+                > "$OUT/$profile-workload.log" 2>&1 || true
+        else
+            # Sending to an unused loopback port still traverses IPv4 ip_output.
+            # nc may report the subsequent ICMP rejection; the trace is the proof.
+            timeout -s KILL 2 nc -u -w 1 127.0.0.1 "$PORT" < "$OUT/payload.txt" \
+                > "$OUT/$profile-workload.log" 2>&1 || true
+        fi
     fi
     result=0
     wait "$TRACE_PID" || result=$?
@@ -87,18 +93,23 @@ run_profile() {
         fail "$profile has missing probe coverage; inspect $log"
     fi
     [ -s "$events" ] || fail "$profile produced no event file"
-    if [ "$profile" = compact ]; then
+    proto=17
+    if [ "$profile" = tcp-reset ]; then
+        stage='tcp_v4_send_reset'
+        proto=6
+    elif [ "$profile" = compact ]; then
         stage='UDP packet send'
     else
         stage='ip_output'
     fi
     # Require all fields on the same packet, not unrelated lines in the log.
-    grep '"type":"packet_event"' "$events" | grep '"proto_l4":17' | \
+    grep '"type":"packet_event"' "$events" | grep "\"proto_l4\":$proto" | \
         grep "\"dport\":$PORT" | grep "\"stage\":\"$stage\"" >/dev/null || \
-        fail "$profile did not capture the test UDP packet at ip_output"
-    echo "PASS: $profile BPF load and IPv4 UDP ip_output"
+        fail "$profile did not capture the test packet at $stage"
+    echo "PASS: $profile BPF load and IPv4 packet at $stage"
 }
 
 run_profile compact
 run_profile detailed --trace-detail
+run_profile tcp-reset --basic --trace tcp --trace-detail
 echo "Android BPF load smoke: PASS ($OUT)"
