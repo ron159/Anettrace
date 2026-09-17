@@ -667,6 +667,23 @@ static void trace_enable_default()
 	}
 }
 
+static void trace_enable_perfetto_output()
+{
+	/* Compact send markers need the completed IP header. Protocol groups
+	 * select transport probes, so also enable their output dependencies.
+	 * Apply user exclusions afterwards, just like all other selections. */
+	if (!trace_ctx.bpf_args.perfetto || trace_ctx.args.connect_diagnostics)
+		return;
+	if (trace_is_enable(&trace___tcp_transmit_skb)) {
+		trace_set_enable(&trace_ip_output);
+		trace_set_enable(&trace_ip6_output);
+	}
+	if (trace_is_enable(&trace_udp_send_skb))
+		trace_set_enable(&trace_ip_output);
+	if (trace_is_enable(&trace_udp_v6_send_skb))
+		trace_set_enable(&trace_ip6_output);
+}
+
 static int trace_prepare_args()
 {
 	bpf_args_t *bpf_args = &trace_ctx.bpf_args;
@@ -751,6 +768,7 @@ static int trace_prepare_args()
 		goto err;
 	}
 
+	trace_enable_perfetto_output();
 	trace_parse_traces(args->trace_exclude, 4);
 	if (args->trace_matcher) {
 		if (!(trace_ctx.mode_mask & TRACE_MODE_BPF_CTX_MASK)) {
