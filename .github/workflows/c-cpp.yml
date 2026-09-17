@@ -125,6 +125,9 @@ jobs:
           sudo python3 tests/traffic_udp_integration.py ./src/anettrace --protocol all
       - name: Verify ordinary UDP trace and application I/O association
         run: sudo python3 tests/udp_trace_integration.py ./src/anettrace
+
+      - name: Verify TCP and UDP send markers with protocol trace groups
+        run: sudo python3 tests/send_packet_integration.py ./src/anettrace
       - name: Run timezone offset tests
         run: |
           gcc -O2 -Wall -Wextra -Iutils \
