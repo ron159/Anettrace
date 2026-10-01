@@ -79,6 +79,23 @@ jobs:
               gcc -O2 -Wall -Wextra -static \
                 tests/android/connect_workload.c \
                 -o output/anettrace-connect-workload
+              gcc -O2 -Wall -Wextra -Werror -static \
+                tests/android/socket_chain_workload.c \
+                -o output/anettrace-socket-chain-workload
+              output/anettrace-socket-chain-workload \
+                --start-delay-ms 0 --rounds 2 --chunks 3 --bytes 128 \
+                --delay-ms 5 --interval-ms 0 | \
+                tee output/anettrace-socket-chain-workload.self-test.txt
+              grep -q "complete protocol=tcp rounds=2 verified=true" \
+                output/anettrace-socket-chain-workload.self-test.txt
+              grep -q "complete protocol=udp rounds=2 verified=true" \
+                output/anettrace-socket-chain-workload.self-test.txt
+              if output/anettrace-socket-chain-workload --protocol invalid; then
+                exit 1
+              fi
+              if output/anettrace-socket-chain-workload --host 127.0.0.1; then
+                exit 1
+              fi
 
               file src/anettrace | tee output/anettrace.file.txt
               readelf -h src/anettrace > output/anettrace.elf-header.txt
@@ -91,6 +108,12 @@ jobs:
                 grep -q "Machine:.*AArch64"
               ! readelf -l output/anettrace-connect-workload | grep -q INTERP
               ! readelf -d output/anettrace-connect-workload | grep -q NEEDED
+              file output/anettrace-socket-chain-workload | \
+                tee output/anettrace-socket-chain-workload.file.txt
+              readelf -h output/anettrace-socket-chain-workload | \
+                grep -q "Machine:.*AArch64"
+              ! readelf -l output/anettrace-socket-chain-workload | grep -q INTERP
+              ! readelf -d output/anettrace-socket-chain-workload | grep -q NEEDED
 
               grep -q "Machine:.*AArch64" output/anettrace.elf-header.txt
               ! grep -q INTERP output/anettrace.program-headers.txt
@@ -205,7 +228,8 @@ jobs:
               test -f "${archive}"
               sha256sum "${archive}" > "${archive}.sha256"
               sha256sum src/anettrace "${archive}" \
-                output/anettrace-connect-workload > output/SHA256SUMS
+                output/anettrace-connect-workload \
+                output/anettrace-socket-chain-workload > output/SHA256SUMS
               {
                 echo "source_commit=${GITHUB_SHA}"
                 echo "upstream_commit=a9f133477b02728e2430f7db9249d556b7162b84"
@@ -230,6 +254,9 @@ jobs:
             output/anettrace.*.txt
             output/anettrace-connect-workload
             output/anettrace-connect-workload.file.txt
+            output/anettrace-socket-chain-workload
+            output/anettrace-socket-chain-workload.file.txt
+            output/anettrace-socket-chain-workload.self-test.txt
 
       - name: Download uploaded artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -251,5 +278,9 @@ jobs:
           file output/anettrace-connect-workload | grep -q 'ARM aarch64'
           ! readelf -l output/anettrace-connect-workload | grep -q INTERP
           ! readelf -d output/anettrace-connect-workload | grep -q NEEDED
+          file output/anettrace-socket-chain-workload | grep -q 'ARM aarch64'
+          readelf -h output/anettrace-socket-chain-workload | grep -q 'Machine:.*AArch64'
+          ! readelf -l output/anettrace-socket-chain-workload | grep -q INTERP
+          ! readelf -d output/anettrace-socket-chain-workload | grep -q NEEDED
           tar -tjf "${archive}" | \
             grep -q "^anettrace-${version}-android-arm64-dual/anettrace$"
