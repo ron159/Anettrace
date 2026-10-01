@@ -103,7 +103,7 @@ static void native_event_write(u64 ts, struct proto_buffer *e) {
         helpers = "".join(function(source, name) for name in (
             "flow_label_prefix", "format_flow_label", "format_known_flow_label",
             "format_packet_flow_label", "flow_protocol_name", "packet_submission_ids",
-            "flow_packet_anchor", "flow_link_socket", "pending_io_emit_start",
+            "flow_packet_anchor", "packet_trace_terminal", "flow_link_socket", "pending_io_emit_start",
             "pending_io_finish", "export_packet_io_link", "native_export_packet_event",
             "export_packet_event", "export_rx_handoff"))
         body = r'''

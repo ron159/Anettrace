@@ -267,6 +267,47 @@ free(flows);
 ''')
         self.assertEqual(result, ["0", "1", "1", "1", "1", "1"])
 
+    def test_cleanup_matches_only_one_exact_destroyed_socket_instance(self):
+        helpers = self.flow_lifecycle_helpers() + function(EXPORT.read_text(), "flow_find_destroyed")
+        result = self.run_source(helpers, r'''
+struct flow_state *first=flow_create(123,90,5,100);
+first->active=false; first->closed=true; first->end_ts=200;
+u64 original=first->id;
+/* Ordinary later traffic cannot reuse a retired connection; cleanup can. */
+printf("%d ", flow_lookup(123,90,5,230)==NULL);
+printf("%d ", flow_find_destroyed(123,90,5,230)->id==original);
+printf("%d ", !first->active && first->end_ts==200);
+printf("%d ", flow_find_destroyed(123,0,5,230)==NULL);
+printf("%d ", flow_find_destroyed(123,91,5,230)==NULL);
+printf("%d ", flow_find_destroyed(124,90,5,230)==NULL);
+printf("%d ", flow_find_destroyed(123,90,6,230)==NULL);
+printf("%d ", flow_find_destroyed(123,90,5,199)==NULL);
+/* An idle timeout or trace end is not an observed socket destruction. */
+first->closed=false;
+printf("%d ", flow_find_destroyed(123,90,5,230)==NULL);
+first->closed=true;
+struct flow_state *second=flow_create(123,90,5,150);
+second->active=false; second->closed=true; second->end_ts=210;
+printf("%d", flow_find_destroyed(123,90,5,230)==NULL);
+free(flows);
+''')
+        self.assertEqual(result, ["1"] * 10)
+
+    def test_only_drop_free_and_custom_free_are_packet_cleanup(self):
+        helpers = r'''
+typedef struct { unsigned status, analyzer; } trace_t;
+#define TRACE_CFREE 128
+#define ANALYZER_drop 1
+#define ANALYZER_free 2
+#define TRACE_HAS_ANALYZER(t, a) ((t)->analyzer & ANALYZER_##a)
+''' + function(EXPORT.read_text(), "packet_trace_terminal")
+        result = self.run_source(helpers, r'''
+trace_t ordinary={0}, drop={.analyzer=1}, release={.analyzer=2}, custom={.status=128};
+printf("%d %d %d %d %d", packet_trace_terminal(NULL), packet_trace_terminal(&ordinary),
+       packet_trace_terminal(&drop), packet_trace_terminal(&release), packet_trace_terminal(&custom));
+''')
+        self.assertEqual(result, ["0", "0", "1", "1", "1"])
+
     def test_socket_generations_and_network_namespaces_isolate_flows(self):
         result = self.run_source(self.flow_lifecycle_helpers(), r'''
 u64 old_socket = socket_instance_id(0x100, 1);

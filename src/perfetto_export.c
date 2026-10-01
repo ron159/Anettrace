@@ -1040,12 +1040,39 @@ static bool socket_trace_terminal(const trace_t *trace)
 	       !strcmp(trace->name, "udpv6_destroy_sock");
 }
 
+static bool packet_trace_terminal(const trace_t *trace)
+{
+	return trace && (TRACE_HAS_ANALYZER(trace, drop) ||
+			 TRACE_HAS_ANALYZER(trace, free) || (trace->status & TRACE_CFREE));
+}
+
+static struct flow_state *flow_find_destroyed(u64 tuple_id, u64 socket_id,
+					     u32 netns, u64 ts)
+{
+	struct flow_state *found = NULL;
+
+	if (!socket_id)
+		return NULL;
+	for (size_t i = 0; i < flow_count; i++) {
+		struct flow_state *flow = &flows[i];
+		if (flow->active || !flow->closed || flow->socket_id != socket_id ||
+		    flow->tuple_id != tuple_id || flow->netns != netns ||
+		    ts < flow->first_ts || ts < flow->end_ts)
+			continue;
+		if (found)
+			return NULL;
+		found = flow;
+	}
+	return found;
+}
+
 
 static u64 detail_flow_id(const detail_event_t *detail, bool socket)
 {
 	const event_t *event = (const void *)detail;
 
-	if (!socket && !flow_packet_supported(&event->pkt, get_trace(event->func)))
+	trace_t *trace = get_trace(event->func);
+	if (!socket && !flow_packet_supported(&event->pkt, trace))
 		return 0;
 	u64 socket_id = socket ? detail_socket_instance_id(detail) :
 		(detail->owner_socket_key ?
@@ -1053,10 +1080,12 @@ static u64 detail_flow_id(const detail_event_t *detail, bool socket)
 				    detail->owner_socket_generation) : 0);
 	struct flow_state *flow = flow_lookup(socket ? socket_flow_id(&event->ske) :
 		packet_flow_id(&event->pkt), socket_id, detail->netns, event->pkt.ts);
+	if (!socket && !flow && !flow_lookup_ambiguous && packet_trace_terminal(trace))
+		flow = flow_find_destroyed(packet_flow_id(&event->pkt), socket_id,
+					   detail->netns, event->pkt.ts);
 	/* Destruction can clear sk_num before the probe. The socket instance
 	 * still identifies its lifecycle; multiple UDP peers remain ambiguous. */
-	trace_t *trace = socket ? get_trace(event->func) : NULL;
-	if (!flow && !flow_lookup_ambiguous && trace && socket_trace_terminal(trace))
+	if (socket && !flow && !flow_lookup_ambiguous && trace && socket_trace_terminal(trace))
 		flow = flow_find_by_socket(socket_id, event->ske.proto_l4);
 
 	return flow ? flow->id : 0;
@@ -1328,7 +1357,7 @@ static void flow_finish(struct flow_state *flow, u64 end_ts,
 	}
 	flow->end_ts = end_ts;
 	flow->active = false;
-	flow->closed = !strcmp(reason, "tcp_close");
+	flow->closed = !incomplete && !strcmp(reason, "socket_destroy");
 }
 
 static void flow_set_owner(struct flow_state *flow,
@@ -1441,6 +1470,10 @@ static struct flow_state *flow_from_packet(const detail_event_t *detail,
 	flow = flow_lookup(id, socket_id, detail->netns, pkt->ts);
 	if (!flow && flow_lookup_ambiguous)
 		return NULL;
+	/* Cleanup may run just after socket destruction. It can refer back to
+	 * one exact destroyed instance, but cannot create/reopen a connection. */
+	if (packet_trace_terminal(trace))
+		return flow ?: flow_find_destroyed(id, socket_id, detail->netns, pkt->ts);
 	if (!flow) {
 		flow = flow_create(id, socket_id, detail->netns, pkt->ts);
 		if (!flow)
@@ -2039,8 +2072,7 @@ static void native_export_packet_event(const detail_event_t *detail,
 	u64 io_id, call_id, socket_id;
 	const char *stage = trace_event_name(trace, event);
 	bool dropped = TRACE_HAS_ANALYZER(trace, drop);
-	bool terminal = dropped || TRACE_HAS_ANALYZER(trace, free) ||
-			(trace->status & TRACE_CFREE);
+	bool terminal = packet_trace_terminal(trace);
 	bool flow_anchor = flow_packet_anchor(trace, pkt->proto_l4,
 					      detail->direction);
 
@@ -2446,8 +2478,7 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 	u64 io_id, call_id, socket_id;
 	const char *stage = trace_event_name(trace, event);
 	bool dropped = TRACE_HAS_ANALYZER(trace, drop);
-	bool terminal = dropped || TRACE_HAS_ANALYZER(trace, free) ||
-			(trace->status & TRACE_CFREE);
+	bool terminal = packet_trace_terminal(trace);
 	bool flow_anchor = flow_packet_anchor(trace, pkt->proto_l4,
 					      detail->direction);
 
