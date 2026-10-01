@@ -680,6 +680,12 @@ static void trace_enable_perfetto_output()
 	 * Apply user exclusions afterwards, just like all other selections. */
 	if (!trace_ctx.bpf_args.perfetto || trace_ctx.args.connect_diagnostics)
 		return;
+	/* Explicit protocol groups need the same lifetime and application-call
+	 * anchors as the default preset. Exclusions below still take precedence. */
+	trace_set_enable(&trace_sk_alloc);
+	trace_set_enable(&trace_inet_sock_set_state);
+	trace_set_enable(&trace_network_sys_enter);
+	trace_set_enable(&trace_network_sys_exit);
 	if (trace_is_enable(&trace___tcp_transmit_skb)) {
 		trace_set_enable(&trace_ip_output);
 		trace_set_enable(&trace_ip6_output);

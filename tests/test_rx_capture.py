@@ -192,8 +192,10 @@ static struct { struct { bool perfetto; } bpf_args;
         result = self.run_source(helpers, r'''
 trace_tcp_v4_rcv.enabled = true;
 trace_enable_perfetto_output();
-printf("%d %d %d %d", trace_tcp_rcv_established.enabled,
+printf("%d %d %d %d %d %d %d %d", trace_tcp_rcv_established.enabled,
     trace_tcp_queue_rcv.enabled, trace_sock_def_readable.enabled,
-    trace_skb_copy_datagram_iter.enabled);
+    trace_skb_copy_datagram_iter.enabled, trace_sk_alloc.enabled,
+    trace_inet_sock_set_state.enabled, trace_network_sys_enter.enabled,
+    trace_network_sys_exit.enabled);
 ''')
-        self.assertEqual(result, ["1", "1", "1", "1"])
+        self.assertEqual(result, ["1"] * 8)
