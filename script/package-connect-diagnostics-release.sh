@@ -53,6 +53,7 @@ cp "$root/tools/anettrace_to_perfetto.py" \
 cp "$root/tools/perfetto_sql/anettrace_integrity.sql" \
 	"$root/tools/perfetto_sql/connect_diagnostics.sql" \
 	"$root/tools/perfetto_sql/connect_diagnostics_metrics.sql" \
+	"$root/tools/perfetto_sql/network_chain.sql" \
 	"$host_root/tools/perfetto_sql/"
 chmod 0755 "$host_root/tools/"*.py
 find "$host_root" -type f ! -path '*/tools/*.py' -exec chmod 0644 {} +

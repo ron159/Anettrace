@@ -63,7 +63,8 @@ for member in \
 	tools/merge_trace_with_anettrace.py tools/requirements-perfetto.txt \
 	tools/perfetto_sql/anettrace_integrity.sql \
 	tools/perfetto_sql/connect_diagnostics.sql \
-	tools/perfetto_sql/connect_diagnostics_metrics.sql; do
+	tools/perfetto_sql/connect_diagnostics_metrics.sql \
+	tools/perfetto_sql/network_chain.sql; do
 	grep -Fxq "$host_prefix/$member" <<<"$host_members"
 done
 test "$(tar -xOf "$asset_dir/$host_archive" "$host_prefix/VERSION" | \
