@@ -128,7 +128,8 @@ typedef struct {
 	u32 io_tgid;
 	u32 io_offset;
 	u32 io_bytes;
-	u8 io_role; /* 1 TX submission, 2 RX copy attempt, 3 RX buffer release */
+	u8 io_role; /* 1 TX context, 2 RX copy attempt, 3 RX release, 4 stored TX context */
+	u8 io_multiple; /* More than one submission call was observed for this skb. */
 	int		__event_filed[0];
 } detail_event_t;
 
@@ -142,6 +143,7 @@ enum {
 	FUNC_TYPE_TRACING_RET,
 	FUNC_TYPE_CONNECT,
 	FUNC_TYPE_SYSCALL,
+	FUNC_TYPE_RX_HANDOFF,
 	FUNC_TYPE_MAX,
 };
 
@@ -199,6 +201,31 @@ typedef struct {
 	u32 requested_messages;
 	char task[16];
 } network_syscall_event_t;
+
+enum rx_handoff_kind {
+	RX_HANDOFF_READY,
+};
+
+/* Direct socket callback observation. This does not identify a triggering
+ * packet or a scheduler wakee, which need independent evidence. */
+typedef struct {
+	u16 meta;
+	u16 kind;
+	u16 func;
+	u64 ts;
+	u64 socket_key;
+	u32 socket_generation;
+	u32 tid;
+	u32 tgid;
+	u32 uid;
+	u32 owner_tid;
+	u32 owner_tgid;
+	u32 owner_uid;
+	u32 netns;
+	u8 owner_valid;
+	char task[16];
+	sock_t ske;
+} rx_handoff_event_t;
 
 enum {
 	PACKET_DIRECTION_UNKNOWN,

@@ -143,8 +143,11 @@ require_text 'native_annotation_string(&track_event, "stage", stage);' \
 	src/perfetto_export.c
 require_text 'native_event_correlation(&track_event, flow_id);' \
 	src/perfetto_export.c
-require_text 'native_event_flow(&track_event, flow_id, false);' \
+require_text 'native_event_flow(&track_event, id, terminal);' \
 	src/perfetto_export.c
+require_text 'socket_flow_link' src/perfetto_export.c
+require_text 'anettrace.syscall.complete' src/perfetto_export.c
+require_text 'FUNC_TYPE_RX_HANDOFF' src/analysis.c
 require_text 'native_event_flow(&event, flow->id, true);' \
 	src/perfetto_export.c
 require_text '"flow_anchor"' src/perfetto_export.c
@@ -161,7 +164,7 @@ require_text '"idle_timeout"' src/perfetto_export.c
 require_text 'flow->tx_bytes += bytes;' src/perfetto_export.c
 require_text 'flow->rx_bytes += bytes;' src/perfetto_export.c
 require_text 'static struct flow_state *flow_create' src/perfetto_export.c
-require_text 'flow->closed = !strcmp(reason, "tcp_close");' \
+require_text 'flow->closed = !incomplete && !strcmp(reason, "socket_destroy");' \
 	src/perfetto_export.c
 require_text 'ipv6_is_v4_mapped' src/perfetto_export.c
 require_text 'pending_io_find_logical' src/perfetto_export.c
@@ -245,7 +248,7 @@ require_text 'Direct capture intentionally skips terminal packet analysis' \
 require_text 'trace && trace_using_sk(trace)' src/analysis.c
 require_text 'packet.timestamp_clock_id = CLOCK_MONOTONIC' \
 	tools/anettrace_to_perfetto.py
-require_text 'packet_record["flow_tag"] = self.flow_label' \
+require_text 'packet_record = self.chain_record(record)' \
 	tools/anettrace_to_perfetto.py
 require_text 'record.get("tgid", record.get("owner_tgid", 0))' \
 	tools/anettrace_to_perfetto.py
@@ -327,6 +330,7 @@ require_text 'uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' \
 if [[ "${ANETTRACE_STATIC_ONLY:-0}" != 1 ]]; then
 	python3 -m unittest discover -s "$ROOT/tests" -p 'test_network_syscalls.py'
 	python3 -m unittest discover -s "$ROOT/tests" -p 'test_flow_identity.py'
+	python3 -m unittest discover -s "$ROOT/tests" -p 'test_rx_capture.py'
 fi
 
 echo "source contracts: ok"

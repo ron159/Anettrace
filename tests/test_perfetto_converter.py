@@ -24,6 +24,176 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PerfettoConverterTest(unittest.TestCase):
+    def chain_records(self) -> list[dict]:
+        clock = MODULE.read_records(ROOT / "tests/fixtures/perfetto-events.jsonl")[0]
+        start = int(clock["monotonic_ns"]) + 100000
+        records = [clock]
+
+        def add(record_type, ts_offset, **values):
+            records.append(dict(schema=MODULE.SCHEMA, type=record_type,
+                                ts_ns=start + ts_offset, tid=70, tgid=60,
+                                task="app", **values))
+
+        add("socket_create", 10, start_ts_ns=start, socket_id="0000000000001001")
+        for offset, flow_id, tag in ((20, "2001", "udp-1"), (30, "2002", "udp-2")):
+            add("flow_start", offset, socket_id="0000000000001001",
+                flow_id=flow_id, flow_tag=tag, protocol="udp")
+            add("socket_flow_link", offset + 1, socket_id="0000000000001001",
+                flow_id=flow_id, flow_tag=tag, evidence="socket_instance")
+        for offset, packet_id, flow_id in ((40, "3001", "2001"),
+                                          (45, "3002", "2001"),
+                                          (50, "3003", "2002")):
+            add("packet_event", offset, packet_id=packet_id, flow_id=flow_id,
+                stage="udp_rcv",
+                direction="rx", proto_l4=17, flow_anchor=True)
+        add("rx_handoff", 55, kind="data_ready", handoff_id="4001",
+            packet_id="0000000000000000", flow_id="2001", socket_id="0000000000001001",
+            stage="sock_def_readable", evidence="socket_readable_callback",
+            packet_association="unassociated")
+        add("rx_read_start", 65, io_id="5001", call_id="6001", flow_id="2001",
+            socket_id="0000000000001001", stage="udp_recvmsg", protocol="udp")
+        add("packet_io_link", 70, io_id="5001", call_id="6001", packet_id="3001",
+            flow_id="2001", socket_id="0000000000001001", direction="rx",
+            evidence="copy_attempt", offset=0, copy_bytes=512)
+        add("rx_read_end", 75, io_id="5001", call_id="6001", flow_id="2001",
+            socket_id="0000000000001001", stage="udp_recvmsg", result=512, bytes=512)
+        add("io_complete", 75, io_id="5001", call_id="6001", flow_id="2001",
+            socket_id="0000000000001001", direction="rx", result=512, bytes=512,
+            error=0, incomplete=False, association="socket")
+        add("network_syscall", 80, start_ts_ns=start + 35, syscall="recvfrom",
+            call_id="6001", socket_id="0000000000001001", flow_id="2001",
+            flow_tag="udp-1", fd=3, result=512, bytes=512, error=0, incomplete=False)
+        # No packet evidence: do not fabricate a packet edge (especially ID 1).
+        add("rx_handoff", 85, kind="data_ready", handoff_id="4002",
+            packet_id="0", flow_id="2002", socket_id="0000000000001001",
+            stage="sock_def_readable", evidence="socket_readable_callback",
+            packet_association="unassociated")
+        add("trace_end", 100)
+        return records
+
+    def test_chain_labels_bridges_and_packet_arrows_preserve_evidence(self) -> None:
+        trace = Trace()
+        trace.ParseFromString(MODULE.PerfettoExporter(self.chain_records()).serialize())
+        events = [p.track_event for p in trace.packet if p.HasField("track_event")]
+        packets = [e for e in events if "anettrace.packet" in e.categories]
+        self.assertEqual([e.name for e in packets],
+                         ["udp-1 · udp_rcv", "udp-1 · udp_rcv", "udp-2 · udp_rcv"])
+        self.assertEqual([list(e.flow_ids) for e in packets], [[0x3001], [0x3002], [0x3003]])
+        bridges = [e for e in events if "anettrace.socket.flow" in e.categories]
+        self.assertEqual([set(e.flow_ids) for e in bridges],
+                         [{0x1001, 0x2001}, {0x1001, 0x2002}])
+        handoffs = [e for e in events if "anettrace.rx.handoff" in e.categories]
+        self.assertEqual([set(e.flow_ids) for e in handoffs],
+                         [{0x1001}, {0x1001}])
+        completions = [e for e in events if "anettrace.io.complete" in e.categories]
+        self.assertEqual(len(completions), 1)
+        self.assertEqual(set(completions[0].flow_ids), {0x6001})
+        self.assertEqual(set(completions[0].terminating_flow_ids), {0x5001})
+
+    def test_chain_query_limits_packet_seed_and_resolves_syscall_thread(self) -> None:
+        encoded = MODULE.PerfettoExporter(self.chain_records()).serialize()
+        sql = (ROOT / "tools/perfetto_sql/network_chain.sql").read_text()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "chain.pftrace"
+            path.write_bytes(encoded)
+            with TraceProcessor(trace=str(path)) as processor:
+                def query(key, value):
+                    return list(processor.query(sql.replace(
+                        "SELECT '' AS seed_kind, '' AS seed_id",
+                        f"SELECT '{key}' AS seed_kind, '{value}' AS seed_id")))
+
+                packet_rows = query("packet_id", "3001")
+                self.assertEqual({r.packet_id for r in packet_rows if r.packet_id}, {"3001"})
+                self.assertTrue(any(r.name == "socket allocation" for r in packet_rows))
+                self.assertEqual({r.handoff_id for r in packet_rows if r.handoff_id}, set())
+                syscall = next(r for r in packet_rows if r.category == "anettrace.syscall")
+                self.assertEqual((syscall.tid, syscall.result, syscall.bytes), (70, 512, 512))
+                self.assertEqual({r.packet_id for r in query("flow_id", "2001")
+                                  if MODULE.nonzero_id(r.packet_id)},
+                                 {"3001", "3002"})
+                self.assertEqual({r.packet_id for r in query("socket_id", "0000000000001001")
+                                  if MODULE.nonzero_id(r.packet_id)}, {"3001", "3002", "3003"})
+                self.assertEqual({r.packet_id for r in query("call_id", "6001") if r.packet_id},
+                                 {"3001"})
+                self.assertEqual(query("packet_id", "0"), [])
+                # Verify actual imported arrow edges, not just protobuf IDs.
+                reached = list(processor.query("""
+                    WITH RECURSIVE reached(id) AS (
+                      SELECT id FROM slice WHERE category = 'anettrace.packet'
+                        AND extract_arg(arg_set_id, 'debug.packet_id') = '3001'
+                      UNION
+                      SELECT f.slice_in FROM flow f JOIN reached r ON r.id = f.slice_out
+                    )
+                    SELECT s.category, extract_arg(s.arg_set_id, 'debug.packet_id') AS packet_id
+                    FROM reached JOIN slice s USING (id)
+                """))
+                self.assertIn("anettrace.io.complete", {r.category for r in reached})
+                self.assertIn("anettrace.syscall.complete", {r.category for r in reached})
+                self.assertEqual({r.packet_id for r in reached if r.packet_id}, {"3001"})
+                creation_reached = list(processor.query("""
+                    WITH RECURSIVE reached(id) AS (
+                      SELECT id FROM slice WHERE name = 'socket allocation'
+                      UNION
+                      SELECT f.slice_in FROM flow f JOIN reached r ON r.id = f.slice_out
+                    )
+                    SELECT s.category FROM reached JOIN slice s USING (id)
+                """))
+                self.assertIn("anettrace.socket.io", {r.category for r in creation_reached})
+                self.assertIn("anettrace.syscall.complete", {r.category for r in creation_reached})
+
+    def test_unassociated_zero_ids_and_incomplete_results_are_not_fabricated(self) -> None:
+        clock = MODULE.read_records(ROOT / "tests/fixtures/perfetto-events.jsonl")[0]
+        start = int(clock["monotonic_ns"]) + 100000
+        records = [clock, dict(type="packet_event", ts_ns=start,
+                              flow_id="0", packet_id="0000000000000000",
+                              stage="udp_rcv", proto_l4=17, direction="rx"),
+                   dict(type="packet_io_link", ts_ns=start + 1,
+                        packet_id="00", io_id="0", call_id="0000", direction="rx"),
+                   dict(type="io_complete", ts_ns=start + 2,
+                        io_id="1001", call_id="0", direction="rx",
+                        result=0, bytes=0, error=0, incomplete=True)]
+        trace = Trace()
+        trace.ParseFromString(MODULE.PerfettoExporter(records).serialize())
+        events = [p.track_event for p in trace.packet if p.HasField("track_event")]
+        self.assertEqual(events[0].name, "udp · udp_rcv")
+        for event in events[:2]:
+            self.assertFalse(event.flow_ids)
+            self.assertFalse(event.correlation_id)
+        args = {a.name: a.string_value for a in events[-1].debug_annotations}
+        self.assertEqual(args["incomplete"], "true")
+        self.assertTrue({"result", "bytes", "error"}.isdisjoint(args))
+
+    def test_supplied_flow_tags_remain_consistent_and_late_packet_keeps_call_ids(self) -> None:
+        clock = MODULE.read_records(ROOT / "tests/fixtures/perfetto-events.jsonl")[0]
+        start = int(clock["monotonic_ns"]) + 100000
+        event = dict(type="packet_event", ts_ns=start, packet_id="3001", flow_id="2001",
+                     flow_tag="tcp-7", stage="dev_hard_start_xmit", proto_l4=6,
+                     owner_socket_id="1001", io_id="4001", call_id="5001")
+        exporter = MODULE.PerfettoExporter([clock, event])
+        trace = Trace()
+        trace.ParseFromString(exporter.serialize())
+        packet = next(p.track_event for p in trace.packet if p.HasField("track_event"))
+        args = {a.name: a.string_value for a in packet.debug_annotations}
+        self.assertEqual(packet.name, "tcp-7 · dev_hard_start_xmit")
+        self.assertEqual({key: args[key] for key in ("socket_id", "io_id", "call_id")},
+                         dict(socket_id="1001", io_id="4001", call_id="5001"))
+        self.assertEqual(exporter.flow_label("2002", {"proto_l4": 6}), "tcp-8")
+
+    def test_incomplete_protocol_read_duration_has_no_success_result(self) -> None:
+        clock = MODULE.read_records(ROOT / "tests/fixtures/perfetto-events.jsonl")[0]
+        start = int(clock["monotonic_ns"]) + 100000
+        common = dict(tid=70, tgid=60, io_id="1001", socket_id="2001", stage="tcp_recvmsg")
+        records = [clock, dict(common, type="rx_read_start", ts_ns=start),
+                   dict(common, type="rx_read_end", ts_ns=start + 1,
+                        result=0, bytes=0, error=0, incomplete=True)]
+        trace = Trace()
+        trace.ParseFromString(MODULE.PerfettoExporter(records).serialize())
+        end = next(p.track_event for p in trace.packet
+                   if p.track_event.type == TrackEvent.TYPE_SLICE_END)
+        args = {a.name: a.string_value for a in end.debug_annotations}
+        self.assertEqual(args["incomplete"], "true")
+        self.assertTrue({"result", "bytes", "error"}.isdisjoint(args))
+
     def test_network_syscall_duration_error_and_thread_track(self) -> None:
         records = MODULE.read_records(ROOT / "tests/fixtures/perfetto-events.jsonl")
         clock = records[0]
@@ -230,9 +400,9 @@ int main(void) {
         self.assertIn("socket allocation", names)
         self.assertIn("socket lifetime", names)
         self.assertIn("tcp-1", names)
-        self.assertIn("tcp_sendmsg", names)
+        self.assertIn("tcp-1 · tcp_sendmsg", names)
         self.assertIn("tcp_sendmsg_locked", names)
-        self.assertIn("tcp_recvmsg", names)
+        self.assertIn("tcp-1 · tcp_recvmsg", names)
         self.assertIn("tcp_close", names)
         self.assertIn("ESTABLISHED → CLOSE", names)
 
@@ -246,7 +416,8 @@ int main(void) {
             )
         ]
         self.assertEqual(len(packet_events), 3)
-        self.assertEqual({event.name for event in packet_events}, {"tcp-1"})
+        self.assertEqual({event.name for event in packet_events},
+                         {"tcp-1 · __tcp_transmit_skb", "tcp-1 · consume_skb", "tcp-1 · tcp_v4_rcv"})
         self.assertEqual({event.correlation_id for event in packet_events}, {0x2001})
         packet_annotations = [
             {annotation.name: annotation for annotation in event.debug_annotations}
@@ -277,7 +448,7 @@ int main(void) {
             if annotations["stage"].string_value == "__tcp_transmit_skb"
         ]
         self.assertEqual(len(tx_packets), 1)
-        self.assertEqual(list(tx_packets[0].flow_ids), [0x3001, 0x2001])
+        self.assertEqual(list(tx_packets[0].flow_ids), [0x3001])
 
         rx_packets = [
             event
@@ -285,7 +456,7 @@ int main(void) {
             if annotations["stage"].string_value == "tcp_v4_rcv"
         ]
         self.assertEqual(len(rx_packets), 1)
-        self.assertEqual(list(rx_packets[0].flow_ids), [0x3002, 0x2001])
+        self.assertEqual(list(rx_packets[0].flow_ids), [0x3002])
         rx_annotations = {
             annotation.name: annotation
             for annotation in rx_packets[0].debug_annotations
@@ -297,7 +468,7 @@ int main(void) {
             packet.track_event
             for packet in trace.packet
             if packet.HasField("track_event")
-            and packet.track_event.name == "tcp_recvmsg"
+            and packet.track_event.name == "tcp-1 · tcp_recvmsg"
         ]
         self.assertEqual(len(recv_begins), 1)
         recv_track = recv_begins[0].track_uuid
@@ -700,11 +871,11 @@ int main(void) {
             expected_labels[MODULE.id_value(flow["flow_id"])]
             for _, flow, _ in interleaved
         ]
-        self.assertEqual([event.name for event in packet_events], expected_visual_order)
+        self.assertEqual([event.name.split(" · ")[0] for event in packet_events], expected_visual_order)
         self.assertEqual(len({event.track_uuid for event in packet_events}), 1)
         for event in packet_events:
             self.assertEqual(
-                event.name,
+                event.name.split(" · ")[0],
                 expected_labels[event.correlation_id],
                 "one flow must keep one visual tag across interleaved packets",
             )
@@ -837,9 +1008,11 @@ int main(void) {
             self.assertEqual(row.end_reason, flow["end_reason"])
             self.assertEqual(bool(row.incomplete), flow["incomplete"])
 
-        self.assertEqual([row.name for row in packet_rows], expected_visual_order)
+        self.assertEqual([row.name.split(" · ")[0] for row in packet_rows], expected_visual_order)
         self.assertEqual(len({row.track_id for row in packet_rows}), 1)
-        self.assertEqual(flow_link_rows[0].count, 12)
+        # Packet events on the same connection must not create edges to each
+        # other; only each flow lifetime's own begin/end edges remain here.
+        self.assertEqual(flow_link_rows[0].count, 4)
 
     def test_multiple_clock_snapshots_cover_suspend_offset_changes(self) -> None:
         fixture = ROOT / "tests" / "fixtures" / "perfetto-events.jsonl"

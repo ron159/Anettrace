@@ -376,12 +376,15 @@ children:
       monitor: 1
     - &tcp_rcv_state_process
       name: tcp_rcv_state_process:1/0
+      monitor: 1
       rules:
       - exp: any
         level: info
         msg: TCP socket state has changed
-    - tcp_queue_rcv:1/0
-    - tcp_data_queue_ofo:1/0
+    - name: tcp_queue_rcv:1/0
+      monitor: 1
+    - name: tcp_data_queue_ofo:1/0
+      monitor: 1
     - tcp_ack_probe/0
     - tcp_ack:1/0
     - tcp_probe_timer/0
@@ -422,7 +425,9 @@ children:
       monitor: 1
     - tcp_sendmsg_locked/0
     - name: tcp_skb_entail/0:1
+      monitor: 1
     - name: skb_entail/0:1
+      monitor: 1
     - __tcp_push_pending_frames/0
     - name: __tcp_transmit_skb:1/0
       rules:
@@ -527,6 +532,11 @@ children:
     - name: network_sys_exit
       tp: raw_syscalls/sys_exit
       custom: true
+      default: false
+    - name: sock_def_readable/0
+      custom: true
+      monitor: 1
+      arg_count: 1
       default: false
     - name: connect_sys_exit
       tp: raw_syscalls/sys_exit

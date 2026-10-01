@@ -268,7 +268,7 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "trace-detail", .dest = &trace_args->trace_detail,
 			.type = OPTION_BOOL,
-			.desc = "include detailed kernel network stages (default compact)",
+			.desc = "show all supported network path stages (default: key events)",
 		},
 		{
 			.lname = "connect-diagnostics",

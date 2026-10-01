@@ -110,12 +110,19 @@ class ReleaseAssetTest(unittest.TestCase):
                 f"{prefix}/tools/perfetto_sql/anettrace_integrity.sql",
                 f"{prefix}/tools/perfetto_sql/connect_diagnostics.sql",
                 f"{prefix}/tools/perfetto_sql/connect_diagnostics_metrics.sql",
+                f"{prefix}/tools/perfetto_sql/network_chain.sql",
             }
             self.assertTrue(required.issubset(names), required - names)
             android = root / "assets" / f"anettrace-{version}-android-arm64-dual"
             self.assertEqual(android.read_bytes(), b"fixture")
             self.assertEqual(android.stat().st_mode & 0o777, 0o755)
             with tarfile.open(archive, "r:bz2") as package:
+                chain_sql = package.extractfile(f"{prefix}/tools/perfetto_sql/network_chain.sql")
+                assert chain_sql is not None
+                self.assertEqual(
+                    chain_sql.read(),
+                    (ROOT / "tools" / "perfetto_sql" / "network_chain.sql").read_bytes(),
+                )
                 commit = package.extractfile(f"{prefix}/SOURCE_COMMIT")
                 assert commit is not None
                 expected_commit = subprocess.run(

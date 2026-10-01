@@ -81,6 +81,27 @@ printf("%d", flow_socket_supported(&sock));
 ''')
         self.assertEqual(result, ["1"])
 
+    def test_submission_probes_do_not_create_flows_before_headers_exist(self):
+        source = r'''
+typedef struct { const char *name; } trace_t;
+''' + function(EXPORT.read_text(), "flow_packet_supported")
+        result = self.run_source(source, r'''
+packet_t pkt = {.proto_l3=ETH_P_IP, .proto_l4=IPPROTO_UDP};
+trace_t entry = {.name="udp_send_skb"}, output = {.name="ip_output"};
+printf("%d %d ", flow_packet_supported(&pkt,&entry), flow_packet_supported(&pkt,&output));
+pkt.l4.min.sport=htons(33951); pkt.l4.min.dport=htons(57877);
+const char *early[] = {"udp_send_skb","udp_v6_send_skb","tcp_skb_entail","skb_entail"};
+for (unsigned i=0;i<sizeof(early)/sizeof(early[0]);i++) {
+    trace_t stage={.name=early[i]};
+    printf("%d ", flow_packet_supported(&pkt,&stage));
+}
+printf("%d ", flow_packet_supported(&pkt,&output));
+/* UDP source port zero is permitted: only an entirely absent tuple is rejected. */
+pkt.l4.min.sport=0;
+printf("%d", flow_packet_supported(&pkt,&output));
+''')
+        self.assertEqual(result, ["0", "0", "0", "0", "0", "0", "1", "1"])
+
     def test_plain_udp_labels_do_not_claim_dns(self):
         source = (ROOT / "src/trace.c").read_text()
         helpers = r'''
@@ -138,11 +159,16 @@ printf("%d %d %d", first != second, first == later_stage, first != reused);
 #define PERFETTO_SCHEMA "anettrace.perfetto.v1"
 typedef struct { const char *name; } trace_t;
 struct proto_buffer { int unused; };
+struct native_track { u64 uuid; };
+static struct native_track *native_socket_track(u64 id, u32 pid, const char *name) {
+    return NULL;
+}
 static FILE *export_file, *native_file;
 static unsigned begins;
 static u64 begin_ts;
 static const char *trace_event_name(trace_t *t, const void *e) { return "UDP write"; }
 static const char *flow_protocol_name(struct flow_state *f) { return "udp"; }
+static void format_known_flow_label(u64 id, char *text, size_t size) { text[0] = '\0'; }
 static void json_escape(const char *s, char *d, size_t n) { snprintf(d,n,"%s",s); }
 static void native_event_start(struct proto_buffer *e, unsigned type, u64 track,
     const char *stage, const char *category) { if (type == 1) begins++; }
@@ -216,6 +242,71 @@ printf("%d %d", flow_lookup(123, 90, 5, 170)->id == old_id,
 free(flows);
 ''')
         self.assertEqual(result, ["1", "1", "1", "1", "1"])
+
+    def test_tcp_close_keeps_connection_identity_through_fin_until_destroy(self):
+        source = r'''
+typedef struct { const char *name; } trace_t;
+''' + function(EXPORT.read_text(), "socket_trace_terminal") + self.flow_lifecycle_helpers()
+        result = self.run_source(source, r'''
+struct flow_state *first=flow_create(123,90,5,100);
+trace_t close={.name="tcp_close"}, destroy={.name="tcp_v4_destroy_sock"};
+trace_t udp={.name="udp_destroy_sock"};
+printf("%d %d %d ", socket_trace_terminal(&close), socket_trace_terminal(&destroy),
+       socket_trace_terminal(&udp));
+if (socket_trace_terminal(&close)) first->active=false;
+/* The FIN after close still belongs to the original tuple/socket instance. */
+printf("%d ", flow_lookup(123,90,5,150)==first);
+if (socket_trace_terminal(&destroy)) {
+    first->active=false; first->end_ts=160;
+}
+printf("%d ", flow_lookup(123,90,5,170)==NULL);
+u64 previous_id=first->id;
+struct flow_state *reused=flow_create(123,91,5,170);
+printf("%d", reused && reused->id!=previous_id);
+free(flows);
+''')
+        self.assertEqual(result, ["0", "1", "1", "1", "1", "1"])
+
+    def test_cleanup_matches_only_one_exact_destroyed_socket_instance(self):
+        helpers = self.flow_lifecycle_helpers() + function(EXPORT.read_text(), "flow_find_destroyed")
+        result = self.run_source(helpers, r'''
+struct flow_state *first=flow_create(123,90,5,100);
+first->active=false; first->closed=true; first->end_ts=200;
+u64 original=first->id;
+/* Ordinary later traffic cannot reuse a retired connection; cleanup can. */
+printf("%d ", flow_lookup(123,90,5,230)==NULL);
+printf("%d ", flow_find_destroyed(123,90,5,230)->id==original);
+printf("%d ", !first->active && first->end_ts==200);
+printf("%d ", flow_find_destroyed(123,0,5,230)==NULL);
+printf("%d ", flow_find_destroyed(123,91,5,230)==NULL);
+printf("%d ", flow_find_destroyed(124,90,5,230)==NULL);
+printf("%d ", flow_find_destroyed(123,90,6,230)==NULL);
+printf("%d ", flow_find_destroyed(123,90,5,199)==NULL);
+/* An idle timeout or trace end is not an observed socket destruction. */
+first->closed=false;
+printf("%d ", flow_find_destroyed(123,90,5,230)==NULL);
+first->closed=true;
+struct flow_state *second=flow_create(123,90,5,150);
+second->active=false; second->closed=true; second->end_ts=210;
+printf("%d", flow_find_destroyed(123,90,5,230)==NULL);
+free(flows);
+''')
+        self.assertEqual(result, ["1"] * 10)
+
+    def test_only_drop_free_and_custom_free_are_packet_cleanup(self):
+        helpers = r'''
+typedef struct { unsigned status, analyzer; } trace_t;
+#define TRACE_CFREE 128
+#define ANALYZER_drop 1
+#define ANALYZER_free 2
+#define TRACE_HAS_ANALYZER(t, a) ((t)->analyzer & ANALYZER_##a)
+''' + function(EXPORT.read_text(), "packet_trace_terminal")
+        result = self.run_source(helpers, r'''
+trace_t ordinary={0}, drop={.analyzer=1}, release={.analyzer=2}, custom={.status=128};
+printf("%d %d %d %d %d", packet_trace_terminal(NULL), packet_trace_terminal(&ordinary),
+       packet_trace_terminal(&drop), packet_trace_terminal(&release), packet_trace_terminal(&custom));
+''')
+        self.assertEqual(result, ["0", "0", "1", "1", "1"])
 
     def test_socket_generations_and_network_namespaces_isolate_flows(self):
         result = self.run_source(self.flow_lifecycle_helpers(), r'''
