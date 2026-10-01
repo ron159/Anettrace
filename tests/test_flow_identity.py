@@ -81,6 +81,27 @@ printf("%d", flow_socket_supported(&sock));
 ''')
         self.assertEqual(result, ["1"])
 
+    def test_submission_probes_do_not_create_flows_before_headers_exist(self):
+        source = r'''
+typedef struct { const char *name; } trace_t;
+''' + function(EXPORT.read_text(), "flow_packet_supported")
+        result = self.run_source(source, r'''
+packet_t pkt = {.proto_l3=ETH_P_IP, .proto_l4=IPPROTO_UDP};
+trace_t entry = {.name="udp_send_skb"}, output = {.name="ip_output"};
+printf("%d %d ", flow_packet_supported(&pkt,&entry), flow_packet_supported(&pkt,&output));
+pkt.l4.min.sport=htons(33951); pkt.l4.min.dport=htons(57877);
+const char *early[] = {"udp_send_skb","udp_v6_send_skb","tcp_skb_entail","skb_entail"};
+for (unsigned i=0;i<sizeof(early)/sizeof(early[0]);i++) {
+    trace_t stage={.name=early[i]};
+    printf("%d ", flow_packet_supported(&pkt,&stage));
+}
+printf("%d ", flow_packet_supported(&pkt,&output));
+/* UDP source port zero is permitted: only an entirely absent tuple is rejected. */
+pkt.l4.min.sport=0;
+printf("%d", flow_packet_supported(&pkt,&output));
+''')
+        self.assertEqual(result, ["0", "0", "0", "0", "0", "0", "1", "1"])
+
     def test_plain_udp_labels_do_not_claim_dns(self):
         source = (ROOT / "src/trace.c").read_text()
         helpers = r'''
@@ -221,6 +242,30 @@ printf("%d %d", flow_lookup(123, 90, 5, 170)->id == old_id,
 free(flows);
 ''')
         self.assertEqual(result, ["1", "1", "1", "1", "1"])
+
+    def test_tcp_close_keeps_connection_identity_through_fin_until_destroy(self):
+        source = r'''
+typedef struct { const char *name; } trace_t;
+''' + function(EXPORT.read_text(), "socket_trace_terminal") + self.flow_lifecycle_helpers()
+        result = self.run_source(source, r'''
+struct flow_state *first=flow_create(123,90,5,100);
+trace_t close={.name="tcp_close"}, destroy={.name="tcp_v4_destroy_sock"};
+trace_t udp={.name="udp_destroy_sock"};
+printf("%d %d %d ", socket_trace_terminal(&close), socket_trace_terminal(&destroy),
+       socket_trace_terminal(&udp));
+if (socket_trace_terminal(&close)) first->active=false;
+/* The FIN after close still belongs to the original tuple/socket instance. */
+printf("%d ", flow_lookup(123,90,5,150)==first);
+if (socket_trace_terminal(&destroy)) {
+    first->active=false; first->end_ts=160;
+}
+printf("%d ", flow_lookup(123,90,5,170)==NULL);
+u64 previous_id=first->id;
+struct flow_state *reused=flow_create(123,91,5,170);
+printf("%d", reused && reused->id!=previous_id);
+free(flows);
+''')
+        self.assertEqual(result, ["0", "1", "1", "1", "1", "1"])
 
     def test_socket_generations_and_network_namespaces_isolate_flows(self):
         result = self.run_source(self.flow_lifecycle_helpers(), r'''

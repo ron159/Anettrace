@@ -37,6 +37,7 @@ class NativeGraphTest(unittest.TestCase):
         base = Path(cls.tmp.name)
         prelude = r'''
 #include <arpa/inet.h>
+#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -121,6 +122,18 @@ int main(int argc, char **argv) {
     struct pending_io io = {.active=true,.tx=true,.tid=7,.tgid=6,.protocol=IPPROTO_TCP,
         .start_ts=100,.syscall_start_ts=90,.socket_id=flow.socket_id,.flow_id=500,
         .io_id=native_uuid("io-call",((u64)6<<32)|7,100),.native_track_uuid=100};
+    /* Early submission has no usable tuple. It must not poison the later
+     * real packet association, while two real destinations remain ambiguous. */
+    FILE *saved_native=native_file, *saved_json=export_file;
+    native_file=NULL; export_file=NULL;
+    pending_ios[0]=io; pending_ios[0].flow_id=0; pending_io_count=1;
+    export_packet_io_link(&packet,NULL);
+    export_packet_io_link(&packet,&flow);
+    assert(pending_ios[0].flow_id==flow.id && !pending_ios[0].flow_ambiguous);
+    struct flow_state second=flow; second.id=501;
+    export_packet_io_link(&packet,&second);
+    assert(!pending_ios[0].flow_id && pending_ios[0].flow_ambiguous);
+    pending_io_count=0; native_file=saved_native; export_file=saved_json;
     trace_t send = {.name="tcp_sendmsg"}, stage = {.name="ip_output"};
     pending_io_emit_start(&io,&send,&flow);
     export_packet_io_link(&packet,&flow);

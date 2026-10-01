@@ -47,6 +47,7 @@ bool trace_event_visible(const trace_t *trace, const event_t *event)
 		"tcp_sendmsg",
 		"tcp_recvmsg",
 		"tcp_close",
+		"tcp_v4_destroy_sock",
 		"udp_destroy_sock",
 		"udpv6_destroy_sock",
 		"skb_consume_udp",
@@ -614,7 +615,7 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 	};
 	static char perfetto_compact_traces[] =
 		"network_sys_enter,network_sys_exit,"
-		"sk_alloc,inet_sock_set_state,tcp_sendmsg,tcp_recvmsg,tcp_close,"
+		"sk_alloc,inet_sock_set_state,tcp_sendmsg,tcp_recvmsg,tcp_close,tcp_v4_destroy_sock,"
 		"udp_destroy_sock,udpv6_destroy_sock,skb_consume_udp,skb_copy_datagram_iter,skb_copy_and_csum_datagram_msg,"
 		"consume_skb,kfree_skb,__kfree_skb,kfree_skb_partial,skb_attempt_defer_free,"
 		"__tcp_transmit_skb,udp_sendmsg,udpv6_sendmsg,"

@@ -1016,15 +1016,48 @@ static struct flow_state *flow_create(u64 tuple_id, u64 socket_id,
 	return flow;
 }
 
+static bool flow_packet_supported(const packet_t *pkt, const trace_t *trace)
+{
+	if (pkt->proto_l4 != IPPROTO_TCP && pkt->proto_l4 != IPPROTO_UDP)
+		return false;
+	/* These entry probes observe submission before transport/IP headers
+	 * are constructed. Their skb/call identity is useful, their tuple is not.
+	 * In particular udp_send_skb can expose an all-zero UDP header. */
+	if (trace && (!strcmp(trace->name, "tcp_skb_entail") ||
+		      !strcmp(trace->name, "skb_entail") ||
+		      !strcmp(trace->name, "udp_send_skb") ||
+		      !strcmp(trace->name, "udp_v6_send_skb")))
+		return false;
+	return pkt->l4.min.sport || pkt->l4.min.dport;
+}
+
+static bool socket_trace_terminal(const trace_t *trace)
+{
+	/* tcp_close is an application close request; FIN/ACK processing still
+	 * belongs to the same socket instance until the transport destroys it. */
+	return !strcmp(trace->name, "tcp_v4_destroy_sock") ||
+	       !strcmp(trace->name, "udp_destroy_sock") ||
+	       !strcmp(trace->name, "udpv6_destroy_sock");
+}
+
+
 static u64 detail_flow_id(const detail_event_t *detail, bool socket)
 {
 	const event_t *event = (const void *)detail;
+
+	if (!socket && !flow_packet_supported(&event->pkt, get_trace(event->func)))
+		return 0;
 	u64 socket_id = socket ? detail_socket_instance_id(detail) :
 		(detail->owner_socket_key ?
 		 socket_instance_id(detail->owner_socket_key,
 				    detail->owner_socket_generation) : 0);
 	struct flow_state *flow = flow_lookup(socket ? socket_flow_id(&event->ske) :
 		packet_flow_id(&event->pkt), socket_id, detail->netns, event->pkt.ts);
+	/* Destruction can clear sk_num before the probe. The socket instance
+	 * still identifies its lifecycle; multiple UDP peers remain ambiguous. */
+	trace_t *trace = socket ? get_trace(event->func) : NULL;
+	if (!flow && !flow_lookup_ambiguous && trace && socket_trace_terminal(trace))
+		flow = flow_find_by_socket(socket_id, event->ske.proto_l4);
 
 	return flow ? flow->id : 0;
 }
@@ -1402,7 +1435,7 @@ static struct flow_state *flow_from_packet(const detail_event_t *detail,
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
 	u64 id;
 
-	if (pkt->proto_l4 != IPPROTO_TCP && pkt->proto_l4 != IPPROTO_UDP)
+	if (!flow_packet_supported(pkt, trace))
 		return NULL;
 	id = packet_flow_id(pkt);
 	flow = flow_lookup(id, socket_id, detail->netns, pkt->ts);
@@ -1934,6 +1967,7 @@ static void native_export_socket_state(const detail_event_t *detail,
 		native_close_socket(socket, event->ske.ts);
 }
 
+
 static void native_export_socket_event(const detail_event_t *detail,
 					trace_t *trace, int cpu)
 {
@@ -1945,10 +1979,7 @@ static void native_export_socket_event(const detail_event_t *detail,
 	struct proto_buffer track_event = {};
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
 	const char *stage = trace_event_name(trace, event);
-	bool terminal = !strcmp(trace->name, "tcp_close") ||
-			!strcmp(trace->name, "tcp_v4_destroy_sock") ||
-			!strcmp(trace->name, "udp_destroy_sock") ||
-			!strcmp(trace->name, "udpv6_destroy_sock");
+	bool terminal = socket_trace_terminal(trace);
 
 	thread = native_thread_track(event->tgid, event->tid, detail->task);
 	socket = native_socket_track(socket_id, event->tgid, detail->task);
@@ -2359,10 +2390,7 @@ static void export_socket_event(const detail_event_t *detail, trace_t *trace,
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN];
 	char task[64], ifname[64];
 	const char *stage = trace_event_name(trace, event);
-	bool terminal = !strcmp(trace->name, "tcp_close") ||
-			!strcmp(trace->name, "tcp_v4_destroy_sock") ||
-			!strcmp(trace->name, "udp_destroy_sock") ||
-			!strcmp(trace->name, "udpv6_destroy_sock");
+	bool terminal = socket_trace_terminal(trace);
 
 	socket_addresses(&event->ske, source, sizeof(source), dest, sizeof(dest));
 	json_escape(detail->task, task, sizeof(task));
@@ -3029,26 +3057,22 @@ void perfetto_export_event(const void *data, int cpu, u32 size)
 			native_export_socket_state(detail, state->oldstate,
 						   state->newstate, cpu);
 	} else if (trace_using_sk(trace)) {
-		struct flow_state *flow = NULL;
+		bool terminal = socket_trace_terminal(trace);
 
-		if (!strcmp(trace->name, "tcp_close") ||
-		    !strcmp(trace->name, "udp_destroy_sock") ||
-		    !strcmp(trace->name, "udpv6_destroy_sock")) {
-			u64 socket_id = detail_socket_instance_id(detail);
-			for (size_t i = 0; i < flow_count; i++) {
-				flow = &flows[i];
-				if (flow->socket_id == socket_id)
-					flow_finish(flow, event->ske.ts,
-						    !strcmp(trace->name, "tcp_close") ?
-						    "tcp_close" : "socket_destroy", false);
-			}
-		} else if (strcmp(trace->name, "tcp_v4_destroy_sock")) {
+		if (!terminal && strcmp(trace->name, "tcp_close"))
 			flow_from_socket(detail, event->ske.ts);
-		}
 		if (export_file)
 			export_socket_event(detail, trace, cpu);
 		if (native_file)
 			native_export_socket_event(detail, trace, cpu);
+		if (terminal) {
+			u64 socket_id = detail_socket_instance_id(detail);
+			for (size_t i = 0; i < flow_count; i++) {
+				struct flow_state *flow = &flows[i];
+				if (flow->socket_id == socket_id)
+					flow_finish(flow, event->ske.ts, "socket_destroy", false);
+			}
+		}
 	} else {
 		struct flow_state *flow = flow_from_packet(detail, trace);
 		export_packet_io_link(detail, flow);
