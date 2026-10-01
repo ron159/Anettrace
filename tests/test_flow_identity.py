@@ -138,11 +138,16 @@ printf("%d %d %d", first != second, first == later_stage, first != reused);
 #define PERFETTO_SCHEMA "anettrace.perfetto.v1"
 typedef struct { const char *name; } trace_t;
 struct proto_buffer { int unused; };
+struct native_track { u64 uuid; };
+static struct native_track *native_socket_track(u64 id, u32 pid, const char *name) {
+    return NULL;
+}
 static FILE *export_file, *native_file;
 static unsigned begins;
 static u64 begin_ts;
 static const char *trace_event_name(trace_t *t, const void *e) { return "UDP write"; }
 static const char *flow_protocol_name(struct flow_state *f) { return "udp"; }
+static void format_known_flow_label(u64 id, char *text, size_t size) { text[0] = '\0'; }
 static void json_escape(const char *s, char *d, size_t n) { snprintf(d,n,"%s",s); }
 static void native_event_start(struct proto_buffer *e, unsigned type, u64 track,
     const char *stage, const char *category) { if (type == 1) begins++; }

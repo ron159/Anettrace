@@ -34,7 +34,13 @@ def stable_uuid(*parts: object) -> int:
 
 
 def id_value(value: str) -> int:
-    return int(value, 16) or 1
+    return int(value, 16)
+
+
+def nonzero_id(value: Any) -> int | None:
+    if not value:
+        return None
+    return id_value(str(value)) or None
 
 
 def flow_prefix(record: dict[str, Any]) -> str:
@@ -213,14 +219,36 @@ class PerfettoExporter:
         return uuid
 
     def flow_label(self, flow_id: str, record: dict[str, Any]) -> str:
+        if not nonzero_id(flow_id):
+            return flow_prefix(record)
         label = self.flow_labels.get(flow_id)
         if label is not None:
             return label
         prefix = flow_prefix(record)
-        self.flow_label_counts[prefix] += 1
-        label = f"{prefix}-{self.flow_label_counts[prefix]}"
+        label = str(record.get("flow_tag", ""))
+        if label:
+            tag_prefix, _, sequence = label.rpartition("-")
+            if tag_prefix in self.flow_label_counts and sequence.isdigit():
+                self.flow_label_counts[tag_prefix] = max(
+                    self.flow_label_counts[tag_prefix], int(sequence))
+        else:
+            self.flow_label_counts[prefix] += 1
+            label = f"{prefix}-{self.flow_label_counts[prefix]}"
         self.flow_labels[flow_id] = label
         return label
+
+    def chain_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        result = dict(record)
+        flow_id = str(record.get("flow_id", ""))
+        if nonzero_id(flow_id):
+            result["flow_tag"] = self.flow_label(flow_id, record)
+        if not nonzero_id(result.get("socket_id")) and nonzero_id(record.get("owner_socket_id")):
+            result["socket_id"] = record["owner_socket_id"]
+        return result
+
+    def chain_name(self, record: dict[str, Any], name: str) -> str:
+        tag = record.get("flow_tag")
+        return f"{tag} · {name}" if tag else name
 
     def connect_track(self, attempt_id: str, record: dict[str, Any]) -> int:
         uuid = self.connect_tracks.get(attempt_id)
@@ -285,14 +313,15 @@ class PerfettoExporter:
         if name:
             track_event.name = name
         track_event.categories.append(category)
-        if flow_id is not None:
+        if flow_id:
             if terminating_flow:
                 track_event.terminating_flow_ids.append(flow_id)
             else:
                 track_event.flow_ids.append(flow_id)
         for linked_flow_id in linked_flow_ids:
-            track_event.flow_ids.append(linked_flow_id)
-        if correlation_id is not None:
+            if linked_flow_id and linked_flow_id not in track_event.flow_ids:
+                track_event.flow_ids.append(linked_flow_id)
+        if correlation_id:
             track_event.correlation_id = correlation_id
         if annotations:
             self.add_annotations(track_event, annotations[0], annotations[1])
@@ -334,11 +363,13 @@ class PerfettoExporter:
             "socket lifetime",
             "anettrace.socket",
             flow_id,
+            annotations=(record, ("socket_id",)),
         )
         self.socket_lifetimes.add(socket_id)
         self.closed_sockets.discard(socket_id)
 
     def export_socket_state(self, record: dict[str, Any]) -> None:
+        record = self.chain_record(record)
         socket_id = str(record["socket_id"])
         socket_track = self.socket_track(socket_id, record)
         if (
@@ -367,6 +398,7 @@ class PerfettoExporter:
                 (
                     "socket_id",
                     "flow_id",
+                    "flow_tag",
                     "old_state",
                     "new_state",
                     "saddr",
@@ -393,6 +425,7 @@ class PerfettoExporter:
             self.closed_sockets.add(socket_id)
 
     def export_socket_event(self, record: dict[str, Any]) -> None:
+        record = self.chain_record(record)
         socket_id = str(record["socket_id"])
         socket_track = self.socket_track(socket_id, record)
         if (
@@ -422,6 +455,7 @@ class PerfettoExporter:
                 (
                     "socket_id",
                     "flow_id",
+                    "flow_tag",
                     "saddr",
                     "sport",
                     "daddr",
@@ -452,22 +486,21 @@ class PerfettoExporter:
 
     def export_packet_event(self, record: dict[str, Any]) -> None:
         packet_id = str(record["packet_id"])
-        flow_id = str(record["flow_id"])
-        packet_record = dict(record)
-        packet_record["flow_tag"] = self.flow_label(flow_id, record)
+        flow_id = str(record.get("flow_id", "0"))
+        packet_record = self.chain_record(record)
+        tag = packet_record.get("flow_tag", flow_prefix(record))
         self.event(
             int(record["ts_ns"]),
             self.thread_track(record),
             TrackEvent.TYPE_INSTANT,
-            packet_record["flow_tag"],
+            f"{tag} · {record['stage']}",
             "anettrace.packet.drop"
             if record.get("dropped")
             else "anettrace.packet",
             id_value(packet_id),
             bool(record.get("terminal")),
-            linked_flow_ids=(id_value(flow_id),)
-            if packet_flow_anchor(record)
-            else (),
+            # A connection identifies related packets, not a causal sequence
+            # between different packets. Only the packet ID creates this edge.
             correlation_id=id_value(flow_id),
             annotations=(
                 packet_record,
@@ -477,6 +510,11 @@ class PerfettoExporter:
                     "skb_id",
                     "flow_id",
                     "flow_tag",
+                    "socket_id",
+                    "io_id",
+                    "call_id",
+                    "io_evidence",
+                    "submission_association",
                     "terminal",
                     "dropped",
                     "flow_anchor",
@@ -512,16 +550,58 @@ class PerfettoExporter:
         )
 
     def export_packet_io_link(self, record: dict[str, Any]) -> None:
+        record = self.chain_record(record)
+        name = ("packet submitted by call" if record.get("direction") == "tx"
+                else ("packet released by receive" if record.get("evidence") == "receive_release"
+                      else "packet copy to application"))
         self.event(
             int(record["ts_ns"]), self.thread_track(record),
             TrackEvent.TYPE_INSTANT,
-            "packet submitted by call" if record.get("direction") == "tx"
-            else ("packet released by receive" if record.get("evidence") == "receive_release"
-                  else "packet copy to application"),
+            self.chain_name(record, name),
             "anettrace.io.link",
             linked_flow_ids=tuple(id_value(str(record[key]))
                                   for key in ("packet_id", "io_id", "call_id")
                                   if record.get(key) and id_value(str(record[key]))),
+            annotations=(record, tuple(k for k in record
+                                      if k not in ("schema", "type", "ts_ns", "task"))),
+        )
+
+    def export_socket_flow_link(self, record: dict[str, Any]) -> None:
+        record = self.chain_record(record)
+        self.event(
+            int(record["ts_ns"]), self.socket_track(str(record["socket_id"]), record),
+            TrackEvent.TYPE_INSTANT, f"socket associated · {record.get('flow_tag', 'flow')}",
+            "anettrace.socket.flow",
+            linked_flow_ids=tuple(nonzero_id(record.get(key)) or 0
+                                  for key in ("socket_id", "flow_id")),
+            annotations=(record, tuple(k for k in record
+                                      if k not in ("schema", "type", "ts_ns", "task"))),
+        )
+
+    def export_io_complete(self, record: dict[str, Any]) -> None:
+        record = self.chain_record(record)
+        if record.get("incomplete"):
+            for key in ("result", "bytes", "error"):
+                record.pop(key, None)
+        self.event(
+            int(record["ts_ns"]), self.thread_track(record), TrackEvent.TYPE_INSTANT,
+            self.chain_name(record, "write completed" if record.get("direction") == "tx"
+                            else "read completed"), "anettrace.io.complete",
+            flow_id=nonzero_id(record.get("io_id")), terminating_flow=True,
+            linked_flow_ids=(nonzero_id(record.get("call_id")) or 0,),
+            annotations=(record, tuple(k for k in record
+                                      if k not in ("schema", "type", "ts_ns", "task"))),
+        )
+
+    def export_rx_handoff(self, record: dict[str, Any]) -> None:
+        record = self.chain_record(record)
+        self.event(
+            int(record["ts_ns"]), self.thread_track(record), TrackEvent.TYPE_INSTANT,
+            self.chain_name(record, "socket readable"),
+            "anettrace.rx.handoff",
+            # The readable callback proves socket readiness, not which packet
+            # triggered it or which application thread was actually woken.
+            linked_flow_ids=(nonzero_id(record.get("socket_id")) or 0,),
             annotations=(record, tuple(k for k in record
                                       if k not in ("schema", "type", "ts_ns", "task"))),
         )
@@ -713,9 +793,21 @@ class PerfettoExporter:
         self.active_flows.discard(flow_id)
 
     def export_io_start(self, record: dict[str, Any], direction: str) -> None:
+        record = self.chain_record(record)
         key = (direction, str(record.get("io_id") or record["stage"]), int(record["tid"]))
         track = self.thread_track(record)
         category = f"anettrace.{direction}.{'write' if direction == 'tx' else 'read'}"
+        if nonzero_id(record.get("socket_id")) and nonzero_id(record.get("io_id")):
+            link = dict(record, evidence="protocol_call_socket")
+            name = "socket I/O"
+            if record.get("flow_tag"):
+                name += f" · {record['flow_tag']}"
+            self.event(
+                int(record["ts_ns"]), self.socket_track(str(record["socket_id"]), record),
+                TrackEvent.TYPE_INSTANT, name, "anettrace.socket.io",
+                linked_flow_ids=(id_value(str(record["socket_id"])), id_value(str(record["io_id"]))),
+                annotations=(link, ("socket_id", "flow_id", "flow_tag", "io_id", "call_id", "evidence")),
+            )
         if key in self.pending_io:
             self.event(
                 int(record["ts_ns"]),
@@ -727,9 +819,10 @@ class PerfettoExporter:
             int(record["ts_ns"]),
             track,
             TrackEvent.TYPE_SLICE_BEGIN,
-            str(record["stage"]),
+            self.chain_name(record, str(record["stage"])),
             category,
             flow_id=id_value(str(record["io_id"])) if record.get("io_id") else None,
+            linked_flow_ids=(nonzero_id(record.get("call_id")) or 0,),
             annotations=(
                 record,
                 (
@@ -738,6 +831,7 @@ class PerfettoExporter:
                     "association",
                     "socket_id",
                     "flow_id",
+                    "flow_tag",
                     "protocol",
                     "cpu",
                     "uid",
@@ -750,6 +844,10 @@ class PerfettoExporter:
         self.pending_io[key] = track
 
     def export_io_end(self, record: dict[str, Any], direction: str) -> None:
+        record = self.chain_record(record)
+        if record.get("incomplete"):
+            for key in ("result", "bytes", "error"):
+                record.pop(key, None)
         key = (direction, str(record.get("io_id") or record["stage"]), int(record["tid"]))
         track = self.pending_io.pop(key, None)
         if track is None:
@@ -760,8 +858,6 @@ class PerfettoExporter:
             track,
             TrackEvent.TYPE_SLICE_END,
             category=category,
-            flow_id=id_value(str(record["io_id"])) if record.get("io_id") else None,
-            terminating_flow=True,
             annotations=(
                 record,
                 (
@@ -770,6 +866,7 @@ class PerfettoExporter:
                     "association",
                     "socket_id",
                     "flow_id",
+                    "flow_tag",
                     "result",
                     "bytes",
                     "error",
@@ -779,6 +876,7 @@ class PerfettoExporter:
         )
 
     def export_network_syscall(self, record: dict[str, Any]) -> None:
+        record = self.chain_record(record)
         start = int(record["start_ts_ns"])
         end = int(record["ts_ns"])
         if end < start:
@@ -802,6 +900,16 @@ class PerfettoExporter:
                    flow_id=id_value(str(record["call_id"])) if record.get("call_id") else None,
                    annotations=(args, tuple(k for k in args if k not in ("schema", "type"))))
         self.event(end, track, TrackEvent.TYPE_SLICE_END, category="anettrace.syscall")
+        # Perfetto anchors duration END flows to the start of the duration.
+        # Use an explicit return point so receive packet -> copy -> return edges
+        # follow the observed order and expose the actual syscall result.
+        return_name = f"{record['syscall']} returned"
+        if record.get("flow_tag"):
+            return_name += f" · {record['flow_tag']}"
+        self.event(end, track, TrackEvent.TYPE_INSTANT, return_name,
+                   "anettrace.syscall.complete", flow_id=nonzero_id(record.get("call_id")),
+                   terminating_flow=True,
+                   annotations=(args, tuple(k for k in args if k not in ("schema", "type"))))
 
     def export_meta_event(self, record: dict[str, Any]) -> None:
         self.descriptor(self.global_track, "Anettrace metadata")
@@ -840,6 +948,12 @@ class PerfettoExporter:
                 self.export_packet_event(record)
             elif record_type == "packet_io_link":
                 self.export_packet_io_link(record)
+            elif record_type == "socket_flow_link":
+                self.export_socket_flow_link(record)
+            elif record_type == "io_complete":
+                self.export_io_complete(record)
+            elif record_type == "rx_handoff":
+                self.export_rx_handoff(record)
             elif record_type == "flow_start":
                 self.export_flow_start(record)
             elif record_type == "flow_end":

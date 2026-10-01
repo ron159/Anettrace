@@ -103,6 +103,7 @@ typedef struct {
 	connect_event_t connect_event;
 	network_syscall_event_t network_syscall;
 	detail_socket_create_event_t socket_create_event;
+	rx_handoff_event_t rx_handoff;
 } perfetto_scratch_t;
 
 struct {
@@ -164,6 +165,12 @@ typedef struct {
 	u64 head;
 	u32 generation;
 	u8 released;
+	u8 io_multiple;
+	u64 io_start_ts;
+	u64 syscall_start_ts;
+	u64 io_task;
+	u64 io_socket_key;
+	u32 io_socket_generation;
 } perfetto_packet_instance_t;
 
 struct {
@@ -196,6 +203,54 @@ struct {
 	__type(key, u64);
 	__type(value, perfetto_io_t);
 } m_perfetto_io SEC(".maps");
+
+/* A missed protocol return must not carry an active call into the next
+ * syscall. Saved per-skb submission evidence has a separate lifetime. */
+static __always_inline void perfetto_io_syscall_boundary(u64 task)
+{
+	bpf_map_delete_elem(&m_perfetto_io, &task);
+}
+
+static __always_inline void perfetto_packet_remember_submission(
+	perfetto_packet_instance_t *packet, const perfetto_io_t *io, u64 task)
+{
+	if (packet->io_start_ts &&
+	    (packet->io_start_ts != io->start_ts || packet->io_task != task ||
+	     packet->io_socket_key != io->socket_key ||
+	     packet->io_socket_generation != io->socket_generation)) {
+		packet->io_multiple = 1;
+		return;
+	}
+	packet->io_start_ts = io->start_ts;
+	packet->syscall_start_ts = io->syscall_start_ts;
+	packet->io_task = task;
+	packet->io_socket_key = io->socket_key;
+	packet->io_socket_generation = io->socket_generation;
+}
+
+static __always_inline void perfetto_packet_apply_submission(
+	const perfetto_packet_instance_t *packet, detail_event_t *detail)
+{
+	if (packet->io_multiple) {
+		detail->io_multiple = 1;
+		detail->io_start_ts = 0;
+		detail->syscall_start_ts = 0;
+		detail->io_tid = 0;
+		detail->io_tgid = 0;
+		detail->io_role = 0;
+		return;
+	}
+	if (!packet->io_start_ts)
+		return;
+	if (detail->io_start_ts != packet->io_start_ts ||
+	    detail->io_tid != (u32)packet->io_task ||
+	    detail->io_tgid != packet->io_task >> 32)
+		detail->io_role = 4;
+	detail->io_start_ts = packet->io_start_ts;
+	detail->syscall_start_ts = packet->syscall_start_ts;
+	detail->io_tid = (u32)packet->io_task;
+	detail->io_tgid = packet->io_task >> 32;
+}
 
 /* Keep the detailed drop event off the 512-byte combined BPF stack. */
 struct {
@@ -652,15 +707,44 @@ __attribute__((noinline)) u32 perfetto_packet_generation(u64 key, bool release, 
 	return packet->generation;
 }
 
+/* tcp_skb_entail can run before an IP header exists. Retain the observed
+ * call before packet parsing, keyed by the same allocation generation used
+ * for later packet events. Clones and new heads deliberately start afresh. */
+static __always_inline void perfetto_record_submission(context_info_t *info, u16 func)
+{
+	u64 task, key;
+	perfetto_io_t *io;
+	perfetto_packet_instance_t *packet;
+	if (!info->args->ready || !info->args->perfetto || info->is_return || !info->skb)
+		return;
+	if (func != INDEX_tcp_skb_entail && func != INDEX_skb_entail &&
+	    func != INDEX_udp_send_skb && func != INDEX_udp_v6_send_skb)
+		return;
+	task = bpf_get_current_pid_tgid();
+	io = bpf_map_lookup_elem(&m_perfetto_io, &task);
+	if (!io || !io->tx || (info->sk && io->socket_key != (u64)info->sk))
+		return;
+	key = (u64)info->skb;
+	if (!perfetto_packet_generation(key, false, false))
+		return;
+	packet = bpf_map_lookup_elem(&m_perfetto_packets, &key);
+	if (packet)
+		perfetto_packet_remember_submission(packet, io, task);
+}
+
 #if defined(NO_BTF) || defined(INLINE_MODE)
 static
 #endif
 __attribute__((noinline)) int perfetto_io_enter(u64 sk_key, u64 ts, u16 func, u8 func_status)
 {
 	u64 task = bpf_get_current_pid_tgid();
+	network_syscall_event_t *call = bpf_map_lookup_elem(&m_network_syscalls, &task);
+	u64 syscall_start_ts = call ? call->start_ts : 0;
 	perfetto_io_t *io;
 	io = bpf_map_lookup_elem(&m_perfetto_io, &task);
-	if (io && io->socket_key == sk_key) {
+	if (io && io->socket_key == sk_key &&
+	    io->syscall_start_ts == syscall_start_ts &&
+	    io->tx == !!(func_status & FUNC_STATUS_TX)) {
 		io->depth++;
 	} else {
 		perfetto_io_t fresh = {
@@ -669,10 +753,8 @@ __attribute__((noinline)) int perfetto_io_enter(u64 sk_key, u64 ts, u16 func, u8
 			.socket_generation = perfetto_socket_generation((void *)sk_key, false),
 			.depth = 1, .func = func,
 			.tx = !!(func_status & FUNC_STATUS_TX),
+			.syscall_start_ts = syscall_start_ts,
 		};
-		network_syscall_event_t *call = bpf_map_lookup_elem(&m_network_syscalls, &task);
-		if (call)
-			fresh.syscall_start_ts = call->start_ts;
 		bpf_map_update_elem(&m_perfetto_io, &task, &fresh, BPF_ANY);
 	}
 	return 0;
@@ -711,9 +793,19 @@ __attribute__((noinline)) int perfetto_record_identity(detail_event_t *detail,
 			detail->io_role = skb_key ? (copy ? 2 : (release ? 3 : 1)) : 0;
 		}
 	}
-	if (skb_key)
+	if (skb_key) {
 		detail->key_generation = perfetto_packet_generation(
 			skb_key, func_is_free(func_status), func == INDEX_skb_consume_udp);
+		if (detail->direction == PACKET_DIRECTION_TX) {
+			perfetto_packet_instance_t *packet =
+				bpf_map_lookup_elem(&m_perfetto_packets, &skb_key);
+			if (packet && packet->generation == detail->key_generation &&
+			    (!detail->owner_socket_key ||
+			     (packet->io_socket_key == detail->owner_socket_key &&
+			      packet->io_socket_generation == detail->owner_socket_generation)))
+				perfetto_packet_apply_submission(packet, detail);
+		}
+	}
 	if (is_return)
 		perfetto_io_exit(func);
 	return 0;
@@ -1545,6 +1637,64 @@ DEFINE_KPROBE_INIT(tcp_send_active_reset, tcp_send_active_reset, 3,
 	return handle_entry_output(info, e);
 }
 
+/* This is the actual socket data-ready callback, not a guessed association
+ * with the last skb seen on this CPU. In particular, kretprobe misses cannot
+ * turn a later unrelated wakeup into a packet-induced wakeup. Scheduler
+ * events remain independently observed by the accompanying system trace. */
+DEFINE_KPROBE_INIT(sock_def_readable, sock_def_readable, 1,
+			.sk = ctx_get_arg(ctx, 0))
+{
+	bpf_args_t *args = info->args;
+	u64 task = bpf_get_current_pid_tgid();
+	u32 tid = (u32)task, tgid = task >> 32;
+	u32 uid = (u32)bpf_get_current_uid_gid(), zero = 0;
+	perfetto_scratch_t *scratch;
+	rx_handoff_event_t *event;
+	perfetto_owner_t *owner;
+	bool owner_valid;
+
+	if (!args->perfetto || info->is_return || !info->sk)
+		return -1;
+	if (args->netns && args->netns != read_packet_netns((u64)info->sk, 0))
+		return -1;
+	scratch = bpf_map_lookup_elem(&m_perfetto_scratch, &zero);
+	if (!scratch)
+		return -1;
+	event = &scratch->rx_handoff;
+	__builtin_memset(event, 0, sizeof(*event));
+	if (probe_parse_sk(info->sk, &event->ske, &args->pkt) ||
+	    !perfetto_socket_supported(&event->ske))
+		return -1;
+	owner = &scratch->owner;
+	__builtin_memset(owner, 0, sizeof(*owner));
+	/* The callback's current task is a waker, not necessarily a socket user. */
+	owner_valid = perfetto_resolve_socket_owner(info->sk, false, owner,
+						   tid, tgid, uid);
+	if ((args->pid || args->uid_enabled) &&
+	    !perfetto_current_matches(args, tid, uid) &&
+	    (!owner_valid || !perfetto_owner_matches(args, owner)))
+		return -1;
+	event->meta = FUNC_TYPE_RX_HANDOFF;
+	event->kind = RX_HANDOFF_READY;
+	event->func = INDEX_sock_def_readable;
+	event->ts = bpf_ktime_get_ns();
+	event->socket_key = (u64)info->sk;
+	event->socket_generation = perfetto_socket_generation(info->sk, false);
+	event->tid = tid;
+	event->tgid = tgid;
+	event->uid = uid;
+	event->netns = read_packet_netns((u64)info->sk, 0);
+	event->owner_valid = owner_valid;
+	if (owner_valid) {
+		event->owner_tid = owner->tid;
+		event->owner_tgid = owner->tgid;
+		event->owner_uid = owner->uid;
+	}
+	bpf_get_current_comm(event->task, sizeof(event->task));
+	EVENT_OUTPUT_PTR(info->ctx, event, sizeof(*event));
+	return 0;
+}
+
 /*******************************************************************
  * 
  * Following is socket related custom BPF program.
@@ -1704,6 +1854,10 @@ int TRACE_NAME(network_sys_enter)(struct trace_event_raw_sys_enter *ctx)
 	if (!args->ready || !args->perfetto ||
 	    !perfetto_current_matches(args, tid, uid))
 		return 0;
+	/* Raw syscall boundaries are observed even when this syscall is not
+	 * exported (or compat argument decoding below fails). */
+	perfetto_io_syscall_boundary(pid_tgid);
+	bpf_map_delete_elem(&m_network_syscalls, &pid_tgid);
 	kind = network_call_kind(args, nr, abi);
 #ifdef __TARGET_ARCH_x86
 	/* i386 socketcall multiplexes network calls through a u32 user array. */
@@ -1782,6 +1936,9 @@ int TRACE_NAME(network_sys_exit)(struct trace_event_raw_sys_exit *ctx)
 
 	if (!args->ready || !args->perfetto)
 		return 0;
+	/* Also retire calls when capture started after sys_enter, or the entry
+	 * was filtered; absence of a syscall event must not retain stale I/O. */
+	perfetto_io_syscall_boundary(pid_tgid);
 	event = bpf_map_lookup_elem(&m_network_syscalls, &pid_tgid);
 	if (!event)
 		return 0;

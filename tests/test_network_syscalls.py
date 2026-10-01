@@ -13,8 +13,13 @@ class NetworkSyscallContracts(unittest.TestCase):
         source = (ROOT / "src/trace.c").read_text()
         for profile in ("perfetto_compact_traces", "perfetto_detailed_traces"):
             block = source.split("static char " + profile + "[] =", 1)[1].split(";", 1)[0]
-            self.assertIn("network_sys_enter", block)
-            self.assertIn("network_sys_exit", block)
+            if block.strip() == '"all"':
+                catalogue = (ROOT / "src/trace.yaml").read_text()
+                self.assertIn("name: network_sys_enter", catalogue)
+                self.assertIn("name: network_sys_exit", catalogue)
+            else:
+                self.assertIn("network_sys_enter", block)
+                self.assertIn("network_sys_exit", block)
 
     def test_native_syscall_numbers_are_configured(self):
         source = (ROOT / "src/anettrace.c").read_text()
@@ -92,7 +97,8 @@ static void native_annotation_uint(struct proto_buffer *e,const char *k,u64 v) {
 static void native_annotation_int(struct proto_buffer *e,const char *k,s64 v) {}
 static void native_annotation_bool(struct proto_buffer *e,const char *k,bool v) {}
 static void native_event_write(u64 ts,struct proto_buffer *e) {
-    if(event_type==1) { begins++; begin_ts=ts; } else { ends++; end_ts=ts; }
+    if(event_type==1) { begins++; begin_ts=ts; }
+    else if(event_type==2) { ends++; end_ts=ts; }
 }
 static void native_event_flow(struct proto_buffer *e, u64 id, bool terminating) {}
 static void proto_free(struct proto_buffer *e) {}

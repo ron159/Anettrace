@@ -38,6 +38,7 @@
 			info_init				\
 		};						\
 		prepare_function_io_args(&info, INDEX_##name);\
+		perfetto_record_submission(&info, INDEX_##name);\
 		if (pre_handle_entry(&info, INDEX_##name))	\
 			return 0;				\
 		handle_entry_finish(&info, fake__##name(&info));\
@@ -53,6 +54,7 @@
 			info_init				\
 		};						\
 		prepare_function_io_args(&info, INDEX_##name);\
+		perfetto_record_submission(&info, INDEX_##name);\
 		if (pre_handle_entry(&info, INDEX_##name))	\
 			return 0;				\
 		handle_entry_finish(&info, fake__##name(&info));\

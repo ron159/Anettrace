@@ -54,6 +54,13 @@ bool trace_event_visible(const trace_t *trace, const event_t *event)
 		"skb_copy_and_csum_datagram_msg",
 		"tcp_v4_rcv",
 		"tcp_v6_rcv",
+		"tcp_queue_rcv",
+		"tcp_data_queue_ofo",
+		"udp_queue_rcv_skb",
+		"udpv6_queue_rcv_skb",
+		"__udp_queue_rcv_skb",
+		"__udp_enqueue_schedule_skb",
+		"sock_def_readable",
 		"udp_sendmsg",
 		"udpv6_sendmsg",
 		"udp_rcv",
@@ -115,6 +122,15 @@ const char *trace_event_name(const trace_t *trace, const event_t *event)
 		return "TCP write";
 	if (trace_name_matches(trace, "tcp_recvmsg"))
 		return "TCP read";
+	if (trace_name_matches(trace, "tcp_queue_rcv"))
+		return "TCP receive queue attempt";
+	if (trace_name_matches(trace, "tcp_data_queue_ofo"))
+		return "TCP out-of-order queue attempt";
+	if (trace_name_matches(trace, "udp_queue_rcv_skb") ||
+	    trace_name_matches(trace, "udpv6_queue_rcv_skb") ||
+	    trace_name_matches(trace, "__udp_queue_rcv_skb") ||
+	    trace_name_matches(trace, "__udp_enqueue_schedule_skb"))
+		return "UDP receive queue attempt";
 	if (trace_name_matches(trace, "udp_sendmsg") ||
 	    trace_name_matches(trace, "udpv6_sendmsg"))
 		return event && (ntohs(event->ske.l4.min.sport) == 53 ||
@@ -561,6 +577,8 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 {
 	static trace_t *perfetto_rx_traces[] = {
 		&trace_napi_gro_receive_entry, &trace___netif_receive_skb_core,
+		&trace_dev_gro_receive, &trace_enqueue_to_backlog,
+		&trace_netif_receive_generic_xdp, &trace_xdp_do_generic_redirect,
 		&trace_ip_rcv, &trace_ip_rcv_core, &trace_ip_rcv_finish,
 		&trace_ip_local_deliver, &trace_ip_local_deliver_finish,
 		&trace_ipv6_rcv, &trace_ip6_rcv_core, &trace_ip6_rcv_finish,
@@ -568,6 +586,9 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		&trace_tcp_v4_rcv, &trace_tcp_v6_rcv,
 		&trace_tcp_v4_do_rcv, &trace_tcp_v6_do_rcv,
 		&trace_tcp_rcv_established, &trace_tcp_recvmsg,
+		&trace_tcp_rcv_state_process, &trace_tcp_queue_rcv,
+		&trace_tcp_data_queue_ofo,
+		&trace_tcp_filter, &trace_tcp_child_process,
 		&trace_udp_rcv, &trace___udp4_lib_rcv, &trace_udpv6_rcv,
 		&trace___udp6_lib_rcv, &trace_udp_unicast_rcv_skb,
 		&trace_udp6_unicast_rcv_skb, &trace_udp_queue_rcv_skb,
@@ -584,8 +605,11 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		&trace_udp_send_skb, &trace_udp_v6_send_skb,
 		&trace___ip_queue_xmit, &trace___ip_local_out,
 		&trace_ip_output, &trace_ip_finish_output,
+		&trace_ip_finish_output_gso, &trace_ip_finish_output2,
 		&trace_ip6_local_out, &trace_ip6_output,
 		&trace_ip6_finish_output, &trace___dev_queue_xmit,
+		&trace_ip6_finish_output2, &trace_ip6_send_skb,
+		&trace_qdisc_enqueue, &trace_qdisc_dequeue,
 		&trace_dev_hard_start_xmit,
 	};
 	static char perfetto_compact_traces[] =
@@ -596,28 +620,10 @@ static void trace_prepare_pesudo(trace_args_t *args, bpf_args_t *bpf_args)
 		"__tcp_transmit_skb,udp_sendmsg,udpv6_sendmsg,"
 		"ip_output,ip6_output,tcp_v4_rcv,tcp_v6_rcv,"
 		"udp_rcv,udpv6_rcv,udp_recvmsg,udpv6_recvmsg";
-	static char perfetto_detailed_traces[] =
-		"network_sys_enter,network_sys_exit,"
-		"sk_alloc,inet_sock_set_state,inet_listen,tcp_sendmsg,"
-		"udp_destroy_sock,udpv6_destroy_sock,skb_consume_udp,skb_copy_datagram_iter,skb_copy_and_csum_datagram_msg,"
-		"tcp_sendmsg_locked,"
-		"tcp_recvmsg,tcp_close,tcp_v4_destroy_sock,tcp_skb_entail,"
-		"skb_entail,"
-		"__tcp_transmit_skb,udp_sendmsg,udpv6_sendmsg,"
-		"udp_send_skb,udp_v6_send_skb,"
-		"__ip_queue_xmit,__ip_local_out,ip_output,ip_finish_output,"
-		"ip6_local_out,ip6_output,ip6_finish_output,"
-		"__dev_queue_xmit,dev_hard_start_xmit,consume_skb,kfree_skb,"
-		"__kfree_skb,kfree_skb_partial,skb_attempt_defer_free,napi_gro_receive_entry,__netif_receive_skb_core,"
-		"ip_rcv,ip_rcv_core,ip_rcv_finish,ip_local_deliver,"
-		"ip_local_deliver_finish,ipv6_rcv,ip6_rcv_core,"
-		"ip6_rcv_finish,ip6_input,ip6_input_finish,tcp_v4_rcv,"
-		"tcp_v6_rcv,tcp_v4_do_rcv,tcp_v6_do_rcv,"
-		"tcp_rcv_established,udp_rcv,__udp4_lib_rcv,udpv6_rcv,"
-		"__udp6_lib_rcv,udp_unicast_rcv_skb,udp6_unicast_rcv_skb,"
-		"udp_queue_rcv_skb,udpv6_queue_rcv_skb,"
-		"__udp_queue_rcv_skb,__udp_enqueue_schedule_skb,"
-		"udp_recvmsg,udpv6_recvmsg";
+	/* Detailed capture follows the complete registered catalogue, including
+	 * optional kernel paths. Availability and explicit exclusions still apply.
+	 * Protocol parsing and export remain scoped to supported TCP/UDP events. */
+	static char perfetto_detailed_traces[] = "all";
 	static char connect_diagnostic_traces[] =
 		"connect_sys_enter,connect_sys_exit,inet_stream_connect,"
 		"sk_alloc,inet_sock_set_state,tcp_close,__tcp_transmit_skb,"
@@ -677,11 +683,45 @@ static void trace_enable_perfetto_output()
 	if (trace_is_enable(&trace___tcp_transmit_skb)) {
 		trace_set_enable(&trace_ip_output);
 		trace_set_enable(&trace_ip6_output);
+		trace_set_enable(&trace_tcp_skb_entail);
+		trace_set_enable(&trace_skb_entail);
 	}
+	if (trace_is_enable(&trace_udp_sendmsg))
+		trace_set_enable(&trace_udp_send_skb);
+	if (trace_is_enable(&trace_udpv6_sendmsg))
+		trace_set_enable(&trace_udp_v6_send_skb);
 	if (trace_is_enable(&trace_udp_send_skb))
 		trace_set_enable(&trace_ip_output);
 	if (trace_is_enable(&trace_udp_v6_send_skb))
 		trace_set_enable(&trace_ip6_output);
+	/* Socket ownership first becomes observable below the transport entry.
+	 * Keep these correlation probes even when compact output hides their
+	 * intermediate stages or the user selected a protocol group explicitly. */
+	if (trace_is_enable(&trace_tcp_v4_rcv) ||
+	    trace_is_enable(&trace_tcp_v6_rcv) ||
+	    trace_is_enable(&trace_tcp_recvmsg)) {
+		trace_set_enable(&trace_tcp_v4_do_rcv);
+		trace_set_enable(&trace_tcp_v6_do_rcv);
+		trace_set_enable(&trace_tcp_rcv_established);
+		trace_set_enable(&trace_tcp_rcv_state_process);
+		trace_set_enable(&trace_tcp_queue_rcv);
+		trace_set_enable(&trace_tcp_data_queue_ofo);
+		trace_set_enable(&trace_sock_def_readable);
+		trace_set_enable(&trace_skb_copy_datagram_iter);
+	}
+	if (trace_is_enable(&trace_udp_rcv) || trace_is_enable(&trace_udpv6_rcv) ||
+	    trace_is_enable(&trace_udp_recvmsg) || trace_is_enable(&trace_udpv6_recvmsg)) {
+		trace_set_enable(&trace_udp_unicast_rcv_skb);
+		trace_set_enable(&trace_udp6_unicast_rcv_skb);
+		trace_set_enable(&trace_udp_queue_rcv_skb);
+		trace_set_enable(&trace_udpv6_queue_rcv_skb);
+		trace_set_enable(&trace___udp_queue_rcv_skb);
+		trace_set_enable(&trace___udp_enqueue_schedule_skb);
+		trace_set_enable(&trace_sock_def_readable);
+		trace_set_enable(&trace_skb_consume_udp);
+		trace_set_enable(&trace_skb_copy_datagram_iter);
+		trace_set_enable(&trace_skb_copy_and_csum_datagram_msg);
+	}
 }
 
 static int trace_prepare_args()

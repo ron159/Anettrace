@@ -657,7 +657,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     target.add_argument(
         "--trace-detail",
         action="store_true",
-        help="keep detailed kernel network stages instead of compact stages",
+        help="show all supported network path stages (default: key events)",
     )
     target.add_argument(
         "--connect-diagnostics",
