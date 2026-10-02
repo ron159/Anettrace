@@ -20,7 +20,18 @@
 arg_config_t config = {
 	.name = "anettrace",
 	.summary = "a tool to trace skb in kernel and diagnose network problem",
-	.desc = "Copyright (C) ron\nAuthor: ron\n"
+	.desc = "Perfetto network trace modes:\n"
+		"  Compact (default): socket lifecycle, application send/recv and key packets.\n"
+		"  Detailed (--trace-detail): available registered network probes; defaults to all.\n"
+		"    Explicit --trace (JSONL only), --trace-exclude and --connect-diagnostics\n"
+		"    still constrain probe selection; this is not a full kernel call tree.\n"
+		"  --force works with either mode; supplied filters stay active.\n"
+		"  --detail adds packet fields; --trace-profile selects system data sources.\n"
+		"\nExamples (network capture requires root; replace UID with the app UID):\n"
+		"  anettrace --capture-trace --uid 10187 --duration 10 --output compact.pftrace\n"
+		"  anettrace --capture-trace --uid 10187 --trace-detail --duration 10 --output detailed.pftrace\n"
+		"  For unfiltered capture, replace --uid 10187 with --force in either command.\n"
+		"\nCopyright (C) ron\nAuthor: ron\n"
 		"GitHub: https://github.com/ron159/Anettrace",
 };
 
@@ -242,8 +253,8 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "trace", .sname = 't',
 			.dest = &trace_args->traces,
-			.desc = "enable trace group or trace. Some traces are "
-				"disabled by default, use \"all\" to enable all",
+			.desc = "select traces/groups ('?' lists, 'all' selects registered probes);\n"
+				"                     incompatible with --capture-trace; availability/exclusions apply",
 		},
 		{
 			.lname = "perfetto-events", .dest = &trace_args->perfetto_events,
@@ -268,7 +279,8 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "trace-detail", .dest = &trace_args->trace_detail,
 			.type = OPTION_BOOL,
-			.desc = "show all supported network path stages (default: key events)",
+			.desc = "show detailed network stages (default: compact key events);\n"
+				"                     requires --capture-trace or --perfetto-events",
 		},
 		{
 			.lname = "connect-diagnostics",
@@ -279,7 +291,8 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "trace-profile", .dest = &trace_args->trace_profile,
 			.type = OPTION_STRING,
-			.desc = "system trace profile: full (default) or sched",
+			.desc = "system data sources: full (default) or sched;\n"
+				"                     independent of network --trace-detail",
 		},
 		{
 			.lname = "perfetto-config",
@@ -344,7 +357,8 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "force", .dest = &trace_args->force,
 			.type = OPTION_BOOL,
-			.desc = "skip some check and force load anettrace",
+			.desc = "allow unfiltered or broad UID 0 capture;\n"
+				"                     keeps supplied filters and compact/detailed mode unchanged",
 		},
 		{
 			.lname = "ret", .dest = &trace_args->ret,
@@ -354,12 +368,13 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "detail", .dest = &bpf_args->detail,
 			.type = OPTION_BOOL,
-			.desc = "show extern packet info, such as pid, ifname, etc",
+			.desc = "include packet fields (PID, interface, etc.);\n"
+				"                     does not select detailed network stages (use --trace-detail)",
 		},
 		{
 			.lname = "trace-stack", .dest = &trace_args->traces_stack,
 			.type = OPTION_STRING,
-			.desc = "print call stack for traces or group",
+			.desc = "print kernel call stacks at selected traces/groups",
 		},
 		{
 			.lname = "trace-matcher", .dest = &trace_args->trace_matcher,

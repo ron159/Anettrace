@@ -649,7 +649,12 @@ def prepare_output_dir(path: Path) -> Path:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Capture Anettrace with PerfAllInOne-style Android trace profiles."
+        description="Capture Anettrace with PerfAllInOne-style Android trace profiles.",
+        epilog=(
+            "This helper requires --uid or --pid to bound the capture. "
+            "For unfiltered capture, use the device CLI with --force; "
+            "--force keeps supplied filters and compact/detailed mode unchanged."
+        ),
     )
     target = parser.add_argument_group("Anettrace filter")
     target.add_argument("--uid", type=int, help="Android UID to trace")
@@ -657,7 +662,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     target.add_argument(
         "--trace-detail",
         action="store_true",
-        help="show all supported network path stages (default: key events)",
+        help=(
+            "show available registered network probe stages "
+            "(default: compact key events); --connect-diagnostics "
+            "keeps its bounded probe set; not a full kernel call tree"
+        ),
     )
     target.add_argument(
         "--connect-diagnostics",
@@ -669,7 +678,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--profile",
         choices=("sched", "light", "full", "long", "none"),
         default="sched",
-        help="system Perfetto profile (default: sched)",
+        help="system Perfetto data sources (default: sched); independent of network --trace-detail",
     )
     parser.add_argument("--duration", type=int, help="capture seconds; profile default when omitted")
     parser.add_argument("--out", type=Path, help="new or empty output directory")
