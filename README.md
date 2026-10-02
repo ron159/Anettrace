@@ -2,9 +2,9 @@
 
 Anettrace 是面向 Linux 与已 root Android 设备的 eBPF 网络诊断工具，可追踪报文在内核协议栈中的路径、定位丢包和延迟、统计线程流量，并生成包含网络与系统调度信息的 Perfetto 时间线。
 
-> 当前正式版：**v0.8.0**。完整安装说明、参数解释、模式组合、Android 抓取和排障指南已经移至 [GitHub Wiki](https://github.com/ron159/Anettrace/wiki)。
+> 当前正式版：**v0.8.1**。完整安装说明、参数解释、模式组合、Android 抓取和排障指南已经移至 [GitHub Wiki](https://github.com/ron159/Anettrace/wiki)。
 
-[下载 v0.8.0](https://github.com/ron159/Anettrace/releases/tag/v0.8.0) · [使用手册](https://github.com/ron159/Anettrace/wiki) · [CLI 完整参考](https://github.com/ron159/Anettrace/wiki/CLI-Reference) · [问题反馈](https://github.com/ron159/Anettrace/issues)
+[下载 v0.8.1](https://github.com/ron159/Anettrace/releases/tag/v0.8.1) · [使用手册](https://github.com/ron159/Anettrace/wiki) · [CLI 完整参考](https://github.com/ron159/Anettrace/wiki/CLI-Reference) · [问题反馈](https://github.com/ron159/Anettrace/issues)
 
 ## 主要功能
 
@@ -22,11 +22,11 @@ Anettrace 是面向 Linux 与已 root Android 设备的 eBPF 网络诊断工具�
 ### Android arm64 正式版
 
 ```shell
-curl -LO https://github.com/ron159/Anettrace/releases/download/v0.8.0/anettrace-0.8.0-android-arm64-dual
-curl -LO https://github.com/ron159/Anettrace/releases/download/v0.8.0/SHA256SUMS
-grep 'anettrace-0.8.0-android-arm64-dual$' SHA256SUMS | shasum -a 256 -c -
+curl -LO https://github.com/ron159/Anettrace/releases/download/v0.8.1/anettrace-0.8.1-android-arm64-dual
+curl -LO https://github.com/ron159/Anettrace/releases/download/v0.8.1/SHA256SUMS
+grep 'anettrace-0.8.1-android-arm64-dual$' SHA256SUMS | shasum -a 256 -c -
 
-adb push anettrace-0.8.0-android-arm64-dual /data/local/tmp/anettrace
+adb push anettrace-0.8.1-android-arm64-dual /data/local/tmp/anettrace
 adb shell chmod 0755 /data/local/tmp/anettrace
 adb shell /data/local/tmp/anettrace --version
 ```
@@ -77,13 +77,22 @@ sudo ./src/anettrace --traffic --proto tcp --uid 1000 --interval 2
   --duration 10 --output /data/local/tmp/custom-system.pftrace
 ```
 
-网络采集的精简模式和 `--trace-detail` 详细模式均默认增加线程下的
-`Network syscalls` 轨道，记录 `sendto/recvfrom/sendmsg/recvmsg` 的起止、耗时、
-fd、flags、返回字节数和错误；可靠关联时显示 `tcp-N/dns-N` 流标记。
-这层不额外累加流量，调用耗时包含阻塞和调度等待，并不代表对端收包耗时。
-目前覆盖原生 64 位 ABI，不包含 32 位兼容应用、`read/write`、批量收发及 libc uprobe。
-采集结束时仍未返回的调用标为 `incomplete`；未获取请求长度时
-`requested_valid=false`。此能力不在纯系统采集或连接专项诊断模式中启用。
+网络采集默认使用**精简模式**，显示 socket 创建/关闭、应用收发、TCP 握手和
+关键包事件。增加 `--trace-detail` 切换为**详细模式**，显示探针目录支持且设备
+可挂载的网络路径阶段。两种模式使用相同的 socket、flow、包和调用关联字段；
+`--trace-profile full/sched` 只选择系统 Perfetto 数据源，不切换网络详细程度。
+`--detail` 仅增加事件附加字段；`--force` 放宽无过滤或宽泛 UID 0 的采集检查，
+保留已有过滤条件，也不切换精简/详细模式。完整参数与示例见 `anettrace -h`。
+
+应用线程下的 `Network syscalls` 轨道记录收发调用的起止、fd、flags、返回值和错误，
+包括 socket `read/write/readv/writev`、批量收发以及支持的兼容 ABI；不包含 libc
+用户态入口。批量调用的返回值按消息数解释。调用耗时包含阻塞和调度等待，
+不代表对端收包耗时；采集结束时仍未返回的调用标为 `incomplete`。
+这层不额外累加流量，也不在纯系统采集或连接专项诊断模式中启用。
+
+按 `flow_id` 查看连接，按 `packet_id` 跟踪一个 skb，再通过 `io_id/call_id`
+定位实际收发调用。精确查询可使用
+[network_chain.sql](tools/perfetto_sql/network_chain.sql)，按流、socket、包或调用 ID 展开关联。
 
 `--system-trace-only` 必须与 `--capture-trace` 一起使用，跳过 root 检查、BPF 探测、
 挂载和所有 Anettrace 网络事件导出。支持 `--duration`、`--output`、`--trace-profile`、
