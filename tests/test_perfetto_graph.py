@@ -53,7 +53,8 @@ typedef int32_t s32;
 typedef uint16_t u16;
 typedef uint8_t u8;
 typedef uint64_t __u64;
-#ifndef TCP_ESTABLISHED
+/* Linux netinet/tcp.h declares these as enum values, not macros. */
+#ifndef __linux__
 enum { TCP_ESTABLISHED=1, TCP_SYN_SENT, TCP_SYN_RECV, TCP_FIN_WAIT1,
     TCP_FIN_WAIT2, TCP_TIME_WAIT, TCP_CLOSE, TCP_CLOSE_WAIT, TCP_LAST_ACK,
     TCP_LISTEN, TCP_CLOSING };
