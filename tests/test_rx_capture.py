@@ -122,6 +122,89 @@ printf("%d", perfetto_packet_generation(key, false, false) != shared);
 ''')
         self.assertEqual(result, ["1", "123", "1", "0", "0", "1", "0", "1", "1"])
 
+    def test_filtered_udp_consume_cannot_replay_pending_from_a_reused_skb(self):
+        source = (ROOT / "src/progs/core.c").read_text()
+        packet_type = re.search(
+            r"typedef struct \{[^{}]*\} perfetto_packet_instance_t;", source).group()
+        helpers = r'''
+typedef long long s64;
+typedef int32_t s32;
+#include "src/progs/shared.h"
+#include "src/progs/core.h"
+#include "src/progs/kprobe_trace.h"
+#include "src/rx_context.h"
+struct sk_buff { u64 head; struct { struct { int counter; } refs; } users; };
+#define _C(ptr, field) ((ptr)->field)
+#define BPF_ANY 0
+''' + packet_type + r'''
+static int m_perfetto_packets, m_perfetto_packet_counter;
+static u32 counter;
+static bool present;
+static perfetto_packet_instance_t stored;
+static void *bpf_map_lookup_elem(void *map, const void *key) {
+    (void)key;
+    if (map == &m_perfetto_packet_counter) return &counter;
+    return present ? &stored : NULL;
+}
+static void bpf_map_update_elem(void *map, const void *key, const void *value, int flags) {
+    (void)map; (void)key; (void)flags;
+    stored = *(const perfetto_packet_instance_t *)value;
+    present = true;
+}
+static void consume_map_ctx(bpf_args_t *args, void *key) { (void)args; (void)key; }
+static void init_ctx_match(void *skb, u16 func, bool latency) {
+    (void)skb; (void)func; (void)latency;
+}
+static void update_stats_key(u16 func) { (void)func; }
+static unsigned emitted;
+static void emit(const void *data, int cpu, u32 size) {
+    (void)data; (void)cpu; (void)size; emitted++;
+}
+''' + "".join(function(source, name) for name in (
+            "mode_has_context", "trace_mode_latency", "func_is_free",
+            "perfetto_packet_generation", "perfetto_retire_packet", "handle_entry_finish"))
+        result = self.run_source(helpers, r'''
+struct sk_buff skb = {.head=10, .users.refs.counter=1};
+bpf_args_t args = {.perfetto=true};
+context_info_t info = {.args=&args, .skb=&skb, .func=INDEX_skb_consume_udp};
+u64 key = (u64)&skb;
+struct rx_context pending = {0};
+detail_event_t d = {.key=key, .direction=PACKET_DIRECTION_RX, .owner_pending=1};
+d.pkt.ts=100;
+d.key_generation=perfetto_packet_generation(key,false,false);
+u32 foreign_generation=d.key_generation;
+rx_context_feed(&pending,&d,0,sizeof(d),emit);
+/* A foreign socket rejected the terminal consume. There is no free probe. */
+handle_entry_finish(&info,-1);
+printf("%llu ", (u64)args.event_count);
+/* The same skb address and head are then allocated to the target socket. */
+d.key_generation=perfetto_packet_generation(key,false,false);
+printf("%d ", d.key_generation != foreign_generation);
+d.pkt.ts=110; d.owner_pending=0; d.owner_valid=1; d.owner_evidence=1;
+d.owner_socket_key=99; d.owner_socket_generation=1; d.owner_uid=1000;
+rx_context_feed(&pending,&d,0,sizeof(d),emit);
+printf("%u %zu %llu ", emitted, pending.count, pending.replayed);
+rx_context_finish(&pending);
+/* Shared or peeked skbs have not ended their lifetime. */
+skb.users.refs.counter=2;
+handle_entry_finish(&info,-1);
+printf("%d ", stored.released);
+/* Do not read/retire a potentially freed pointer at fexit. */
+skb.users.refs.counter=1; info.is_return=true;
+handle_entry_finish(&info,-1);
+printf("%d ", stored.released);
+info.is_return=false; args.perfetto=false;
+handle_entry_finish(&info,-1);
+printf("%d ", stored.released);
+/* Successful consume keeps the existing packet generation through output. */
+args.perfetto=true;
+u32 consumed=perfetto_packet_generation(key,false,true);
+handle_entry_finish(&info,0);
+printf("%d %d", consumed==d.key_generation,
+    perfetto_packet_generation(key,false,false)!=consumed);
+''')
+        self.assertEqual(result, ["0", "1", "1", "1", "0", "0", "0", "0", "1", "1"])
+
     def test_packet_provenance_does_not_guess_after_reuse_or_multiple_calls(self):
         source = (ROOT / "src/progs/core.c").read_text()
         helpers = r'''

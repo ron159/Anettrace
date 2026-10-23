@@ -3257,9 +3257,12 @@ static void export_syscall_wakeup(const network_syscall_event_t *call)
 		return;
 	fprintf(export_file,
 		",\"waking_ts_ns\":%llu,\"wakeup_ts_ns\":%llu,"
-		"\"waking_cpu\":%u,\"waking_context\":\"%s\",\"waking_flags\":%u",
+		"\"waking_cpu\":%u,\"waking_context\":\"%s\"",
 		call->waking_ts, call->wakeup_ts, call->waking_cpu,
-		network_waking_context(call->waking_context), call->waking_flags);
+		network_waking_context(call->waking_context));
+	if (call->waking_context)
+		fprintf(export_file, ",\"waking_preempt_count\":%u",
+			call->waking_preempt_count);
 	/* IRQ execution has a current task, but that task is not the waker. */
 	if (call->waking_context == 1) {
 		char task[64];
@@ -3289,7 +3292,8 @@ static void native_syscall_wakeup(struct proto_buffer *event,
 	native_annotation_uint(event, "waking_cpu", call->waking_cpu);
 	native_annotation_string(event, "waking_context",
 				 network_waking_context(call->waking_context));
-	native_annotation_uint(event, "waking_flags", call->waking_flags);
+	if (call->waking_context)
+		native_annotation_uint(event, "waking_preempt_count", call->waking_preempt_count);
 	if (call->waking_context == 1) {
 		native_annotation_uint(event, "waker_tid", call->waker_tid);
 		native_annotation_uint(event, "waker_tgid", call->waker_tgid);

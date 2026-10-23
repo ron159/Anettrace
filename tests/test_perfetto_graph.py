@@ -223,12 +223,13 @@ int main(int argc, char **argv) {
         u32 size=valid == 2 ? sizeof(detail_event_t) : sizeof(qdisc);
         native_export_packet_event(&qdisc.event,&trace,2,size); export_packet_event(&qdisc.event,&trace,2,size);
     }
-    for (int status=0; status<5; status++) {
+    for (int status=0; status<6; status++) {
         network_syscall_event_t call={.kind=NETWORK_SYS_SENDTO,.start_ts=600+status*100,
             .ts=610+status*100,.tid=7,.tgid=6,.wakeup_status=status>3 ? 2 : status,
             .waking_ts=500,.wakeup_ts=510,.run_start_ts=520,.run_cpu=3,.waking_cpu=2,
-            .waker_tid=10,.waker_tgid=9,.waker_start_time=123,.waking_context=status==4 ? 3 : 1,
-            .waking_flags=2};
+            .waker_tid=10,.waker_tgid=9,.waker_start_time=123,
+            .waking_context=status==5 ? 0 : status==4 ? 3 : 1,
+            .waking_preempt_count=status==4 ? 256 : 2};
         strcpy(call.waker_task,"worker");
         export_network_syscall(&call,0,false);
     }
@@ -327,7 +328,7 @@ int main(int argc, char **argv) {
                     continue
                 actual = converted[(ts, event.categories[0])]
                 for field in ("wakeup_status", "waking_ts_ns", "wakeup_ts_ns", "run_start_ts_ns", "waking_cpu", "run_cpu",
-                              "waker_tid", "waker_tgid", "waker_task", "waker_start_time_ns", "waking_context", "waking_flags"):
+                              "waker_tid", "waker_tgid", "waker_task", "waker_start_time_ns", "waking_context", "waking_preempt_count"):
                     self.assertEqual(actual.get(field), args.get(field), field)
                 continue
             if "wqlen" not in args and "qdisc_qlen" not in args:
@@ -343,13 +344,13 @@ int main(int argc, char **argv) {
         records = [r for r in self.records if r["type"] == "network_syscall"]
         events = [self.args(e) for _, e in self.events_in("anettrace.syscall")
                   if e.type == TrackEvent.TYPE_SLICE_BEGIN]
-        self.assertEqual(len(records), 5)
+        self.assertEqual(len(records), 6)
         for index, (record, args) in enumerate(zip(records, events)):
-            expected = (None, "unknown", "observed", "run_without_observed_wake", "observed")[index]
+            expected = (None, "unknown", "observed", "run_without_observed_wake", "observed", "observed")[index]
             self.assertEqual(record.get("wakeup_status"), expected)
             self.assertEqual(args.get("wakeup_status"), expected)
             for field in ("waking_ts_ns", "wakeup_ts_ns", "run_start_ts_ns", "waking_cpu", "run_cpu",
-                          "waker_tid", "waker_tgid", "waker_task", "waker_start_time_ns", "waking_context", "waking_flags"):
+                          "waker_tid", "waker_tgid", "waker_task", "waker_start_time_ns", "waking_context", "waking_preempt_count"):
                 if field in record:
                     self.assertEqual(args[field], str(record[field]))
                 else:
@@ -359,11 +360,14 @@ int main(int argc, char **argv) {
             else:
                 self.assertEqual(record["run_start_ts_ns"], 520)
                 self.assertEqual(record["run_cpu"], 3)
-            if index in (2, 4):
+            if index in (2, 4, 5):
                 self.assertEqual(record["waking_ts_ns"], 500)
                 self.assertEqual(record["wakeup_ts_ns"], 510)
-                self.assertEqual(record["waking_context"], "task" if index == 2 else "softirq")
-                self.assertEqual(record["waking_flags"], 2)
+                self.assertEqual(record["waking_context"], {2: "task", 4: "softirq", 5: "unknown"}[index])
+                if index == 5:
+                    self.assertNotIn("waking_preempt_count", record)
+                else:
+                    self.assertEqual(record["waking_preempt_count"], 2 if index == 2 else 256)
             else:
                 self.assertNotIn("waking_ts_ns", record)
             if index == 2:

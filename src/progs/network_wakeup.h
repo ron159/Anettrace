@@ -2,23 +2,18 @@
 #ifndef _H_NETWORK_WAKEUP
 #define _H_NETWORK_WAKEUP
 
-/* Standard tracepoint prefixes. sched_wakeup's optional success/target_cpu
- * suffix varies between kernels and is intentionally not consumed. */
+/* Standard tracepoint payloads. The first eight bytes are reserved: perf
+ * replaces trace_entry with a pt_regs pointer before calling BPF programs.
+ * sched_wakeup's optional success/target_cpu suffix is not consumed. */
 typedef struct {
-	u16 type;
-	u8 flags;
-	u8 preempt_count;
-	s32 common_pid;
+	u64 reserved;
 	char comm[16];
 	s32 pid;
 	s32 prio;
 } network_sched_wakeup_ctx_t;
 
 typedef struct {
-	u16 type;
-	u8 flags;
-	u8 preempt_count;
-	s32 common_pid;
+	u64 reserved;
 	char prev_comm[16];
 	s32 prev_pid;
 	s32 prev_prio;
@@ -38,8 +33,8 @@ typedef struct {
 	u32 waker_tgid;
 	u32 waking_cpu;
 	u32 run_cpu;
+	u32 waking_preempt_count;
 	u8 waking_context;
-	u8 waking_flags;
 	char waker_task[16];
 } network_wakeup_state_t;
 
@@ -51,6 +46,85 @@ struct {
 	__type(key, u32);
 	__type(value, network_wakeup_state_t);
 } m_network_wakeups SEC(".maps");
+
+#ifndef NO_BTF
+extern int LINUX_KERNEL_VERSION __kconfig;
+
+struct task_struct___wakeup_rt {
+	int softirq_disable_cnt;
+} __attribute__((preserve_access_index));
+
+#if defined(__TARGET_ARCH_x86)
+extern const int __preempt_count __ksym __weak;
+struct pcpu_hot___wakeup {
+	int preempt_count;
+} __attribute__((preserve_access_index));
+extern struct pcpu_hot___wakeup pcpu_hot __ksym __weak;
+#endif
+#endif
+
+/* Follow the kernel's in_task()/in_serving_softirq() semantics. Merely having
+ * IRQs or BHs disabled is still task context. Unknown layouts/read failures
+ * must not attribute an interrupt to the task it interrupted.
+ * See Linux tools/testing/selftests/bpf/bpf_experimental.h:get_preempt_count.
+ */
+static __always_inline u8 network_wakeup_context(u32 *raw_count)
+{
+#ifndef NO_BTF
+	struct task_struct *task = (void *)bpf_get_current_task();
+	struct task_struct___wakeup_rt *rt_task = (void *)task;
+	u32 count = 0, softirq_count;
+
+	/* Verified through Linux 6.18. Newer kernels move the hardirq/NMI
+	 * bits to make room for hardirq-disable nesting. Do not guess. */
+	if (LINUX_KERNEL_VERSION >= (7 << 16))
+		return 0;
+#if defined(__TARGET_ARCH_x86)
+	if (!bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_this_cpu_ptr))
+		return 0;
+	if (bpf_ksym_exists(&__preempt_count)) {
+		const void *ptr = bpf_this_cpu_ptr(&__preempt_count);
+		if (bpf_probe_read_kernel(&count, sizeof(count), ptr))
+			return 0;
+	} else if (bpf_ksym_exists(&pcpu_hot) &&
+		   bpf_core_field_exists(pcpu_hot.preempt_count)) {
+		struct pcpu_hot___wakeup *hot = bpf_this_cpu_ptr(&pcpu_hot);
+		if (_LC(&count, hot, preempt_count))
+			return 0;
+	} else {
+		return 0;
+	}
+#elif defined(__TARGET_ARCH_arm64)
+	if (!bpf_core_field_exists(task->thread_info.preempt.count) ||
+	    _LC(&count, task, thread_info.preempt.count))
+		return 0;
+#elif defined(__TARGET_ARCH_loongarch)
+	if (!bpf_core_field_exists(task->thread_info.preempt_count) ||
+	    _LC(&count, task, thread_info.preempt_count))
+		return 0;
+#else
+	return 0;
+#endif
+	/* Exclude PREEMPT_NEED_RESCHED, but reject unfamiliar high bits. */
+	if (count & 0x7f000000U)
+		return 0;
+	softirq_count = count;
+	if (bpf_core_field_exists(rt_task->softirq_disable_cnt) &&
+	    _LC(&softirq_count, rt_task, softirq_disable_cnt))
+		return 0;
+	*raw_count = count;
+	if (count & 0x00f00000U)
+		return 4;
+	if (count & 0x000f0000U)
+		return 2;
+	if (softirq_count & 0x00000100U)
+		return 3;
+	return 1;
+#else
+	(void)raw_count;
+	return 0;
+#endif
+}
 
 static __always_inline network_wakeup_state_t *
 network_wakeup_current(bpf_args_t *args)
@@ -93,7 +167,7 @@ static __always_inline void network_wakeup_clear(network_wakeup_state_t *state)
 	state->waking_cpu = 0;
 	state->run_cpu = 0;
 	state->waking_context = 0;
-	state->waking_flags = 0;
+	state->waking_preempt_count = 0;
 	__builtin_memset(state->waker_task, 0, sizeof(state->waker_task));
 }
 
@@ -103,7 +177,6 @@ int TRACE_NAME(network_sched_waking)(network_sched_wakeup_ctx_t *ctx)
 	bpf_args_t *args = (void *)CONFIG();
 	u32 target = _(ctx->pid);
 	network_wakeup_state_t *state;
-	u8 flags;
 
 	if (!args->ready || !args->perfetto || !args->wakeup_chain)
 		return 0;
@@ -113,17 +186,8 @@ int TRACE_NAME(network_sched_waking)(network_sched_wakeup_ctx_t *ctx)
 	network_wakeup_clear(state);
 	state->waking_ts = bpf_ktime_get_ns();
 	state->waking_cpu = bpf_get_smp_processor_id();
-	flags = _(ctx->flags);
-	state->waking_flags = flags;
-	/* Linux trace_entry flags: NMI 0x40, HARDIRQ 0x08, SOFTIRQ 0x10.
-	 * IRQ-disabled alone does not mean interrupt context. */
-	if (flags & 0x40)
-		state->waking_context = 4;
-	else if (flags & 0x08)
-		state->waking_context = 2;
-	else if (flags & 0x10)
-		state->waking_context = 3;
-	else {
+	state->waking_context = network_wakeup_context(&state->waking_preempt_count);
+	if (state->waking_context == 1) {
 		struct task_struct *task = (void *)bpf_get_current_task();
 		u64 task_id = bpf_get_current_pid_tgid();
 		u64 birth = _C(task, start_time);
@@ -133,6 +197,9 @@ int TRACE_NAME(network_sched_waking)(network_sched_wakeup_ctx_t *ctx)
 			state->waker_tgid = task_id >> 32;
 			state->waker_start_time = birth;
 			bpf_get_current_comm(state->waker_task, sizeof(state->waker_task));
+		} else {
+			state->waking_context = 0;
+			state->waking_preempt_count = 0;
 		}
 	}
 	return 0;
@@ -204,7 +271,7 @@ static __always_inline int network_wakeup_snapshot(network_syscall_event_t *even
 	event->waker_tgid = state->waker_tgid;
 	event->waking_cpu = state->waking_cpu;
 	event->waking_context = state->waking_context;
-	event->waking_flags = state->waking_flags;
+	event->waking_preempt_count = state->waking_preempt_count;
 	__builtin_memcpy(event->waker_task, state->waker_task, sizeof(event->waker_task));
 	return 0;
 }

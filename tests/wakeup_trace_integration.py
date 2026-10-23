@@ -54,6 +54,10 @@ def exercise(binary, workload, enabled):
                 assert observed, (calls, log.read_text())
                 for call in observed:
                     assert call["waking_context"] == "task", call
+                    count = call["waking_preempt_count"]
+                    assert isinstance(count, int) and 0 <= count <= 0xffffffff, call
+                    assert count & 0x00ff0100 == 0, call
+                    assert "waking_flags" not in call, call
                     assert call["waker_tgid"] == identity["tgid"], call
                     assert call["waker_start_time_ns"] > 0, call
                     assert (0 < call["waking_ts_ns"] <= call["wakeup_ts_ns"]

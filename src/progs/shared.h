@@ -213,9 +213,9 @@ typedef struct {
 	u32 waker_tgid;
 	u32 waking_cpu;
 	u32 run_cpu;
+	u32 waking_preempt_count;
 	u8 wakeup_status; /* 0 disabled, 1 unknown, 2 observed, 3 run without wake */
 	u8 waking_context; /* 0 unknown, 1 task, 2 hardirq, 3 softirq, 4 nmi */
-	u8 waking_flags;
 	char waker_task[16];
 } network_syscall_event_t;
 
