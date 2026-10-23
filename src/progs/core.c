@@ -1164,13 +1164,15 @@ static inline int pre_handle_entry(context_info_t *info, u16 func)
  */
 static inline void handle_entry_finish(context_info_t *info, int err)
 {
+	struct sk_buff *skb = info->skb;
+
 	/* UDP can free its last reference without a separate free probe. Even
 	 * a rejected owner/filter must end that instance before address reuse.
 	 * Run after event identity is recorded, and never read freed fexit data. */
-	if (info->args->perfetto && info->skb && !info->is_return &&
+	if (info->args->perfetto && skb && !info->is_return &&
 	    info->func == INDEX_skb_consume_udp &&
-	    _C(info->skb, users.refs.counter) == 1)
-		perfetto_retire_packet((u64)info->skb);
+	    _C(skb, users.refs.counter) == 1)
+		perfetto_retire_packet((u64)skb);
 	if (err < 0)
 		return;
 
