@@ -259,7 +259,7 @@ require_text 'track_event.flow_ids.append(linked_flow_id)' \
 	tools/anettrace_to_perfetto.py
 require_text 'def packet_flow_anchor' tools/anettrace_to_perfetto.py
 require_text '--uid 0 is too broad for Perfetto capture' src/trace.c
-require_text '--uid 0 alone is too broad; add --pid' \
+require_text '--uid 0 alone is too broad; add --tid' \
 	tools/capture_android_trace.py
 require_text 'sched/sched_switch' tools/capture_android_trace.py
 require_text 'sched/sched_waking' tools/capture_android_trace.py
@@ -333,6 +333,8 @@ if [[ "${ANETTRACE_STATIC_ONLY:-0}" != 1 ]]; then
 	python3 -m unittest discover -s "$ROOT/tests" -p 'test_rx_capture.py'
 	python3 -m unittest discover -s "$ROOT/tests" -p 'test_icmp_capture.py'
 	python3 -m unittest discover -s "$ROOT/tests" -p 'test_trace_duration.py'
+	python3 -m unittest discover -s "$ROOT/tests" -p 'test_wakeup_capture.py'
+	python3 -m unittest discover -s "$ROOT/tests" -p 'test_rx_context.py'
 fi
 
 echo "source contracts: ok"

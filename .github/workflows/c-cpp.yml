@@ -119,6 +119,8 @@ jobs:
             /tmp/traffic-proto.txt
       - name: Check opt-in traffic UI CLI
         run: python3 tests/traffic_cli_contracts.py ./src/anettrace
+      - name: Check packet-flow options
+        run: python3 tests/packet_flow_cli_contracts.py ./src/anettrace
       - name: Run source contract checks
         run: ./tests/source-contracts.sh
       - name: Test traffic accounting and terminal presentation
@@ -136,6 +138,12 @@ jobs:
           sudo python3 tests/traffic_udp_integration.py ./src/anettrace --protocol all
       - name: Verify ordinary UDP trace and application I/O association
         run: sudo python3 tests/udp_trace_integration.py ./src/anettrace
+
+      - name: Verify observed wake-to-run context on the running kernel
+        run: sudo python3 tests/wakeup_trace_integration.py ./src/anettrace
+
+      - name: Verify early RX context and target isolation on the running kernel
+        run: sudo python3 tests/rx_context_integration.py ./src/anettrace
 
       - name: Verify TCP and UDP send markers with protocol trace groups
         run: sudo python3 tests/send_packet_integration.py ./src/anettrace

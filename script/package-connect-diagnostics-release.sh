@@ -41,6 +41,7 @@ mkdir -p "$host_root/docs" "$host_root/schemas" \
 cp "$root/VERSION" "$root/README.md" "$root/LICENSE" "$host_root/"
 printf '%s\n' "$source_commit" > "$host_root/SOURCE_COMMIT"
 cp "$root/docs/connect-diagnostics.md" "$host_root/docs/"
+cp "$root/docs/perfetto-chain.md" "$root/docs/packet-flow-foundations.md" "$host_root/docs/"
 cp "$root/schemas/connect-diagnostics-v1.schema.json" "$host_root/schemas/"
 cp "$root/tools/anettrace_to_perfetto.py" \
 	"$root/tools/capture_android_trace.py" \

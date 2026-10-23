@@ -2,9 +2,9 @@
 
 Anettrace 是面向 Linux 与已 root Android 设备的 eBPF 网络诊断工具，可追踪报文在内核协议栈中的路径、定位丢包和延迟、统计线程流量，并生成包含网络与系统调度信息的 Perfetto 时间线。
 
-> 当前正式版：**v0.8.4**。完整安装说明、参数解释、模式组合、Android 抓取和排障指南已经移至 [GitHub Wiki](https://github.com/ron159/Anettrace/wiki)。
+> 当前正式版：**v0.8.5**。完整安装说明、参数解释、模式组合、Android 抓取和排障指南已经移至 [GitHub Wiki](https://github.com/ron159/Anettrace/wiki)。
 
-[下载 v0.8.4](https://github.com/ron159/Anettrace/releases/tag/v0.8.4) · [使用手册](https://github.com/ron159/Anettrace/wiki) · [CLI 完整参考](https://github.com/ron159/Anettrace/wiki/CLI-Reference) · [问题反馈](https://github.com/ron159/Anettrace/issues)
+[下载 v0.8.5](https://github.com/ron159/Anettrace/releases/tag/v0.8.5) · [使用手册](https://github.com/ron159/Anettrace/wiki) · [CLI 完整参考](https://github.com/ron159/Anettrace/wiki/CLI-Reference) · [问题反馈](https://github.com/ron159/Anettrace/issues)
 
 ## 主要功能
 
@@ -22,11 +22,11 @@ Anettrace 是面向 Linux 与已 root Android 设备的 eBPF 网络诊断工具�
 ### Android arm64 正式版
 
 ```shell
-curl -LO https://github.com/ron159/Anettrace/releases/download/v0.8.4/anettrace-0.8.4-android-arm64-dual
-curl -LO https://github.com/ron159/Anettrace/releases/download/v0.8.4/SHA256SUMS
-grep 'anettrace-0.8.4-android-arm64-dual$' SHA256SUMS | shasum -a 256 -c -
+curl -LO https://github.com/ron159/Anettrace/releases/download/v0.8.5/anettrace-0.8.5-android-arm64-dual
+curl -LO https://github.com/ron159/Anettrace/releases/download/v0.8.5/SHA256SUMS
+grep 'anettrace-0.8.5-android-arm64-dual$' SHA256SUMS | shasum -a 256 -c -
 
-adb push anettrace-0.8.4-android-arm64-dual /data/local/tmp/anettrace
+adb push anettrace-0.8.5-android-arm64-dual /data/local/tmp/anettrace
 adb shell chmod 0755 /data/local/tmp/anettrace
 adb shell /data/local/tmp/anettrace --version
 ```
@@ -99,6 +99,11 @@ sudo ./src/anettrace --traffic-ui --proto tcp --uid 1000 --interval 1
 按 `flow_id` 查看连接，按 `packet_id` 跟踪一个 skb，再通过 `io_id/call_id`
 定位实际收发调用。完整操作、SQL 查询和关联边界见
 [Perfetto 收发链路分析](docs/perfetto-chain.md)。
+
+主机采集支持 `--package` 精确解析应用 UID；`--tid` 明确表示线程过滤，兼容旧
+`--pid`。可按需开启 `--wakeup-chain` 记录调用入口的直接唤醒与运行上下文，开启
+`--rx-context` 在同一 skb 获得可靠 socket 证据后补全早期 RX。用法、额外开销和
+证据边界见[应用收发链路采集](docs/packet-flow-foundations.md)。
 
 `--system-trace-only` 必须与 `--capture-trace` 一起使用，跳过 root 检查、BPF 探测、
 挂载和所有 Anettrace 网络事件导出。支持 `--duration`、`--output`、`--trace-profile`、
