@@ -238,29 +238,10 @@ def query_perfetto_service_state(adb: Any) -> dict[str, Any]:
 
 
 def resolve_package(adb: Any, package: str, include_package: bool) -> tuple[int, list[str], int]:
-    if not re.fullmatch(r"[A-Za-z0-9._:]+", package):
-        raise DiagnosticError("invalid Android package name")
-    output = device_value(
-        adb, f"cmd package list packages -U {shlex.quote(package)}"
-    )
-    matches = re.findall(r"package:([^\s]+)\s+uid:([0-9]+)", output)
-    exact = [(name, int(uid)) for name, uid in matches if name == package]
-    if len(exact) != 1:
-        raise DiagnosticError(f"package is not installed or is ambiguous: {package}")
-    uid = exact[0][1]
-    candidate_output = device_value(
-        adb, f"cmd package list packages -U --uid {uid}"
-    )
-    candidate_matches = re.findall(
-        rf"package:([^\s]+)\s+uid:{uid}(?:\s|$)", candidate_output
-    )
-    candidates = sorted(set(candidate_matches))
-    candidate_count = len(candidates)
-    if package not in candidates or candidate_count < 1:
-        raise DiagnosticError("cannot determine shared UID ambiguity")
-    if not include_package:
-        candidates = []
-    return uid, candidates, candidate_count
+    try:
+        return CAPTURE.resolve_package(adb, package, include_package)
+    except CAPTURE.CaptureError as error:
+        raise DiagnosticError(str(error)) from error
 
 
 def device_preflight(

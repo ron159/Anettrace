@@ -113,6 +113,39 @@ def _field_lines(name: str, values: Iterable[str], indent: int) -> str:
     return "\n".join(f'{prefix}{name}: "{value}"' for value in values)
 
 
+def bound_perfetto_config(source: str, duration_s: int) -> str:
+    """Replace only top-level duration fields in a custom textproto config."""
+    if not source.strip() or len(source.encode("utf-8")) > 4 * 1024 * 1024:
+        raise CaptureError("custom Perfetto config must contain between 1 byte and 4 MiB")
+    tokens = [match for match in re.finditer(
+        r'''//[^\n]*|\#[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_]\w*|[+-]?(?:0[xX][\da-fA-F]+|\d+(?:\.\d+)?)|[^\s]''',
+        source, re.DOTALL,
+    ) if not match[0].startswith(("//", "/*", "#"))]
+    depth = 0
+    cursor = 0
+    parts: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index][0]
+        if token in ("{", "<", "["):
+            depth += 1
+        elif token in ("}", ">", "]"):
+            depth -= 1
+        elif depth == 0 and token == "duration_ms":
+            if (index + 2 >= len(tokens) or tokens[index + 1][0] != ":" or
+                not re.fullmatch(r"[+-]?(?:0[xX][\da-fA-F]+|\d+)", tokens[index + 2][0])):
+                raise CaptureError("invalid top-level duration_ms in custom Perfetto config")
+            parts.append(source[cursor:tokens[index].start()])
+            index += 2
+            cursor = tokens[index].end()
+            if index + 1 < len(tokens) and tokens[index + 1][0] in (";", ","):
+                index += 1
+                cursor = tokens[index].end()
+        index += 1
+    parts.append(source[cursor:])
+    return "".join(parts).rstrip() + f"\nduration_ms: {duration_s * 1000}\n"
+
+
 def render_perfetto_config(profile: str, duration_s: int) -> str:
     """Build a textproto config for one supported system-trace profile."""
     if profile not in {"sched", "light", "full", "long"}:
@@ -396,6 +429,26 @@ def stop_remote(
     return wait_remote(adb, process, 2.0)
 
 
+def wait_perfetto_ready(adb: Adb, process: RemoteProcess, status_path: str, timeout_s: float) -> None:
+    """Wait for --notify-fd's binary status byte while retaining the child PID."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        result = adb.shell(
+            f"test -s {shlex.quote(status_path)} && "
+            f"od -An -tu1 -N1 {shlex.quote(status_path)}",
+            check=False,
+        )
+        status = result.stdout.strip() if result.returncode == 0 else ""
+        if status:
+            if status == "0" and remote_alive(adb, process):
+                return
+            raise CaptureError("Perfetto data sources failed to become ready")
+        if not remote_alive(adb, process):
+            raise CaptureError("Perfetto exited during startup; --notify-fd support is required")
+        time.sleep(0.1)
+    raise CaptureError(f"Perfetto data sources did not become ready within {timeout_s:g} seconds")
+
+
 def remote_file_exists(adb: Adb, path: str) -> bool:
     return adb.shell(f"test -s {shlex.quote(path)}", check=False).returncode == 0
 
@@ -651,14 +704,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Capture Anettrace with PerfAllInOne-style Android trace profiles.",
         epilog=(
-            "This helper requires --uid or --pid to bound the capture. "
+            "This helper requires --package, --uid, or --tid to bound the capture. "
             "For unfiltered capture, use the device CLI with --force; "
             "--force keeps supplied filters and compact/detailed mode unchanged."
         ),
     )
     target = parser.add_argument_group("Anettrace filter")
-    target.add_argument("--uid", type=int, help="Android UID to trace")
-    target.add_argument("--pid", type=int, help="exact Android thread ID to trace")
+    app_target = target.add_mutually_exclusive_group()
+    app_target.add_argument(
+        "--package",
+        help="resolve an installed Android package to its UID (includes packages sharing that UID)",
+    )
+    app_target.add_argument("--uid", type=int, help="Android UID to trace")
+    thread_target = target.add_mutually_exclusive_group()
+    thread_target.add_argument("--tid", dest="pid", type=int, help="exact Android thread ID to trace")
+    thread_target.add_argument("--pid", type=int, help="legacy alias for --tid; not a process-wide filter")
     target.add_argument(
         "--trace-detail",
         action="store_true",
@@ -667,6 +727,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "(default: compact key events); --connect-diagnostics "
             "keeps its bounded probe set; not a full kernel call tree"
         ),
+    )
+    target.add_argument(
+        "--wakeup-chain",
+        action="store_true",
+        help="record observed wake-to-run context at network syscall entry",
+    )
+    target.add_argument(
+        "--rx-context", action="store_true",
+        help="retain early RX events until same-skb socket evidence confirms the target",
     )
     target.add_argument(
         "--connect-diagnostics",
@@ -722,14 +791,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     args = parser.parse_args(argv)
 
-    if args.uid is None and args.pid is None:
-        parser.error("specify --uid or --pid to bound the capture")
+    if args.package is None and args.uid is None and args.pid is None:
+        parser.error("specify --package, --uid, or --tid to bound the capture")
+    if args.package is not None and not re.fullmatch(r"[A-Za-z0-9._:]+", args.package):
+        parser.error("invalid Android package name")
     if args.uid is not None and args.uid < 0:
         parser.error("UID cannot be negative")
     if args.pid is not None and args.pid <= 0:
         parser.error("TID must be greater than zero")
     if args.uid == 0 and args.pid is None:
-        parser.error("--uid 0 alone is too broad; add --pid")
+        parser.error("--uid 0 alone is too broad; add --tid")
     if args.duration is not None and args.duration <= 0:
         parser.error("duration must be a positive integer")
     if args.max_device_file_mib is not None and args.max_device_file_mib <= 0:
@@ -755,6 +826,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("root command must be one non-empty shell prefix")
 
     args.duration = args.duration or DEFAULT_DURATIONS[args.profile]
+    if args.package is not None:
+        args.redact_device_metadata = True
     if args.out is None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         args.out = ROOT / "output" / f"trace-capture-{stamp}"
@@ -766,8 +839,33 @@ def device_value(adb: Adb, script: str) -> str:
     return result.stdout.strip().replace("\r", "") if result.returncode == 0 else ""
 
 
+def resolve_package(adb: Any, package: str, include_package: bool) -> tuple[int, list[str], int]:
+    """Resolve one exact package and verify the scope of its shared UID."""
+    if not re.fullmatch(r"[A-Za-z0-9._:]+", package):
+        raise CaptureError("invalid Android package name")
+    output = device_value(adb, f"cmd package list packages -U {shlex.quote(package)}")
+    matches = re.findall(r"package:([^\s]+)\s+uid:([0-9]+)", output)
+    exact = [(name, int(uid)) for name, uid in matches if name == package]
+    if len(exact) != 1:
+        detail = f": {package}" if include_package else ""
+        raise CaptureError(f"package is not installed or is ambiguous{detail}")
+    uid = exact[0][1]
+    candidate_output = device_value(adb, f"cmd package list packages -U --uid {uid}")
+    candidates = sorted(set(re.findall(
+        rf"package:([^\s]+)\s+uid:{uid}(?:\s|$)", candidate_output
+    )))
+    candidate_count = len(candidates)
+    if package not in candidates:
+        raise CaptureError("cannot determine shared UID ambiguity")
+    return uid, candidates if include_package else [], candidate_count
+
+
 def capture(args: argparse.Namespace) -> Path:
     output_dir = prepare_output_dir(args.out)
+    # The host owns the requested capture window after both collectors are ready.
+    # Device-side limits include both startup waits so a disconnected host still
+    # leaves finite collectors without normal startup shortening that window.
+    collector_duration = args.duration + 2 * int(ANETTRACE_STARTUP_TIMEOUT_S) + 5
     session_id = uuid.uuid4().hex[:12]
     remote_dir = f"{REMOTE_ROOT}/anettrace-capture-{session_id}"
     remote_binary = f"{remote_dir}/anettrace"
@@ -775,6 +873,7 @@ def capture(args: argparse.Namespace) -> Path:
     remote_system_trace = f"{PERFETTO_TRACE_ROOT}/anettrace-capture-{session_id}.pftrace"
     remote_config = f"{PERFETTO_CONFIG_ROOT}/anettrace-capture-{session_id}.pbtxt"
     remote_perf_data = f"{remote_dir}/perf.data"
+    remote_perfetto_ready = f"{remote_dir}/perfetto-ready"
     manifest_path = output_dir / "session-manifest.json"
     started_at = utc_now()
     started_monotonic = time.monotonic()
@@ -796,8 +895,12 @@ def capture(args: argparse.Namespace) -> Path:
         "status": status,
         "started_at_utc": started_at,
         "duration_s": args.duration,
+        "collector_safety_duration_s": collector_duration,
         "profile": args.profile,
         "filter": {"uid": args.uid, "tid": args.pid},
+        "wakeup_chain": {"enabled": args.wakeup_chain},
+        "rx_context": {"enabled": args.rx_context},
+        "readiness": {"anettrace": "pending", "perfetto": "pending" if args.profile != "none" else "not_requested"},
         "commands": commands,
         "repository": repository_record(),
         "device": {},
@@ -825,6 +928,7 @@ def capture(args: argparse.Namespace) -> Path:
     anettrace_process: RemoteProcess | None = None
     companion_processes: list[RemoteProcess] = []
     interrupted = False
+    target_uid = args.uid
 
     try:
         if not args.anettrace.is_file():
@@ -846,6 +950,24 @@ def capture(args: argparse.Namespace) -> Path:
             raise CaptureError(
                 "device shell must run as root; use an explicit --root-command if needed"
             )
+
+        if args.package is not None:
+            target_uid, _candidates, candidate_count = resolve_package(adb, args.package, False)
+            if target_uid == 0 and args.pid is None:
+                raise CaptureError("resolved UID 0 alone is too broad; add --tid")
+            manifest["filter"]["uid"] = target_uid
+            manifest["target"] = {
+                "selection": "package",
+                "uid_candidate_count": candidate_count,
+                "shared_uid": candidate_count > 1,
+            }
+            if candidate_count > 1:
+                warning = (
+                    f"target UID {target_uid} is a shared UID for {candidate_count} packages; "
+                    "capture includes matching traffic from all of them"
+                )
+                warnings.append(warning)
+                print(f"warning: {warning}", file=sys.stderr)
 
         if args.redact_device_metadata:
             manifest["device"] = {
@@ -878,30 +1000,35 @@ def capture(args: argparse.Namespace) -> Path:
         if args.profile != "none":
             if device_value(adb, "command -v perfetto") == "":
                 raise CaptureError("device has no perfetto command")
+            local_config = output_dir / "perfetto-config.pbtxt"
             if args.perfetto_config:
-                local_config = args.perfetto_config.resolve()
-            else:
-                local_config = output_dir / "perfetto-config.pbtxt"
-                local_config.write_text(
-                    render_perfetto_config(args.profile, args.duration), encoding="utf-8"
+                config_text = bound_perfetto_config(
+                    args.perfetto_config.read_text(encoding="utf-8"), collector_duration
                 )
+            else:
+                config_text = render_perfetto_config(args.profile, collector_duration)
+            local_config.write_text(config_text, encoding="utf-8")
             adb.push(local_config, remote_config)
 
         filter_args: list[str] = []
-        if args.uid is not None:
-            filter_args.extend(["--uid", str(args.uid)])
+        if target_uid is not None:
+            filter_args.extend(["--uid", str(target_uid)])
         if args.pid is not None:
             filter_args.extend(["--pid", str(args.pid)])
         trace_mode_args = ["--trace-detail"] if args.trace_detail else []
         diagnostic_args = ["--connect-diagnostics"] if args.connect_diagnostics else []
+        wakeup_args = ["--wakeup-chain"] if args.wakeup_chain else []
+        rx_context_args = ["--rx-context"] if args.rx_context else []
         anettrace_parts = [
             remote_binary,
             "--perfetto-events",
             remote_events,
             "--duration",
-            str(args.duration),
+            str(collector_duration),
             *trace_mode_args,
             *diagnostic_args,
+            *wakeup_args,
+            *rx_context_args,
             *filter_args,
             "-v",
         ]
@@ -912,7 +1039,7 @@ def capture(args: argparse.Namespace) -> Path:
             file_blocks = args.max_device_file_mib * 2048
             anettrace_command = (
                 f"ulimit -f {file_blocks}; exec toybox timeout -s INT "
-                f"{args.duration + int(ANETTRACE_STARTUP_TIMEOUT_S) + 5} "
+                f"{collector_duration + int(ANETTRACE_STARTUP_TIMEOUT_S) + 5} "
                 f"{anettrace_command}"
             )
         commands["anettrace"] = anettrace_parts
@@ -938,20 +1065,21 @@ def capture(args: argparse.Namespace) -> Path:
             ANETTRACE_READY_MARKER,
             ANETTRACE_STARTUP_TIMEOUT_S,
         )
+        manifest["readiness"]["anettrace"] = "ready"
 
         if args.profile != "none":
-            perfetto_command = " ".join(
-                shlex.quote(part)
-                for part in ["perfetto", "--txt", "-c", remote_config, "-o", remote_system_trace]
-            )
             commands["perfetto"] = [
                 "perfetto",
+                "--notify-fd",
+                "3",
                 "--txt",
                 "-c",
                 remote_config,
                 "-o",
                 remote_system_trace,
             ]
+            perfetto_command = " ".join(shlex.quote(part) for part in commands["perfetto"])
+            perfetto_command += f" 3>{shlex.quote(remote_perfetto_ready)}"
             perfetto_process = start_remote(
                 adb,
                 "perfetto",
@@ -961,6 +1089,8 @@ def capture(args: argparse.Namespace) -> Path:
             )
             remote_processes.append(perfetto_process)
             companion_processes.append(perfetto_process)
+            wait_perfetto_ready(adb, perfetto_process, remote_perfetto_ready, ANETTRACE_STARTUP_TIMEOUT_S)
+            manifest["readiness"]["perfetto"] = "ready"
 
         if args.simpleperf_app or args.simpleperf_pid:
             if device_value(adb, "command -v simpleperf") == "":
@@ -975,7 +1105,7 @@ def capture(args: argparse.Namespace) -> Path:
                 "record",
                 *target,
                 "--duration",
-                str(args.duration),
+                str(collector_duration),
                 "-f",
                 str(args.simpleperf_frequency),
                 "--call-graph",
@@ -994,11 +1124,18 @@ def capture(args: argparse.Namespace) -> Path:
             remote_processes.append(simpleperf_process)
             companion_processes.append(simpleperf_process)
 
+        for process in remote_processes:
+            if not remote_alive(adb, process):
+                raise CaptureError(f"{process.name} exited before all collectors became ready")
+        manifest["readiness"]["ready_at_utc"] = utc_now()
+        manifest["readiness"]["ready_elapsed_s"] = round(time.monotonic() - started_monotonic, 3)
+        deadline = time.monotonic() + args.duration
+        print("capture ready: reproduce the network operation now", file=sys.stderr, flush=True)
+
         if args.external_command:
             commands["external"] = list(args.external_command)
             external_process = start_external(args.external_command, output_dir)
 
-        deadline = time.monotonic() + args.duration
         next_resource_sample = time.monotonic()
         while time.monotonic() < deadline:
             if stop_requested.wait(timeout=min(0.25, max(0.0, deadline - time.monotonic()))):
@@ -1043,12 +1180,6 @@ def capture(args: argparse.Namespace) -> Path:
                 f"external command failed with status {external_process.returncode}"
             )
 
-        if (
-            anettrace_process
-            and args.max_device_file_mib
-            and remote_alive(adb, anettrace_process)
-        ):
-            wait_remote(adb, anettrace_process, 2.0)
         if anettrace_process and remote_alive(adb, anettrace_process):
             signal_remote(adb, anettrace_process, "INT")
             if not wait_remote(adb, anettrace_process, 5.0):
@@ -1239,6 +1370,11 @@ def capture(args: argparse.Namespace) -> Path:
             for path in sorted(output_dir.iterdir())
             if path.is_file() and path != manifest_path and not path.name.endswith(".tmp")
         ]
+        if args.package is not None:
+            for secret in (args.package, args.device):
+                if secret:
+                    errors[:] = [value.replace(secret, "<redacted>") for value in errors]
+                    warnings[:] = [value.replace(secret, "<redacted>") for value in warnings]
         manifest_path.write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )

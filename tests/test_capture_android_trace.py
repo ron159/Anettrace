@@ -23,6 +23,22 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PerfettoProfileTest(unittest.TestCase):
+    def test_custom_config_replaces_only_top_level_duration(self) -> None:
+        source = '''# duration_ms: 1
+duration_ms /* note */ : 0x20;
+data_sources { config { name: "duration_ms: 7" duration_ms: 42 } }
+duration_ms: 90000
+'''
+        bounded = MODULE.bound_perfetto_config(source, 66)
+        self.assertIn("# duration_ms: 1", bounded)
+        self.assertIn('name: "duration_ms: 7" duration_ms: 42', bounded)
+        self.assertNotIn("0x20", bounded)
+        self.assertNotIn("90000", bounded)
+        self.assertTrue(bounded.endswith("duration_ms: 66000\n"))
+        for invalid in ("", "duration_ms: nope", "duration_ms: 1.5"):
+            with self.subTest(invalid=invalid), self.assertRaises(MODULE.CaptureError):
+                MODULE.bound_perfetto_config(invalid, 66)
+
     def test_sched_profile_is_small_and_has_suspend_events(self) -> None:
         config = MODULE.render_perfetto_config("sched", 7)
         self.assertIn("size_kb: 32768", config)
@@ -80,9 +96,43 @@ class CliContractTest(unittest.TestCase):
         self.assertEqual(full.duration, 20)
         self.assertEqual(long_capture.duration, 600)
 
+    def test_package_target_is_private_by_default(self) -> None:
+        args = MODULE.parse_args(["--package", "com.example.app"])
+        self.assertEqual(args.package, "com.example.app")
+        self.assertIsNone(args.uid)
+        self.assertTrue(args.redact_device_metadata)
+
+    def test_package_and_uid_are_mutually_exclusive(self) -> None:
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            MODULE.parse_args(["--package", "com.example.app", "--uid", "10000"])
+
+    def test_invalid_package_is_rejected_before_device_access(self) -> None:
+        for package in ("", "com.example.app;id", "com.example.app\n", "app name"):
+            with self.subTest(package=package):
+                with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+                    MODULE.parse_args(["--package", package])
+
+    def test_tid_alias_preserves_exact_thread_filter(self) -> None:
+        current = MODULE.parse_args(["--uid", "10000", "--tid", "42"])
+        legacy = MODULE.parse_args(["--uid", "10000", "--pid", "42"])
+        self.assertEqual((current.uid, current.pid), (legacy.uid, legacy.pid))
+        self.assertEqual(MODULE.parse_args(["--tid", "42"]).pid, 42)
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            MODULE.parse_args(["--tid", "42", "--pid", "43"])
+
     def test_trace_detail_is_forwarded_explicitly(self) -> None:
         args = MODULE.parse_args(["--uid", "10000", "--trace-detail"])
         self.assertTrue(args.trace_detail)
+
+    def test_wakeup_chain_is_opt_in(self) -> None:
+        self.assertFalse(MODULE.parse_args(["--uid", "10000"]).wakeup_chain)
+        self.assertTrue(MODULE.parse_args(["--uid", "10000", "--wakeup-chain"]).wakeup_chain)
+
+    def test_rx_context_is_opt_in_and_requires_a_target(self) -> None:
+        self.assertFalse(MODULE.parse_args(["--uid", "10000"]).rx_context)
+        self.assertTrue(MODULE.parse_args(["--package", "com.example.app", "--rx-context"]).rx_context)
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            MODULE.parse_args(["--rx-context"])
 
     def test_connect_diagnostics_hard_limit_contract(self) -> None:
         args = MODULE.parse_args(
@@ -159,7 +209,70 @@ class OutputValidationTest(unittest.TestCase):
             self.assertFalse((root / "combined.pftrace.tmp").exists())
 
 
+class PackageResolutionTest(unittest.TestCase):
+    def test_exact_package_match_does_not_select_prefix_match(self) -> None:
+        adb = mock.Mock()
+        adb.shell.side_effect = [
+            MODULE.subprocess.CompletedProcess(
+                [], 0, "package:com.example.app.extra uid:10124\n"
+                "package:com.example.app uid:10123\n", ""
+            ),
+            MODULE.subprocess.CompletedProcess(
+                [], 0, "package:com.example.app uid:10123\n"
+                "package:com.example.shared uid:10123\n", ""
+            ),
+        ]
+        self.assertEqual(
+            MODULE.resolve_package(adb, "com.example.app", False), (10123, [], 2)
+        )
+        self.assertEqual(
+            adb.shell.call_args_list[1],
+            mock.call("cmd package list packages -U --uid 10123", check=False),
+        )
+
+    def test_missing_or_ambiguous_package_fails_without_disclosing_name(self) -> None:
+        for output in ("", "package:com.example.app.extra uid:10123\n",
+                       "package:com.example.app uid:10123\n"
+                       "package:com.example.app uid:110123\n"):
+            with self.subTest(output=output):
+                adb = mock.Mock()
+                adb.shell.return_value = MODULE.subprocess.CompletedProcess([], 0, output, "")
+                with self.assertRaises(MODULE.CaptureError) as raised:
+                    MODULE.resolve_package(adb, "com.example.app", False)
+                self.assertNotIn("com.example.app", str(raised.exception))
+
+    def test_unverified_shared_uid_query_fails_closed(self) -> None:
+        adb = mock.Mock()
+        adb.shell.side_effect = [
+            MODULE.subprocess.CompletedProcess([], 0, "package:com.example.app uid:10123\n", ""),
+            MODULE.subprocess.CompletedProcess([], 1, "", "query failed"),
+        ]
+        with self.assertRaisesRegex(MODULE.CaptureError, "shared UID"):
+            MODULE.resolve_package(adb, "com.example.app", False)
+
+
 class FailureManifestTest(unittest.TestCase):
+    def test_package_failure_manifest_redacts_target_and_device_from_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "anettrace"
+            binary.write_bytes(b"mock-binary")
+            output = root / "capture"
+            args = MODULE.parse_args(
+                ["--package", "com.example.app", "--device", "PRIVATE-SERIAL",
+                 "--anettrace", str(binary), "--out", str(output)]
+            )
+            with mock.patch.object(MODULE, "Adb") as adb:
+                adb.return_value.run.side_effect = MODULE.CaptureError(
+                    "adb -s PRIVATE-SERIAL failed while checking com.example.app"
+                )
+                with self.assertRaises(MODULE.CaptureError):
+                    MODULE.capture(args)
+            manifest_text = (output / "session-manifest.json").read_text(encoding="utf-8")
+            self.assertNotIn("com.example.app", manifest_text)
+            self.assertNotIn("PRIVATE-SERIAL", manifest_text)
+            self.assertEqual(MODULE.json.loads(manifest_text)["status"], "failed")
+
     def test_preflight_failure_still_writes_manifest(self) -> None:
         class FakeAdb:
             def __init__(
@@ -201,6 +314,33 @@ class FailureManifestTest(unittest.TestCase):
 
 
 class SuccessfulCaptureTest(unittest.TestCase):
+    def test_perfetto_readiness_requires_binary_zero_ack(self) -> None:
+        process = MODULE.RemoteProcess("perfetto", 200, "/tmp/perfetto.log", "/tmp/session")
+        adb = mock.Mock()
+        adb.shell.side_effect = [
+            MODULE.subprocess.CompletedProcess([], 1, "", ""),
+            MODULE.subprocess.CompletedProcess([], 0, "   0\n", ""),
+        ]
+        with mock.patch.object(MODULE, "remote_alive", return_value=True), mock.patch.object(MODULE.time, "sleep"):
+            MODULE.wait_perfetto_ready(adb, process, "/tmp/ready", 1.0)
+        self.assertIn("od -An -tu1 -N1", adb.shell.call_args.args[0])
+
+    def test_perfetto_readiness_rejects_failed_ack_or_early_exit(self) -> None:
+        process = MODULE.RemoteProcess("perfetto", 200, "/tmp/perfetto.log", "/tmp/session")
+        for output, alive in (("1", True), ("48", True), ("", False)):
+            with self.subTest(output=output):
+                adb = mock.Mock()
+                adb.shell.return_value = MODULE.subprocess.CompletedProcess([], 0, output, "")
+                with mock.patch.object(MODULE, "remote_alive", return_value=alive):
+                    with self.assertRaises(MODULE.CaptureError):
+                        MODULE.wait_perfetto_ready(adb, process, "/tmp/ready", 1.0)
+
+    def test_perfetto_readiness_timeout_is_bounded(self) -> None:
+        process = MODULE.RemoteProcess("perfetto", 200, "/tmp/perfetto.log", "/tmp/session")
+        with mock.patch.object(MODULE.time, "monotonic", side_effect=[0.0, 2.0]):
+            with self.assertRaisesRegex(MODULE.CaptureError, "did not become ready"):
+                MODULE.wait_perfetto_ready(mock.Mock(), process, "/tmp/ready", 1.0)
+
     def test_start_remote_tracks_explicit_command_identity(self) -> None:
         adb = mock.Mock()
         adb.shell.return_value = MODULE.subprocess.CompletedProcess(
@@ -292,6 +432,9 @@ class SuccessfulCaptureTest(unittest.TestCase):
     def test_mock_device_capture_records_outputs_and_metadata(self) -> None:
         class FakeAdb:
             next_pid = 200
+            package_uid = 10123
+            readiness_delay = 0.0
+            ready_status = 0
 
             def __init__(
                 self,
@@ -300,6 +443,8 @@ class SuccessfulCaptureTest(unittest.TestCase):
                 _root_command: str | None = None,
             ):
                 self.alive: dict[int, bool] = {}
+                self.expires: dict[int, float] = {}
+                self.configs: dict[str, str] = {}
 
             @staticmethod
             def result(returncode: int = 0, stdout: str = ""):
@@ -319,6 +464,11 @@ class SuccessfulCaptureTest(unittest.TestCase):
                     "getprop ro.build.fingerprint": "test/fingerprint\n",
                     "uname -a": "Linux test 6.6 aarch64\n",
                     "cat /proc/sys/kernel/random/boot_id": "boot-123\n",
+                    "cmd package list packages -U com.example.app":
+                        f"package:com.example.app uid:{self.package_uid}\n",
+                    f"cmd package list packages -U --uid {self.package_uid}":
+                        f"package:com.example.app uid:{self.package_uid}\n"
+                        f"package:com.example.shared uid:{self.package_uid}\n",
                 }
                 if script in values:
                     return self.result(stdout=values[script])
@@ -326,14 +476,27 @@ class SuccessfulCaptureTest(unittest.TestCase):
                     pid = self.next_pid
                     FakeAdb.next_pid += 1
                     self.alive[pid] = True
+                    duration = MODULE.re.search(r"--duration (\d+)", script)
+                    if duration:
+                        self.expires[pid] = MODULE.time.monotonic() + int(duration[1])
+                    elif script.startswith("perfetto "):
+                        config = MODULE.re.search(r"-c (\S+)", script)[1]
+                        duration_ms = MODULE.re.findall(r"duration_ms:\s*(\d+)", self.configs[config])[-1]
+                        self.expires[pid] = MODULE.time.monotonic() + int(duration_ms) / 1000
                     return self.result(stdout=f"{pid}\n")
                 if script.startswith("grep -Fq -- 'begin trace...' "):
                     return self.result()
+                if "od -An -tu1 -N1" in script:
+                    MODULE.time.sleep(self.readiness_delay)
+                    return self.result(stdout=f"{self.ready_status}\n")
                 match = MODULE.re.match(
                     r"test -r /proc/([0-9]+)/cmdline && ", script
                 )
                 if match:
-                    return self.result(0 if self.alive.get(int(match.group(1)), False) else 1)
+                    pid = int(match.group(1))
+                    if MODULE.time.monotonic() >= self.expires.get(pid, float("inf")):
+                        self.alive[pid] = False
+                    return self.result(0 if self.alive.get(pid, False) else 1)
                 match = MODULE.re.fullmatch(r"kill -(?:INT|TERM) ([0-9]+)", script)
                 if match:
                     self.alive[int(match.group(1))] = False
@@ -345,7 +508,8 @@ class SuccessfulCaptureTest(unittest.TestCase):
                 return self.result()
 
             def push(self, _source: Path, _destination: str) -> None:
-                pass
+                if _destination.endswith(".pbtxt"):
+                    self.configs[_destination] = _source.read_text(encoding="utf-8")
 
             def pull(self, source: str, destination: Path) -> None:
                 if source.endswith("anettrace-events.jsonl"):
@@ -369,6 +533,7 @@ class SuccessfulCaptureTest(unittest.TestCase):
                     "--duration",
                     "1",
                     "--trace-detail",
+                    "--wakeup-chain",
                     "--skip-convert",
                     "--anettrace",
                     str(binary),
@@ -384,10 +549,16 @@ class SuccessfulCaptureTest(unittest.TestCase):
             self.assertEqual(manifest["device"]["boot_id"], "boot-123")
             self.assertEqual(manifest["anettrace"]["lost_events"], 0)
             self.assertIn("--trace-detail", manifest["commands"]["anettrace"])
+            self.assertIn("--wakeup-chain", manifest["commands"]["anettrace"])
+            self.assertTrue(manifest["wakeup_chain"]["enabled"])
+            self.assertEqual(manifest["readiness"]["perfetto"], "ready")
+            self.assertIn("--notify-fd", manifest["commands"]["perfetto"])
             duration_index = manifest["commands"]["anettrace"].index("--duration")
             self.assertEqual(
-                manifest["commands"]["anettrace"][duration_index + 1], "1"
+                manifest["commands"]["anettrace"][duration_index + 1], "66"
             )
+            self.assertEqual(manifest["duration_s"], 1)
+            self.assertEqual(manifest["collector_safety_duration_s"], 66)
             self.assertTrue(manifest["cleanup"]["verified"])
             self.assertTrue(manifest["cleanup"]["processes_verified"])
             self.assertEqual(manifest["cleanup"]["remaining_processes"], [])
@@ -410,6 +581,73 @@ class SuccessfulCaptureTest(unittest.TestCase):
             )
             self.assertEqual(failed_manifest["status"], "failed")
             self.assertFalse(failed_manifest["cleanup"]["verified"])
+
+            package_output = root / "package-capture"
+            package_args = MODULE.parse_args(
+                ["--package", "com.example.app", "--device", "PRIVATE-SERIAL",
+                 "--duration", "1", "--profile", "none", "--skip-convert",
+                 "--anettrace", str(binary), "--out", str(package_output)]
+            )
+            with mock.patch.object(MODULE, "Adb", FakeAdb):
+                package_manifest_path = MODULE.capture(package_args)
+            package_manifest_text = package_manifest_path.read_text(encoding="utf-8")
+            package_manifest = MODULE.json.loads(package_manifest_text)
+            self.assertEqual(package_manifest["filter"]["uid"], 10123)
+            self.assertEqual(package_manifest["target"]["uid_candidate_count"], 2)
+            self.assertTrue(package_manifest["target"]["shared_uid"])
+            self.assertTrue(any("shared UID" in item for item in package_manifest["warnings"]))
+            self.assertNotIn("com.example", package_manifest_text)
+            self.assertNotIn("PRIVATE-SERIAL", package_manifest_text)
+            self.assertFalse({"serial", "fingerprint", "kernel", "boot_id"} &
+                             package_manifest["device"].keys())
+            command = package_manifest["commands"]["anettrace"]
+            self.assertEqual(command[command.index("--uid") + 1], "10123")
+            self.assertNotIn("--package", command)
+
+            FakeAdb.package_uid = 0
+            package_args.out = root / "root-package-capture"
+            with mock.patch.object(MODULE, "Adb", FakeAdb):
+                with self.assertRaisesRegex(MODULE.CaptureError, "UID 0.*too broad"):
+                    MODULE.capture(package_args)
+
+            package_args.pid = 42
+            package_args.out = root / "root-thread-capture"
+            with mock.patch.object(MODULE, "Adb", FakeAdb):
+                root_manifest_path = MODULE.capture(package_args)
+            root_manifest = MODULE.json.loads(root_manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(root_manifest["filter"], {"uid": 0, "tid": 42})
+            command = root_manifest["commands"]["anettrace"]
+            self.assertEqual(command[command.index("--uid") + 1], "0")
+            self.assertEqual(command[command.index("--pid") + 1], "42")
+
+            FakeAdb.readiness_delay = 0.75
+            args.out = root / "delayed-readiness"
+            with mock.patch.object(MODULE, "Adb", FakeAdb):
+                delayed_path = MODULE.capture(args)
+            delayed = MODULE.json.loads(delayed_path.read_text(encoding="utf-8"))
+            self.assertEqual(delayed["status"], "success")
+            self.assertTrue(delayed["cleanup"]["verified"])
+
+            custom = root / "custom.pbtxt"
+            custom_source = "duration_ms: 1\nbuffers { size_kb: 1024 }\n"
+            custom.write_text(custom_source, encoding="utf-8")
+            args.perfetto_config = custom
+            args.out = root / "custom-delayed-readiness"
+            with mock.patch.object(MODULE, "Adb", FakeAdb):
+                custom_manifest = MODULE.capture(args)
+            self.assertEqual(MODULE.json.loads(custom_manifest.read_text())["status"], "success")
+            self.assertEqual(custom.read_text(encoding="utf-8"), custom_source)
+            self.assertIn("duration_ms: 66000", (args.out / "perfetto-config.pbtxt").read_text())
+
+            FakeAdb.ready_status = 1
+            FakeAdb.readiness_delay = 0
+            args.out = root / "failed-perfetto-readiness"
+            with mock.patch.object(MODULE, "Adb", FakeAdb):
+                with self.assertRaisesRegex(MODULE.CaptureError, "failed to become ready"):
+                    MODULE.capture(args)
+            failed_ready = MODULE.json.loads((args.out / "session-manifest.json").read_text())
+            self.assertTrue(failed_ready["cleanup"]["verified"])
+            self.assertNotIn("ready_at_utc", failed_ready["readiness"])
 
 
 if __name__ == "__main__":
