@@ -7,6 +7,86 @@ from tests import test_flow_identity as helpers
 class TraceDurationTests(unittest.TestCase):
     run_source = helpers.FlowIdentityTests.run_source
 
+    def test_pending_rx_never_reaches_terminal_output(self):
+        source = (helpers.ROOT / "src/trace.c").read_text()
+        code = r'''
+#define FUNC_TYPE_FUNC 0
+#define FUNC_TYPE_TRACING_RET 3
+typedef struct { u16 meta; } event_t;
+typedef struct { u16 meta; u8 owner_pending; } detail_event_t;
+static unsigned exported, printed;
+static bool trace_stopped(void) { return false; }
+static void perfetto_export_event(void *data, int cpu, u32 size) {
+    (void)data; (void)cpu; (void)size; exported++;
+}
+static void terminal(void *ctx, int cpu, void *data, u32 size) {
+    (void)ctx; (void)cpu; (void)data; (void)size; printed++;
+}
+static struct { void (*trace_poll)(void *,int,void *,u32); } ops = {terminal};
+static struct { typeof(ops) *ops; } trace_ctx = {&ops};
+''' + helpers.function(source, "poll_handler_wrap")
+        result = self.run_source(code, r'''
+detail_event_t pending={.meta=FUNC_TYPE_FUNC,.owner_pending=1};
+poll_handler_wrap(NULL,0,&pending,sizeof(pending));
+printf("%u %u ",exported,printed);
+pending.meta=FUNC_TYPE_TRACING_RET;
+poll_handler_wrap(NULL,0,&pending,sizeof(pending));
+printf("%u %u ",exported,printed);
+pending.owner_pending=0;
+poll_handler_wrap(NULL,0,&pending,sizeof(pending));
+printf("%u %u",exported,printed);
+''')
+        self.assertEqual(result, ["1", "0", "2", "0", "3", "1"])
+
+    def test_ready_is_emitted_only_after_buffer_creation_and_before_poll(self):
+        source = (helpers.ROOT / "src/trace.c").read_text()
+        code = r'''
+#include <errno.h>
+#include <time.h>
+#define LIBBPF_MAJOR_VERSION 1
+#define pr_err(...) ((void)0)
+#define pr_info(...) printf("ready ")
+struct perf_buffer { int unused; } buffer;
+static int buffer_error, map_result = 3, released;
+static void ready(void) { printf("enable "); }
+static int raw_poll(void) { printf("raw "); return 0; }
+static struct { void (*trace_ready)(void); int (*raw_poll)(void); } ops = {ready, NULL};
+static struct {
+    struct { unsigned duration; bool ring_buffer, traffic_ui; } args;
+    typeof(ops) *ops;
+    void *obj;
+} trace_ctx = {.ops = &ops};
+static u64 poll_deadline_ns;
+static int bpf_object__find_map_fd_by_name(void *obj, const char *name) {
+    (void)obj; (void)name; return map_result;
+}
+#define poll_handler_wrap NULL
+#define trace_on_lost NULL
+static struct perf_buffer *perf_buffer__new(int fd, int pages, void *sample,
+        void *lost, void *ctx, void *opts) {
+    (void)fd; (void)pages; (void)sample; (void)lost; (void)ctx; (void)opts;
+    printf("buffer "); return &buffer;
+}
+static int libbpf_get_error(void *p) { (void)p; return buffer_error; }
+static int perf_buffer__poll(struct perf_buffer *p, int timeout) {
+    (void)p; (void)timeout; printf("poll "); return 0;
+}
+static void perf_buffer__free(struct perf_buffer *p) { (void)p; released++; }
+static void perfetto_export_tick(void) {}
+static int poll_timeout(int err) { (void)err; return 1; }
+''' + helpers.function(source, "trace_poll")
+        result = self.run_source(code, r'''
+printf("%d ", trace_poll());
+buffer_error = -ENOMEM;
+printf("%d ", trace_poll());
+map_result = -ENOENT;
+printf("%d ", trace_poll());
+ops.raw_poll = raw_poll;
+printf("%d %d", trace_poll(), released);
+''')
+        self.assertEqual(result, ["buffer", "enable", "ready", "poll", "0",
+                                  "buffer", "-12", "-2", "enable", "ready", "raw", "0", "1"])
+
     def run_capture(self, mode, ring=False):
         source = (helpers.ROOT / "src/trace.c").read_text()
         code = r'''

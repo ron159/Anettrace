@@ -24,7 +24,7 @@ ifndef NO_BTF
 endif
 
 BPF_EXTRA_DEP := kheaders.h progs/core.c progs/core.h \
-	progs/traffic_shared.h
+	progs/traffic_shared.h progs/network_wakeup.h
 include ../common.mk
 
 cmd_kversion := awk -F '=' 'NR>10{exit;}		\

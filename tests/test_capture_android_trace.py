@@ -133,6 +133,11 @@ class CliContractTest(unittest.TestCase):
         self.assertTrue(MODULE.parse_args(["--package", "com.example.app", "--rx-context"]).rx_context)
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             MODULE.parse_args(["--rx-context"])
+        for target in (["--tid", "42"], ["--uid", "10000", "--tid", "42"],
+                       ["--package", "com.example.app", "--pid", "42"]):
+            with self.subTest(target=target), redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+                MODULE.parse_args([*target, "--rx-context"])
+        self.assertTrue(MODULE.parse_args(["--tid", "42", "--wakeup-chain"]).wakeup_chain)
 
     def test_connect_diagnostics_hard_limit_contract(self) -> None:
         args = MODULE.parse_args(

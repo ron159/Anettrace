@@ -14,6 +14,17 @@ struct list_head cpus[MAX_CPU_COUNT];
 trace_ops_t probe_ops;
 static struct kprobe *skel;
 
+static bool probe_wakeup_required(trace_t *trace)
+{
+	if (!trace_ctx.bpf_args.wakeup_chain)
+		return false;
+	return trace->index == INDEX_network_sched_waking ||
+	       trace->index == INDEX_network_sched_wakeup ||
+	       trace->index == INDEX_network_sched_switch ||
+	       trace->index == INDEX_network_sys_enter ||
+	       trace->index == INDEX_network_sys_exit;
+}
+
 static int probe_trace_attach_manual(trace_t *trace, char *prog_name,
 				     bool retprobe)
 {
@@ -88,8 +99,8 @@ again:
 		if ((auto_attach && !(trace->status & TRACE_ATTACH_MANUAL)) ||
 		    (!auto_attach && (trace->status & TRACE_ATTACH_MANUAL))) {
 			err = probe_trace_attach_manual(trace, trace->prog, false);
-			if (err && trace_ctx.args.connect_diagnostics &&
-			    trace->connect_required)
+			if (err && ((trace_ctx.args.connect_diagnostics &&
+				     trace->connect_required) || probe_wakeup_required(trace)))
 				return err;
 			if (!trace_is_ret(trace))
 				continue;
@@ -152,6 +163,8 @@ static int probe_trace_load()
 
 	/* set the max entries of perf event map to current cpu count */
 	bpf_map__set_max_entries(skel->maps.m_event, get_nprocs_conf());
+	if (!trace_ctx.bpf_args.wakeup_chain)
+		bpf_map__set_max_entries(skel->maps.m_network_wakeups, 1);
 	bpf_func_init(skel, BPF_PROG_TYPE_KPROBE);
 
 	trace_ctx.obj = skel->obj;

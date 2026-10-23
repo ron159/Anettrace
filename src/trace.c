@@ -690,6 +690,18 @@ static void trace_enable_default()
 
 static void trace_enable_perfetto_output()
 {
+	if (trace_ctx.bpf_args.wakeup_chain) {
+		trace_set_enable(&trace_network_sched_waking);
+		trace_set_enable(&trace_network_sched_wakeup);
+		trace_set_enable(&trace_network_sched_switch);
+		trace_set_enable(&trace_network_sys_enter);
+		trace_set_enable(&trace_network_sys_exit);
+	} else {
+		/* --trace all/--trace-detail must not turn on this opt-in cost. */
+		trace_set_invalid_reason(&trace_network_sched_waking, "wakeup-chain disabled");
+		trace_set_invalid_reason(&trace_network_sched_wakeup, "wakeup-chain disabled");
+		trace_set_invalid_reason(&trace_network_sched_switch, "wakeup-chain disabled");
+	}
 	/* Compact send markers need the completed IP header. Protocol groups
 	 * select transport probes, so also enable their output dependencies.
 	 * Apply user exclusions afterwards, just like all other selections. */
@@ -1088,6 +1100,26 @@ static int trace_validate_connect_required()
 	return 0;
 }
 
+static int trace_validate_wakeup_required(void)
+{
+	trace_t *required[] = {
+		&trace_network_sched_waking, &trace_network_sched_wakeup,
+		&trace_network_sched_switch, &trace_network_sys_enter,
+		&trace_network_sys_exit,
+	};
+	size_t i;
+
+	if (!trace_ctx.bpf_args.wakeup_chain)
+		return 0;
+	for (i = 0; i < ARRAY_SIZE(required); i++) {
+		if (trace_is_usable(required[i]))
+			continue;
+		pr_err("required wakeup-chain trace is unavailable: %s\n", required[i]->name);
+		return -ENOTSUP;
+	}
+	return 0;
+}
+
 int trace_prepare()
 {
 	int err, i = 0;
@@ -1145,7 +1177,7 @@ int trace_prepare()
 	}
 
 	trace_prepare_backup();
-	if (trace_validate_connect_required()) {
+	if (trace_validate_connect_required() || trace_validate_wakeup_required()) {
 		err = -ENOTSUP;
 		goto err;
 	}
@@ -1305,6 +1337,13 @@ static inline void poll_handler_wrap(void *ctx, int cpu, void *data,
 		return;
 
 	perfetto_export_event(data, cpu, size);
+	/* Unknown RX metadata stays inside the bounded exporter gate. It must
+	 * not leak to terminal output while awaiting direct socket evidence. */
+	if (size >= sizeof(detail_event_t) &&
+	    (((event_t *)data)->meta == FUNC_TYPE_FUNC ||
+	     ((event_t *)data)->meta == FUNC_TYPE_TRACING_RET) &&
+	    ((detail_event_t *)data)->owner_pending)
+		return;
 	trace_ctx.ops->trace_poll(ctx, cpu, data, size);
 }
 
@@ -1359,12 +1398,13 @@ int trace_poll()
 
 	if (trace_ctx.ops->raw_poll) {
 		trace_ctx.ops->trace_ready();
+		pr_info("begin trace...\n");
 		return trace_ctx.ops->raw_poll();
 	}
 
 	map_fd = bpf_object__find_map_fd_by_name(trace_ctx.obj, "m_event");
-	if (!map_fd)
-		return -1;
+	if (map_fd < 0)
+		return map_fd;
 
 #if defined(LIBBPF_MAJOR_VERSION) && (LIBBPF_MAJOR_VERSION >= 1)
 	pb = perf_buffer__new(map_fd, 1024, poll_handler_wrap,
@@ -1390,10 +1430,12 @@ int trace_poll()
 		poll_deadline_ns = (u64)now.tv_sec * 1000000000ULL + now.tv_nsec +
 			(u64)trace_ctx.args.duration * 1000000000ULL;
 	trace_ctx.ops->trace_ready();
+	pr_info("begin trace...\n");
 	while ((err = perf_buffer__poll(pb, trace_ctx.args.traffic_ui ? 100 : 1000)) >= 0) {
 		perfetto_export_tick();
 		if (poll_timeout(err))
 			break;
 	}
-	return 0;
+	perf_buffer__free(pb);
+	return err < 0 && err != -EINTR ? err : 0;
 }

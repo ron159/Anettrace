@@ -184,7 +184,10 @@ printf("%d", trace_event_visible(&ip, &event));
 typedef struct { bool enabled; } trace_t;
 static bool trace_is_enable(trace_t *trace) { return trace->enabled; }
 static void trace_set_enable(trace_t *trace) { trace->enabled = true; }
-static struct { struct { bool perfetto; } bpf_args;
+static void trace_set_invalid_reason(trace_t *trace, const char *reason) {
+    (void)reason; trace->enabled=false;
+}
+static struct { struct { bool perfetto, wakeup_chain; } bpf_args;
     struct { bool connect_diagnostics; } args; } trace_ctx = {.bpf_args.perfetto=true};
 ''' + "\n".join("static trace_t trace_" + name + ";" for name in names) + "\n" + source
         self.assertIn("tcp_rcv_established", names)

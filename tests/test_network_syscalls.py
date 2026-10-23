@@ -51,7 +51,9 @@ class NetworkSyscallContracts(unittest.TestCase):
         struct_end = shared.index("} network_syscall_event_t;") + len("} network_syscall_event_t;")
         struct_start = shared.rfind("typedef struct {", 0, struct_end)
         source = (ROOT / "src/perfetto_export.c").read_text()
-        functions = source[source.index("static void export_network_syscall("):
+        json_start = source.index("static void json_escape(")
+        json_end = source.index("\n}\n", json_start) + 3
+        functions = source[json_start:json_end] + source[source.index("static const char *network_wakeup_status("):
                            source.index("void perfetto_export_event(")]
         harness = r'''
 #include <assert.h>

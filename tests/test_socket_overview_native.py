@@ -105,7 +105,7 @@ static detail_event_t sample(u64 key, u64 ts, u8 direction, u64 socket) {
 }
 static void emit(detail_event_t d, const char *stage) {
     trace_t trace={.name=stage};
-    native_export_packet_event(&d,&trace,2);
+    native_export_packet_event(&d,&trace,2,sizeof(d));
 }
 static void evidence(detail_event_t d,u64 socket) {
     d.owner_socket_key=socket; d.owner_valid=true;

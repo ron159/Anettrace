@@ -459,6 +459,8 @@ static __always_inline bool perfetto_current_matches(bpf_args_t *args,
 	       (!args->uid_enabled || args->uid == uid);
 }
 
+#include "network_wakeup.h"
+
 static __always_inline bool perfetto_owner_matches(bpf_args_t *args,
 						    perfetto_owner_t *owner)
 {
@@ -901,6 +903,22 @@ static __attribute__((noinline)) int perfetto_handle_owner(
 	if (skb) {
 		if (!perfetto_packet_supported(&event->pkt))
 			return -1;
+		if (args->rx_context && args->uid_enabled && !args->pid &&
+		    direction == PACKET_DIRECTION_RX) {
+			/* A task or tuple match cannot establish an early RX owner.
+			 * Unknown metadata is quarantined in userspace until this exact
+			 * skb allocation reaches a directly observed target socket. */
+			if (owner_valid) {
+				if (!perfetto_owner_matches(args, owner))
+					return -1;
+				detail->owner_evidence = 1;
+				goto resolved_owner;
+			}
+			detail->direction = direction;
+			detail->owner_pending = 1;
+			detail->owner_valid = 0;
+			return 0;
+		}
 		flow_owner = perfetto_lookup_flow(&event->pkt,
 						  &scratch->flow_key, detail->netns);
 		if (flow_owner) {
@@ -938,6 +956,7 @@ static __attribute__((noinline)) int perfetto_handle_owner(
 			perfetto_store_socket_owner(sk, owner);
 	}
 
+resolved_owner:
 	if (owner_valid && skb) {
 		if (perfetto_packet_is_dns(&event->pkt)) {
 			owner->dns = 1;
@@ -1532,8 +1551,10 @@ bpf_qdisc_handle(context_info_t *info, struct Qdisc *q)
 
 	if (bpf_core_helper_exist(jiffies64)) {
 		start = _C(txq, trans_start);
-		if (start)
+		if (start) {
 			e->last_update = bpf_jiffies64() - start;
+			e->last_update_valid = 1;
+		}
 	}
 
 	e->qlen = _C(&(q->q), qlen);
@@ -1919,6 +1940,7 @@ int TRACE_NAME(network_sys_enter)(struct trace_event_raw_sys_enter *ctx)
 	event->kind = kind;
 	event->syscall_nr = nr;
 	event->start_ts = event->ts = bpf_ktime_get_ns();
+	network_wakeup_snapshot(event);
 	event->tid = tid;
 	event->tgid = pid_tgid >> 32;
 	event->uid = uid;

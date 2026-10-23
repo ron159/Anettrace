@@ -17,6 +17,7 @@
 #include "trace.h"
 #include "analysis.h"
 #include "perfetto_export.h"
+#include "rx_context.h"
 
 #ifndef CLOCK_BOOTTIME
 #define CLOCK_BOOTTIME 7
@@ -35,6 +36,9 @@
 static FILE *export_file;
 static FILE *native_file;
 static pthread_mutex_t export_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t rx_context_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct rx_context rx_context;
+static void perfetto_export_event_now(const void *data, int cpu, u32 size);
 static u64 export_salt;
 static u64 exported_events;
 static u64 lost_events;
@@ -2039,6 +2043,35 @@ static void native_export_socket_create(const detail_event_t *detail,
 	native_open_socket(socket, event->ske.ts);
 }
 
+/* These fields are populated for every successfully parsed socket. TCP
+ * counters share a union with UDP ports and must only be read for TCP.
+ * Optional timer/congestion fields need explicit validity before exporting. */
+static void native_socket_snapshot(struct proto_buffer *event, const sock_t *sk)
+{
+	native_annotation_uint(event, "proto_l4", sk->proto_l4);
+	native_annotation_uint(event, "state", sk->state);
+	native_annotation_uint(event, "wqlen", sk->wqlen);
+	native_annotation_uint(event, "rqlen", sk->rqlen);
+	if (sk->proto_l4 == IPPROTO_TCP) {
+		native_annotation_string(event, "state_name", tcp_state_name(sk->state));
+		native_annotation_uint(event, "packets_out", sk->l4.tcp.packets_out);
+		native_annotation_uint(event, "retrans_out", sk->l4.tcp.retrans_out);
+		native_annotation_uint(event, "snd_una", sk->l4.tcp.snd_una);
+	}
+}
+
+static void export_socket_snapshot(const sock_t *sk)
+{
+	fprintf(export_file, ",\"state\":%u,\"wqlen\":%u,\"rqlen\":%u",
+		sk->state, sk->wqlen, sk->rqlen);
+	if (sk->proto_l4 == IPPROTO_TCP)
+		fprintf(export_file,
+			",\"state_name\":\"%s\",\"packets_out\":%u,"
+			"\"retrans_out\":%u,\"snd_una\":%u",
+			tcp_state_name(sk->state), sk->l4.tcp.packets_out,
+			sk->l4.tcp.retrans_out, sk->l4.tcp.snd_una);
+}
+
 static void native_export_socket_state(const detail_event_t *detail,
 					int oldstate, int newstate, int cpu)
 {
@@ -2077,6 +2110,7 @@ static void native_export_socket_state(const detail_event_t *detail,
 	native_annotation_uint(&state, "cpu", cpu);
 	native_annotation_uint(&state, "tid", event->tid);
 	native_annotation_uint(&state, "uid", event->uid);
+	native_socket_snapshot(&state, &event->ske);
 	native_event_write(event->ske.ts, &state);
 	proto_free(&state);
 	if (terminal)
@@ -2085,7 +2119,7 @@ static void native_export_socket_state(const detail_event_t *detail,
 
 
 static void native_export_socket_event(const detail_event_t *detail,
-					trace_t *trace, int cpu)
+					trace_t *trace, int cpu, u32 size)
 {
 	const event_t *event = (const void *)detail;
 	u64 flow_id = detail_flow_id(detail, true);
@@ -2139,6 +2173,19 @@ static void native_export_socket_event(const detail_event_t *detail,
 			native_annotation_id(&track_event, "owner_socket_id",
 				socket_instance_id(detail->owner_socket_key,
 						   detail->owner_socket_generation));
+	}
+	native_socket_snapshot(&track_event, &event->ske);
+	if ((!strcmp(trace->name, "tcp_v4_send_reset") ||
+	     !strcmp(trace->name, "tcp_v6_send_reset") ||
+	     !strcmp(trace->name, "tcp_send_active_reset")) &&
+	    size >= sizeof(detail_reset_event_t)) {
+		const detail_reset_event_t *reset = (const void *)detail;
+		native_annotation_uint(&track_event, "reset_reason", reset->reason);
+	} else if (!strcmp(trace->name, "tcp_ack_update_rtt") &&
+		   size >= sizeof(detail_rtt_event_t)) {
+		const detail_rtt_event_t *rtt = (const void *)detail;
+		native_annotation_uint(&track_event, "first_rtt_us", rtt->first_rtt);
+		native_annotation_uint(&track_event, "last_rtt_us", rtt->last_rtt);
 	}
 	native_event_write(event->ske.ts, &track_event);
 	proto_free(&track_event);
@@ -2381,7 +2428,7 @@ static void native_packet_overview_reset(void)
 }
 
 static void native_export_packet_event(const detail_event_t *detail,
-					trace_t *trace, int cpu)
+					trace_t *trace, int cpu, u32 size)
 {
 	const event_t *event = (const void *)detail;
 	const detail_drop_event_t *drop = (const void *)detail;
@@ -2432,6 +2479,9 @@ static void native_export_packet_event(const detail_event_t *detail,
 	native_annotation_bool(&track_event, "dropped", dropped);
 	native_annotation_bool(&track_event, "flow_anchor", flow_anchor);
 	native_annotation_bool(&track_event, "owner_valid", detail->owner_valid);
+	if (detail->owner_evidence)
+		native_annotation_string(&track_event, "owner_evidence",
+			detail->owner_evidence == 1 ? "direct_socket" : "same_skb_instance");
 	native_annotation_uint(&track_event, "cpu", cpu);
 	native_annotation_uint(&track_event, "uid", event->uid);
 	native_annotation_string(&track_event, "direction",
@@ -2486,10 +2536,22 @@ static void native_export_packet_event(const detail_event_t *detail,
 		native_annotation_string(&track_event, "dns_transaction_id_hex",
 					 id_hex);
 	}
-	if (dropped && !strcmp(trace->name, "kfree_skb")) {
+	if (dropped && !strcmp(trace->name, "kfree_skb") &&
+	    size >= sizeof(detail_drop_event_t)) {
 		native_annotation_uint(&track_event, "drop_reason", drop->reason);
 		native_annotation_id(&track_event, "drop_location_id",
 			object_id("drop_location", drop->location));
+	}
+	if ((!strcmp(trace->name, "qdisc_enqueue") ||
+	     !strcmp(trace->name, "qdisc_dequeue")) &&
+	    size >= sizeof(detail_qdisc_event_t)) {
+		const detail_qdisc_event_t *qdisc = (const void *)detail;
+		native_annotation_uint(&track_event, "qdisc_qlen", qdisc->qlen);
+		native_annotation_uint(&track_event, "netdev_queue_state", qdisc->state);
+		native_annotation_uint(&track_event, "qdisc_flags", qdisc->flags);
+		if (qdisc->last_update_valid)
+			native_annotation_uint(&track_event, "qdisc_last_update_jiffies",
+					       qdisc->last_update);
 	}
 	annotation_size = track_event.size - annotation_offset;
 	native_annotation_id(&track_event, "socket_id", socket_id);
@@ -2588,6 +2650,8 @@ static void export_state_start(void)
 
 	if (export_file || native_file)
 		return;
+	rx_context_finish(&rx_context);
+	memset(&rx_context, 0, sizeof(rx_context));
 	exported_events = 0;
 	lost_events = 0;
 	last_clock_snapshot_ns = 0;
@@ -2736,7 +2800,7 @@ static void export_socket_state(const detail_event_t *detail, int oldstate,
 		"\"old_state_name\":\"%s\",\"new_state\":%d,"
 		"\"new_state_name\":\"%s\",\"terminal\":%s,"
 		"\"proto_l4\":%u,\"saddr\":\"%s\",\"sport\":%u,"
-		"\"daddr\":\"%s\",\"dport\":%u}\n",
+		"\"daddr\":\"%s\",\"dport\":%u",
 		PERFETTO_SCHEMA, base->ske.ts,
 		socket_instance_id(base->key, base->key_generation),
 		flow_id, tag, cpu, base->tid, base->tgid,
@@ -2745,10 +2809,12 @@ static void export_socket_state(const detail_event_t *detail, int oldstate,
 		newstate == TCP_CLOSE ? "true" : "false",
 		base->ske.proto_l4, source, ntohs(base->ske.l4.min.sport),
 		dest, ntohs(base->ske.l4.min.dport));
+	export_socket_snapshot(&base->ske);
+	fprintf(export_file, "}\n");
 }
 
 static void export_socket_event(const detail_event_t *detail, trace_t *trace,
-				int cpu)
+				int cpu, u32 size)
 {
 	const event_t *event = (const void *)detail;
 	u64 flow_id = detail_flow_id(detail, true);
@@ -2789,13 +2855,15 @@ static void export_socket_event(const detail_event_t *detail, trace_t *trace,
 		ifname, event->ske.proto_l4, source,
 		ntohs(event->ske.l4.min.sport), dest,
 		ntohs(event->ske.l4.min.dport));
-	if (!strcmp(trace->name, "tcp_v4_send_reset") ||
+	export_socket_snapshot(&event->ske);
+	if ((!strcmp(trace->name, "tcp_v4_send_reset") ||
 	    !strcmp(trace->name, "tcp_v6_send_reset") ||
-	    !strcmp(trace->name, "tcp_send_active_reset"))
+	    !strcmp(trace->name, "tcp_send_active_reset")) &&
+	    size >= sizeof(detail_reset_event_t))
 		fprintf(export_file,
-			",\"state\":%u,\"state_name\":\"%s\",\"reset_reason\":%u",
-			reset->state, tcp_state_name(reset->state), reset->reason);
-	else if (!strcmp(trace->name, "tcp_ack_update_rtt"))
+			",\"reset_reason\":%u", reset->reason);
+	else if (!strcmp(trace->name, "tcp_ack_update_rtt") &&
+		 size >= sizeof(detail_rtt_event_t))
 		fprintf(export_file,
 			",\"first_rtt_us\":%u,\"last_rtt_us\":%u",
 			rtt->first_rtt, rtt->last_rtt);
@@ -2803,7 +2871,7 @@ static void export_socket_event(const detail_event_t *detail, trace_t *trace,
 }
 
 static void export_packet_event(const detail_event_t *detail, trace_t *trace,
-				int cpu)
+				int cpu, u32 size)
 {
 	const event_t *event = (const void *)detail;
 	const detail_drop_event_t *drop = (const void *)detail;
@@ -2853,6 +2921,9 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 		detail->owner_tgid, detail->owner_uid, owner_socket_id,
 		detail->ifindex, detail->netns,
 		pkt->proto_l3, pkt->proto_l4, source, dest, pkt->mark);
+	if (detail->owner_evidence)
+		fprintf(export_file, ",\"owner_evidence\":\"%s\"",
+			detail->owner_evidence == 1 ? "direct_socket" : "same_skb_instance");
 	if (packet_is_icmp(pkt)) {
 		fprintf(export_file, ",\"icmp_type\":%u,\"icmp_code\":%u",
 			pkt->l4.icmp.type, pkt->l4.icmp.code);
@@ -2882,10 +2953,22 @@ static void export_packet_event(const detail_event_t *detail, trace_t *trace,
 			"\"dns_transaction_id_hex\":\"0x%04x\"",
 			pkt->l4.udp.dns_transaction_id,
 			(unsigned int)pkt->l4.udp.dns_transaction_id);
-	if (dropped && !strcmp(trace->name, "kfree_skb"))
+	if (dropped && !strcmp(trace->name, "kfree_skb") &&
+	    size >= sizeof(detail_drop_event_t))
 		fprintf(export_file,
 			",\"drop_reason\":%u,\"drop_location_id\":\"%016llx\"",
 			drop->reason, object_id("drop_location", drop->location));
+	if ((!strcmp(trace->name, "qdisc_enqueue") ||
+	     !strcmp(trace->name, "qdisc_dequeue")) &&
+	    size >= sizeof(detail_qdisc_event_t)) {
+		const detail_qdisc_event_t *qdisc = (const void *)detail;
+		fprintf(export_file,
+			",\"qdisc_qlen\":%u,\"netdev_queue_state\":%u,\"qdisc_flags\":%u",
+			qdisc->qlen, qdisc->state, qdisc->flags);
+		if (qdisc->last_update_valid)
+			fprintf(export_file, ",\"qdisc_last_update_jiffies\":%llu",
+				qdisc->last_update);
+	}
 	fprintf(export_file, "}\n");
 }
 
@@ -3139,6 +3222,82 @@ static void export_rx_handoff(const rx_handoff_event_t *ready, int cpu)
 }
 
 
+static const char *network_wakeup_status(u8 status)
+{
+	switch (status) {
+	case 0: return "disabled";
+	case 2: return "observed";
+	case 3: return "run_without_observed_wake";
+	default: return "unknown";
+	}
+}
+
+static const char *network_waking_context(u8 context)
+{
+	switch (context) {
+	case 1: return "task";
+	case 2: return "hardirq";
+	case 3: return "softirq";
+	case 4: return "nmi";
+	default: return "unknown";
+	}
+}
+
+static void export_syscall_wakeup(const network_syscall_event_t *call)
+{
+	if (!call->wakeup_status)
+		return;
+	fprintf(export_file, ",\"wakeup_status\":\"%s\"",
+		network_wakeup_status(call->wakeup_status));
+	if (call->wakeup_status != 2 && call->wakeup_status != 3)
+		return;
+	fprintf(export_file, ",\"run_start_ts_ns\":%llu,\"run_cpu\":%u",
+		call->run_start_ts, call->run_cpu);
+	if (call->wakeup_status != 2)
+		return;
+	fprintf(export_file,
+		",\"waking_ts_ns\":%llu,\"wakeup_ts_ns\":%llu,"
+		"\"waking_cpu\":%u,\"waking_context\":\"%s\",\"waking_flags\":%u",
+		call->waking_ts, call->wakeup_ts, call->waking_cpu,
+		network_waking_context(call->waking_context), call->waking_flags);
+	/* IRQ execution has a current task, but that task is not the waker. */
+	if (call->waking_context == 1) {
+		char task[64];
+		json_escape(call->waker_task, task, sizeof(task));
+		fprintf(export_file,
+			",\"waker_tid\":%u,\"waker_tgid\":%u,\"waker_task\":\"%s\","
+			"\"waker_start_time_ns\":%llu",
+			call->waker_tid, call->waker_tgid, task, call->waker_start_time);
+	}
+}
+
+static void native_syscall_wakeup(struct proto_buffer *event,
+				  const network_syscall_event_t *call)
+{
+	if (!call->wakeup_status)
+		return;
+	native_annotation_string(event, "wakeup_status",
+				 network_wakeup_status(call->wakeup_status));
+	if (call->wakeup_status != 2 && call->wakeup_status != 3)
+		return;
+	native_annotation_uint(event, "run_start_ts_ns", call->run_start_ts);
+	native_annotation_uint(event, "run_cpu", call->run_cpu);
+	if (call->wakeup_status != 2)
+		return;
+	native_annotation_uint(event, "waking_ts_ns", call->waking_ts);
+	native_annotation_uint(event, "wakeup_ts_ns", call->wakeup_ts);
+	native_annotation_uint(event, "waking_cpu", call->waking_cpu);
+	native_annotation_string(event, "waking_context",
+				 network_waking_context(call->waking_context));
+	native_annotation_uint(event, "waking_flags", call->waking_flags);
+	if (call->waking_context == 1) {
+		native_annotation_uint(event, "waker_tid", call->waker_tid);
+		native_annotation_uint(event, "waker_tgid", call->waker_tgid);
+		native_annotation_string(event, "waker_task", call->waker_task);
+		native_annotation_uint(event, "waker_start_time_ns", call->waker_start_time);
+	}
+}
+
 static void export_network_syscall(const network_syscall_event_t *call,
 				   u64 flow_id, bool incomplete)
 {
@@ -3182,7 +3341,7 @@ static void export_network_syscall(const network_syscall_event_t *call,
 			"\"abi\":%u,\"result_unit\":\"%s\",\"requested_messages\":%u,"
 			"\"result\":%lld,\"bytes\":%llu,\"error\":%llu,"
 			"\"incomplete\":%s,\"socket_id\":\"%016llx\","
-			"\"flow_id\":\"%016llx\",\"flow_tag\":\"%s\"}\n",
+			"\"flow_id\":\"%016llx\",\"flow_tag\":\"%s\"",
 			PERFETTO_SCHEMA, call->ts, call->start_ts,
 			call->ts - call->start_ts, names[call->kind], call_id,
 			call->tid, call->tgid, call->uid, call->fd, call->flags,
@@ -3190,6 +3349,8 @@ static void export_network_syscall(const network_syscall_event_t *call,
 			call->abi, batch ? "messages" : "bytes", call->requested_messages,
 			call->result, bytes, error, incomplete ? "true" : "false",
 			socket_id, flow_id, label);
+		export_syscall_wakeup(call);
+		fprintf(export_file, "}\n");
 	}
 	if (!native_file)
 		return;
@@ -3245,6 +3406,7 @@ static void export_network_syscall(const network_syscall_event_t *call,
 		native_annotation_uint(&event, "bytes", bytes);
 		native_annotation_uint(&event, "error", error);
 	}
+	native_syscall_wakeup(&event, call);
 	native_event_write(display_start, &event);
 	proto_free(&event);
 	native_event_start(&event, 2, uuid, NULL, "anettrace.syscall");
@@ -3271,6 +3433,7 @@ static void export_network_syscall(const network_syscall_event_t *call,
 		native_annotation_uint(&event, "bytes", bytes);
 		native_annotation_uint(&event, "error", error);
 	}
+	native_syscall_wakeup(&event, call);
 	native_event_write(call->ts, &event);
 	proto_free(&event);
 }
@@ -3322,6 +3485,35 @@ static void handle_network_syscall(const network_syscall_event_t *call)
 
 
 void perfetto_export_event(const void *data, int cpu, u32 size)
+{
+	const detail_event_t *detail = data;
+	trace_t *trace;
+
+	if ((!export_file && !native_file) || !data)
+		return;
+	if (size >= sizeof(*detail) && detail->meta == FUNC_TYPE_FUNC &&
+	    (detail->owner_pending || detail->owner_evidence == 1)) {
+		trace = get_trace(detail->func);
+		if (!trace || trace_using_sk(trace))
+			return;
+		/* No unconfirmed RX record is allowed into either export path.
+		 * Recheck direct target identity here before releasing quarantined data. */
+		if (!trace_ctx.bpf_args.rx_context ||
+		    !trace_ctx.bpf_args.uid_enabled || trace_ctx.bpf_args.pid)
+			return;
+		if (!detail->owner_pending &&
+		    (!detail->owner_valid ||
+		     trace_ctx.bpf_args.uid != detail->owner_uid))
+			return;
+		pthread_mutex_lock(&rx_context_lock);
+		rx_context_feed(&rx_context, data, cpu, size, perfetto_export_event_now);
+		pthread_mutex_unlock(&rx_context_lock);
+		return;
+	}
+	perfetto_export_event_now(data, cpu, size);
+}
+
+static void perfetto_export_event_now(const void *data, int cpu, u32 size)
 {
 	const detail_event_t *detail = data;
 	const event_t *event = data;
@@ -3442,9 +3634,9 @@ void perfetto_export_event(const void *data, int cpu, u32 size)
 		if (!terminal && strcmp(trace->name, "tcp_close"))
 			flow_from_socket(detail, event->ske.ts);
 		if (export_file)
-			export_socket_event(detail, trace, cpu);
+			export_socket_event(detail, trace, cpu, size);
 		if (native_file)
-			native_export_socket_event(detail, trace, cpu);
+			native_export_socket_event(detail, trace, cpu, size);
 		if (terminal) {
 			u64 socket_id = detail_socket_instance_id(detail);
 			for (size_t i = 0; i < flow_count; i++) {
@@ -3457,9 +3649,9 @@ void perfetto_export_event(const void *data, int cpu, u32 size)
 		struct flow_state *flow = flow_from_packet(detail, trace);
 		export_packet_io_link(detail, flow);
 		if (export_file)
-			export_packet_event(detail, trace, cpu);
+			export_packet_event(detail, trace, cpu, size);
 		if (native_file)
-			native_export_packet_event(detail, trace, cpu);
+			native_export_packet_event(detail, trace, cpu, size);
 	}
 	exported_events++;
 	pthread_mutex_unlock(&export_lock);
@@ -3498,6 +3690,10 @@ void perfetto_export_tick(void)
 		return;
 	if (!clock_gettime(CLOCK_MONOTONIC, &monotonic))
 		now = timespec_to_ns(&monotonic);
+	pthread_mutex_lock(&rx_context_lock);
+	if (now)
+		rx_context_expire(&rx_context, now);
+	pthread_mutex_unlock(&rx_context_lock);
 	pthread_mutex_lock(&export_lock);
 	if (export_file || native_file)
 		write_clock_snapshot_if_due();
@@ -3523,8 +3719,33 @@ void perfetto_export_close(u64 event_count)
 		return;
 	if (!clock_gettime(CLOCK_MONOTONIC, &monotonic))
 		end_ts = timespec_to_ns(&monotonic);
+	pthread_mutex_lock(&rx_context_lock);
+	rx_context_finish(&rx_context);
+	pthread_mutex_unlock(&rx_context_lock);
 	pthread_mutex_lock(&export_lock);
 	write_clock_snapshot();
+	if (trace_ctx.bpf_args.rx_context) {
+		if (export_file)
+			fprintf(export_file,
+				"{\"schema\":\"%s\",\"type\":\"rx_context\",\"ts_ns\":%llu,"
+				"\"replayed_events\":%llu,\"expired_events\":%llu,"
+				"\"capacity_dropped_events\":%llu,\"unresolved_events\":%llu}\n",
+				PERFETTO_SCHEMA, end_ts, rx_context.replayed, rx_context.expired,
+				rx_context.capacity_dropped, rx_context.unresolved);
+		if (native_file) {
+			struct native_track *global = native_global_track();
+			struct proto_buffer metadata = {};
+			if (global) {
+				native_event_start(&metadata, 3, global->uuid, "rx_context", "anettrace.metadata");
+				native_annotation_uint(&metadata, "replayed_events", rx_context.replayed);
+				native_annotation_uint(&metadata, "expired_events", rx_context.expired);
+				native_annotation_uint(&metadata, "capacity_dropped_events", rx_context.capacity_dropped);
+				native_annotation_uint(&metadata, "unresolved_events", rx_context.unresolved);
+				native_event_write(end_ts, &metadata);
+				proto_free(&metadata);
+			}
+		}
+	}
 	native_packet_overview_flush(end_ts, true);
 	{
 		size_t i;

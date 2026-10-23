@@ -533,6 +533,18 @@ children:
       tp: raw_syscalls/sys_exit
       custom: true
       default: false
+    - name: network_sched_waking
+      tp: sched/sched_waking
+      custom: true
+      default: false
+    - name: network_sched_wakeup
+      tp: sched/sched_wakeup
+      custom: true
+      default: false
+    - name: network_sched_switch
+      tp: sched/sched_switch
+      custom: true
+      default: false
     - name: sock_def_readable/0
       custom: true
       monitor: 1

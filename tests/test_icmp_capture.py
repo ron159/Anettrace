@@ -23,7 +23,10 @@ class IcmpCaptureTests(unittest.TestCase):
 typedef struct { bool enabled; } trace_t;
 static bool trace_is_enable(trace_t *trace) { return trace->enabled; }
 static void trace_set_enable(trace_t *trace) { trace->enabled=true; }
-static struct { struct { bool perfetto; } bpf_args;
+static void trace_set_invalid_reason(trace_t *trace, const char *reason) {
+    (void)reason; trace->enabled=false;
+}
+static struct { struct { bool perfetto, wakeup_chain; } bpf_args;
     struct { bool connect_diagnostics; } args; } trace_ctx = {.bpf_args.perfetto=true};
 ''' + "\n".join("static trace_t trace_" + name + ";" for name in sorted(names))
         result = self.run_source(code + "\n" + selection, r'''
@@ -126,10 +129,10 @@ printf("%s", trace_event_name(&intermediate, &event));
     def test_icmp_owner_requires_socket_evidence_even_when_current_task_matches(self):
         source = (ROOT / "src/progs/core.c").read_text()
         code = r'''
-typedef struct { u32 pid, uid; bool uid_enabled; } bpf_args_t;
+typedef struct { u32 pid, uid; bool uid_enabled, rx_context; } bpf_args_t;
 typedef struct { union { packet_t pkt; sock_t ske; }; } event_t;
 typedef struct { u32 netns, owner_tid, owner_tgid, owner_uid, owner_socket_generation;
-    u64 owner_socket_key; u8 direction, owner_valid; } detail_event_t;
+    u64 owner_socket_key; u8 direction, owner_valid, owner_pending, owner_evidence; } detail_event_t;
 typedef struct { u64 socket_key; u32 tid, tgid, uid, socket_generation; u8 dns; } perfetto_owner_t;
 typedef struct { perfetto_owner_t owner; u8 direction; } perfetto_flow_owner_t;
 typedef struct { perfetto_owner_t owner; int flow_key, flow_value; } perfetto_scratch_t;
@@ -203,9 +206,20 @@ printf("%d %u %u %d ", result, detail.owner_valid, detail.direction, trusted_cur
 /* Existing transport fallback behavior remains available. */
 event.pkt.proto_l4=IPPROTO_TCP;
 result=perfetto_handle_owner(&info, NULL, &detail, true);
-printf("%d %u %u", result, detail.owner_valid, detail.owner_tid);
+printf("%d %u %u ", result, detail.owner_valid, detail.owner_tid);
+/* Opt-in RX must not accept current-task identity as socket evidence. */
+args=(bpf_args_t){.uid_enabled=true,.uid=1000,.rx_context=true};
+skb.sk=NULL; detail=(detail_event_t){0};
+result=perfetto_handle_owner(&info, NULL, &detail, true);
+printf("%d %u %u %u ", result, detail.owner_valid, detail.owner_pending, detail.direction);
+/* A known foreign socket is rejected even when current task matches. */
+skb.sk=&sk; sk.uid=2000; detail=(detail_event_t){0};
+printf("%d ", perfetto_handle_owner(&info, NULL, &detail, true));
+sk.uid=1000; detail=(detail_event_t){0};
+result=perfetto_handle_owner(&info, NULL, &detail, true);
+printf("%d %u %u", result, detail.owner_pending, detail.owner_evidence);
 ''')
-        self.assertEqual(result, "0 0 0 0 -1 0 1 0 0 -1 0 -1 0 0 2 0 0 1 7".split())
+        self.assertEqual(result, "0 0 0 0 -1 0 1 0 0 -1 0 -1 0 0 2 0 0 1 7 0 0 1 2 -1 0 0 1".split())
 
     def test_icmp_packet_identity_does_not_inherit_active_transport_io(self):
         source = (ROOT / "src/progs/core.c").read_text()

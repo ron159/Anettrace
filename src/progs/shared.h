@@ -37,6 +37,8 @@ typedef struct {
 	bool latency_free;
 	bool perfetto;
 	bool connect_diagnostics;
+	bool wakeup_chain;
+	bool rx_context;
 	u32  connect_syscall_nr;
 	u32  getsockopt_syscall_nr;
 	u32  network_syscall_nr[NETWORK_SYS_COUNT];
@@ -120,7 +122,8 @@ typedef struct {
 	u32		owner_socket_generation;
 	u8		direction;
 	u8		owner_valid;
-	u16		owner_pad;
+	u8		owner_pending; /* RX metadata held until exact socket evidence. */
+	u8		owner_evidence; /* 1 direct socket, 2 confirmed same skb instance. */
 	/* Actual protocol call in whose context this packet was submitted/copied. */
 	u64 io_start_ts;
 	u64 syscall_start_ts;
@@ -200,6 +203,20 @@ typedef struct {
 	u8 abi; /* 0 native, 1 compat32, 2 x32 */
 	u32 requested_messages;
 	char task[16];
+	/* Scheduler evidence for the uninterrupted running segment at entry.
+	 * This is a direct wake/run observation, not application task causality. */
+	u64 waking_ts;
+	u64 wakeup_ts;
+	u64 run_start_ts;
+	u64 waker_start_time;
+	u32 waker_tid;
+	u32 waker_tgid;
+	u32 waking_cpu;
+	u32 run_cpu;
+	u8 wakeup_status; /* 0 disabled, 1 unknown, 2 observed, 3 run without wake */
+	u8 waking_context; /* 0 unknown, 1 task, 2 hardirq, 3 softirq, 4 nmi */
+	u8 waking_flags;
+	char waker_task[16];
 } network_syscall_event_t;
 
 enum rx_handoff_kind {
@@ -290,6 +307,7 @@ DEFINE_EVENT(qdisc_event_t,
 	event_field(u32, state)
 	event_field(u32, qlen)
 	event_field(u32, flags)
+	event_field(u8, last_update_valid)
 )
 
 DEFINE_EVENT(rtt_event_t,

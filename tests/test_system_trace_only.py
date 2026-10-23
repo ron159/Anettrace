@@ -11,11 +11,19 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 FAKE_PERFETTO = r'''
-import os, signal, sys, time
-assert sys.argv[1:] == ["--txt", "-c", "-", "-o", "-"]
-config = sys.stdin.read()
+import os, re, signal, sys, time
+args = sys.argv[1:]
+assert len(args) == 7 and args[0] == "--notify-fd"
+notify_fd = int(args[1])
+assert args[2:4] == ["--txt", "-c"] and args[5] == "-o"
+config = sys.stdin.read() if args[4] == "-" else open(args[4]).read()
+trace = sys.stdout.buffer if args[6] == "-" else open(args[6], "wb")
 with open(os.environ["CONFIG_LOG"], "w") as log:
     log.write(config)
+with open(os.environ["PID_LOG"], "w") as log:
+    log.write(str(os.getpid()))
+durations = re.findall(r"^duration_ms:\s*(\d+)", config, re.M)
+expires = time.monotonic() + int(durations[-1]) / 1000 if durations else float("inf")
 def varint(n):
     out = bytearray()
     while n > 127:
@@ -26,21 +34,33 @@ def varint(n):
 def emit():
     # A timestamped TracePacket, using the monotonic clock.
     packet = b"\x40" + varint(time.monotonic_ns()) + b"\x58\x03"
-    sys.stdout.buffer.write(b"\x0a" + varint(len(packet)) + packet)
-    sys.stdout.buffer.flush()
+    trace.write(b"\x0a" + varint(len(packet)) + packet)
+    trace.flush()
 def stop(*args):
     sys.exit(0)
 signal.signal(signal.SIGTERM, stop)
+mode = os.environ.get("FAKE_MODE")
+if mode == "early-fail":
+    sys.exit(7)
+if mode == "delayed-ready":
+    ready_at = time.monotonic() + 1.25
+    while time.monotonic() < ready_at:
+        if time.monotonic() >= expires:
+            sys.exit(0)
+        time.sleep(0.01)
+if mode != "no-ack":
+    os.write(notify_fd, b"\x01" if mode == "bad-ack" else b"0" if mode == "ascii-ack" else b"\x00")
+    os.close(notify_fd)
 if os.environ.get("FAKE_MODE") == "fail":
     emit()
     time.sleep(0.4)
-    sys.exit(7)
-if os.environ.get("FAKE_MODE") == "early-fail":
     sys.exit(7)
 if os.environ.get("FAKE_MODE") == "empty":
     time.sleep(0.4)
     sys.exit(0)
 while True:
+    if time.monotonic() >= expires:
+        sys.exit(0)
     emit()
     time.sleep(0.05)
 '''
@@ -48,16 +68,28 @@ while True:
 DRIVER = r'''
 #include <stdlib.h>
 #include <signal.h>
+#include <stdio.h>
+#include <unistd.h>
 #include "trace_capture.h"
 static volatile sig_atomic_t stopped;
 static void stop(int sig) { (void)sig; stopped = 1; }
 int main(int argc, char **argv) {
+    int combined = getenv("COMBINED") != NULL;
     if (argc != 5) return 2;
     signal(SIGINT, stop);
     signal(SIGTERM, stop);
     if (trace_capture_start(argv[1], atoi(argv[2]), "sched",
                             argv[4][0] ? argv[4] : NULL,
-                            atoi(argv[3]), true)) return 1;
+                            atoi(argv[3]), !combined)) return 1;
+    if (combined) {
+        FILE *network = fopen(trace_capture_network_path(), "wb");
+        if (!network) return 3;
+        fputs("network", network);
+        fclose(network);
+        sleep(atoi(argv[2]));
+        trace_capture_stop();
+        return trace_capture_finish() ? 1 : 0;
+    }
     if (trace_capture_network_path() != NULL) return 3;
     return trace_capture_wait_system(&stopped) ? 1 : 0;
 }
@@ -83,15 +115,18 @@ typedef unsigned long long u64;
 ''')
         (base / "driver.c").write_text(DRIVER)
         cls.driver = base / "capture"
+        cls.combined_driver = base / "capture-combined"
         cmd = ["cc", "-std=gnu11", "-Wall", "-Wextra", "-Werror",
-               "-DANETTRACE_ANDROID_TARGET", f"-I{base}", f"-I{ROOT / 'src'}"]
+               f"-I{base}", f"-I{ROOT / 'src'}"]
         if sys.platform == "darwin":
             cmd += ["-DCLOCK_BOOTTIME=CLOCK_MONOTONIC"]
-        subprocess.run(cmd + [str(base / "driver.c"),
-                       str(ROOT / "src/trace_capture.c"),
-                       str(ROOT / "src/perfetto_config.c"),
-                       str(ROOT / "src/perfetto_trim.c"),
-                       "-o", str(cls.driver)], check=True, capture_output=True)
+        for driver in (cls.driver, cls.combined_driver):
+            target_flags = ["-DANETTRACE_ANDROID_TARGET"] if driver == cls.driver else []
+            subprocess.run(cmd + target_flags + [str(base / "driver.c"),
+                           str(ROOT / "src/trace_capture.c"),
+                           str(ROOT / "src/perfetto_config.c"),
+                           str(ROOT / "src/perfetto_trim.c"),
+                           "-o", str(driver)], check=True, capture_output=True)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="anettrace-system-")
@@ -102,8 +137,9 @@ typedef unsigned long long u64;
         fake.chmod(0o755)
         self.output = self.base / "system.pftrace"
         self.log = self.base / "config.log"
+        self.pid_log = self.base / "pid.log"
         self.env = dict(os.environ, PATH=f"{self.base}:{os.environ['PATH']}",
-                        CONFIG_LOG=str(self.log))
+                        CONFIG_LOG=str(self.log), PID_LOG=str(self.pid_log))
 
     def command(self, ring=False, custom="", duration=1):
         return [str(self.driver), str(self.output), str(duration),
@@ -115,13 +151,74 @@ typedef unsigned long long u64;
 
     def assert_clean(self):
         self.assertEqual(list(self.base.glob("*.tmp")), [])
+        if self.pid_log.exists():
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(self.pid_log.read_text()), 0)
+
+    def test_waits_for_delayed_binary_ready_ack(self):
+        self.env["FAKE_MODE"] = "delayed-ready"
+        start = time.monotonic()
+        result = self.run_capture()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(time.monotonic() - start, 2.25)
+        self.assert_clean()
+
+    def test_bad_ack_is_rejected_and_child_is_reaped(self):
+        for mode in ("bad-ack", "ascii-ack"):
+            with self.subTest(mode=mode):
+                self.env["FAKE_MODE"] = mode
+                result = self.run_capture()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.output.exists())
+                self.assert_clean()
+
+    def test_interrupt_during_readiness_aborts_and_reaps_child(self):
+        self.env["FAKE_MODE"] = "no-ack"
+        proc = subprocess.Popen(self.command(), env=self.env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            while not self.pid_log.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(self.pid_log.exists())
+            proc.send_signal(signal.SIGINT)
+            _, err = proc.communicate(timeout=5)
+            self.assertNotEqual(proc.returncode, 0, err)
+            self.assertFalse(self.output.exists())
+            self.assert_clean()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+
+    def test_readiness_timeout_aborts_and_reaps_child(self):
+        self.env["FAKE_MODE"] = "no-ack"
+        start = time.monotonic()
+        result = subprocess.run(self.command(), env=self.env,
+                                capture_output=True, timeout=40)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(time.monotonic() - start, 30)
+        self.assertLess(time.monotonic() - start, 35)
+        self.assertFalse(self.output.exists())
+        self.assert_clean()
+
+    def test_combined_capture_uses_the_same_ready_ack(self):
+        if os.environ.get("ANETTRACE_TEST_BIN") and isinstance(self, SystemOnlyCliTest):
+            self.skipTest("combined driver test uses no BPF")
+        self.env["COMBINED"] = "1"
+        self.env["FAKE_MODE"] = "delayed-ready"
+        result = subprocess.run([str(self.combined_driver), *self.command()[1:]],
+                                env=self.env, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.output.read_bytes().endswith(b"network"))
+        self.assert_clean()
 
     def test_duration_stdin_stdout_and_no_network(self):
         start = time.monotonic()
         result = self.run_capture()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertGreaterEqual(time.monotonic() - start, 1)
-        self.assertIn("duration_ms: 2000", self.log.read_text())
+        self.assertIn("duration_ms: 32000", self.log.read_text())
         self.assertTrue(self.output.read_bytes().startswith(b"\x0a"))
         self.assertNotIn(b"anettrace", self.output.read_bytes())
         self.assert_clean()
@@ -132,7 +229,7 @@ typedef unsigned long long u64;
         result = self.run_capture(custom=custom)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("999999", self.log.read_text())
-        self.assertIn("duration_ms: 2000", self.log.read_text())
+        self.assertIn("duration_ms: 32000", self.log.read_text())
         self.assert_clean()
 
     def test_ring_waits_for_signal_and_saves(self):

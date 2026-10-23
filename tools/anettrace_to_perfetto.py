@@ -109,6 +109,12 @@ def read_records(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+SOCKET_SNAPSHOT_FIELDS = (
+    "proto_l4", "state", "state_name", "wqlen", "rqlen",
+    "packets_out", "retrans_out", "snd_una",
+)
+
+
 class PerfettoExporter:
     def __init__(self, records: Iterable[dict[str, Any]]) -> None:
         self.records = list(records)
@@ -503,6 +509,7 @@ class PerfettoExporter:
             annotations=(
                 record,
                 (
+                    *SOCKET_SNAPSHOT_FIELDS,
                     "socket_id",
                     "flow_id",
                     "flow_tag",
@@ -560,6 +567,7 @@ class PerfettoExporter:
             annotations=(
                 record,
                 (
+                    *SOCKET_SNAPSHOT_FIELDS,
                     "socket_id",
                     "flow_id",
                     "flow_tag",
@@ -575,6 +583,9 @@ class PerfettoExporter:
                     "owner_tgid",
                     "owner_uid",
                     "owner_socket_id",
+                    "reset_reason",
+                    "first_rtt_us",
+                    "last_rtt_us",
                 ),
             ),
         )
@@ -628,6 +639,7 @@ class PerfettoExporter:
             "uid",
             "direction",
             "owner_valid",
+            "owner_evidence",
             "owner_tid",
             "owner_tgid",
             "owner_uid",
@@ -648,6 +660,10 @@ class PerfettoExporter:
             "tcp_seq",
             "tcp_ack",
             "tcp_flags",
+            "qdisc_qlen",
+            "netdev_queue_state",
+            "qdisc_flags",
+            "qdisc_last_update_jiffies",
             "drop_reason",
             "drop_location_id",
             "navigation_id",
@@ -1106,7 +1122,7 @@ class PerfettoExporter:
                 self.export_network_syscall(record)
             elif record_type.startswith("connect_"):
                 self.export_connect_event(record)
-            elif record_type in ("lost_events", "trace_end"):
+            elif record_type in ("lost_events", "trace_end", "rx_context"):
                 if record_type == "trace_end" and record.get("ts_ns"):
                     for socket_id in tuple(self.socket_lifetimes):
                         self.event(

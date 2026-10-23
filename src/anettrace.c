@@ -47,6 +47,7 @@ static void do_parse_args(int argc, char *argv[])
 	bool show_log = false, debug = false, version = false;
 	bool libbpf_debug = false;
 	bool timestamp = false, date = false;
+	bool pid_set = false, tid_set = false;
 	trace_args_t *trace_args = &trace_ctx.args;
 	bpf_args_t *bpf_args = &trace_ctx.bpf_args;
 	pkt_args_t *pkt_args = &bpf_args->pkt;
@@ -127,7 +128,14 @@ static void do_parse_args(int argc, char *argv[])
 		{
 			.lname = "pid", .type = OPTION_U32,
 			.dest = &bpf_args->pid,
+			.set = &pid_set,
 			.desc = "filter by current thread id (legacy --pid semantics)",
+		},
+		{
+			.lname = "tid", .type = OPTION_U32,
+			.dest = &bpf_args->pid,
+			.set = &tid_set,
+			.desc = "filter by thread id (same as legacy --pid; not a process id)",
 		},
 		{
 			.lname = "uid", .type = OPTION_U32,
@@ -292,6 +300,18 @@ static void do_parse_args(int argc, char *argv[])
 			.dest = &trace_args->connect_diagnostics,
 			.type = OPTION_BOOL,
 			.desc = "collect bounded TCP connect diagnostic evidence",
+		},
+		{
+			.lname = "wakeup-chain", .dest = &bpf_args->wakeup_chain,
+			.type = OPTION_BOOL,
+			.desc = "record observed wake-to-run context for network calls;\n"
+				"                     requires Perfetto output and sched tracepoints",
+		},
+		{
+			.lname = "rx-context", .dest = &bpf_args->rx_context,
+			.type = OPTION_BOOL,
+			.desc = "retain early RX events pending same-skb socket evidence;\n"
+				"                     requires Perfetto output and --uid without --tid/--pid",
 		},
 		{
 			.lname = "trace-profile", .dest = &trace_args->trace_profile,
@@ -463,6 +483,10 @@ static void do_parse_args(int argc, char *argv[])
 
 	if (parse_args(argc, argv, &config, opts, ARRAY_SIZE(opts)))
 		goto err;
+	if (pid_set && tid_set) {
+		pr_err("--pid and --tid are aliases; specify only one\n");
+		goto err;
+	}
 	if (date && timestamp) {
 		pr_err("--date and --timestamp cannot be used together\n");
 		goto err;
@@ -560,6 +584,20 @@ static void do_parse_args(int argc, char *argv[])
 	if (trace_args->connect_diagnostics && !trace_args->capture_trace &&
 	    !trace_args->perfetto_events) {
 		pr_err("--connect-diagnostics requires --capture-trace or --perfetto-events\n");
+		goto err;
+	}
+	if (bpf_args->wakeup_chain && !trace_args->capture_trace &&
+	    !trace_args->perfetto_events) {
+		pr_err("--wakeup-chain requires --capture-trace or --perfetto-events\n");
+		goto err;
+	}
+	if (bpf_args->rx_context && !trace_args->capture_trace &&
+	    !trace_args->perfetto_events) {
+		pr_err("--rx-context requires --capture-trace or --perfetto-events\n");
+		goto err;
+	}
+	if (bpf_args->rx_context && (!bpf_args->uid_enabled || pid_set || tid_set)) {
+		pr_err("--rx-context requires --uid without --tid/--pid\n");
 		goto err;
 	}
 	if (trace_args->capture_trace && trace_args->trace_profile &&
@@ -718,14 +756,17 @@ static void finish_trace(void)
 int main(int argc, char *argv[])
 {
 	int capture_err = 0;
+	int poll_err;
 	bool traffic_started = false;
 
 	output_time_init();
 	init_trace_group();
 	do_parse_args(argc, argv);
+	/* Startup may wait for Perfetto's data-source acknowledgement. Handle
+	 * cancellation before starting that child so the abort path reaps it. */
+	signal(SIGTERM, request_exit);
+	signal(SIGINT, request_exit);
 	if (trace_ctx.args.system_trace_only) {
-		signal(SIGTERM, request_exit);
-		signal(SIGINT, request_exit);
 		if (trace_capture_start(trace_ctx.args.output,
 					trace_ctx.args.duration,
 					trace_ctx.args.trace_profile,
@@ -765,12 +806,9 @@ int main(int argc, char *argv[])
 			goto err;
 		traffic_started = true;
 	}
-
-	signal(SIGTERM, request_exit);
-	signal(SIGINT, request_exit);
-
-	pr_info("begin trace...\n");
-	trace_poll();
+	if (trace_ctx.stop)
+		goto err;
+	poll_err = trace_poll();
 	if (traffic_started) {
 		traffic_stop(true);
 		traffic_started = false;
@@ -778,6 +816,11 @@ int main(int argc, char *argv[])
 	if (trace_ctx.args.capture_trace)
 		trace_capture_stop();
 	finish_trace();
+	if (poll_err) {
+		pr_err("trace polling failed: %s\n", strerror(-poll_err));
+		trace_capture_abort();
+		return -1;
+	}
 	if (trace_ctx.args.capture_trace) {
 		if (perfetto_export_failed()) {
 			pr_err("failed to encode Anettrace Perfetto packets\n");

@@ -735,7 +735,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     target.add_argument(
         "--rx-context", action="store_true",
-        help="retain early RX events until same-skb socket evidence confirms the target",
+        help="retain early RX events for --package/--uid; cannot be combined with --tid/--pid",
     )
     target.add_argument(
         "--connect-diagnostics",
@@ -799,6 +799,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("UID cannot be negative")
     if args.pid is not None and args.pid <= 0:
         parser.error("TID must be greater than zero")
+    if args.rx_context and (args.pid is not None or (args.package is None and args.uid is None)):
+        parser.error("--rx-context requires --package or --uid without --tid/--pid")
     if args.uid == 0 and args.pid is None:
         parser.error("--uid 0 alone is too broad; add --tid")
     if args.duration is not None and args.duration <= 0:

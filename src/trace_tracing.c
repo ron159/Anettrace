@@ -177,6 +177,8 @@ static int tracing_trace_load()
 
 	/* set the max entries of perf event map to current cpu count */
 	bpf_map__set_max_entries(skel->maps.m_event, get_nprocs_conf());
+	if (!trace_ctx.bpf_args.wakeup_chain)
+		bpf_map__set_max_entries(skel->maps.m_network_wakeups, 1);
 	bpf_func_init(skel, BPF_PROG_TYPE_TRACING);
 
 	trace_ctx.obj = skel->obj;
