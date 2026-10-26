@@ -24,6 +24,35 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PerfettoConverterTest(unittest.TestCase):
+    def test_trace_tags_keeps_packet_details_and_socket_creation_without_arrows(self) -> None:
+        records = self.chain_records()
+        records[0]["trace_tags"] = True
+        packet = next(r for r in records if r["type"] == "packet_event")
+        packet.update(ip_id=4660, ip_id_hex="0x1234", skb_id="7001", io_id="5001",
+                      call_id="6001", saddr="10.0.0.1", daddr="10.0.0.2",
+                      sport=443, dport=40000, ifindex=3, netns=42, mark=7)
+        # Detailed intermediate stages remain in the source JSONL, but do not
+        # become visible tags. Direct socket evidence can arrive later.
+        records.insert(-1, dict(packet, ts_ns=packet["ts_ns"] + 1,
+                                stage="ip_rcv", flow_anchor=False))
+        trace = Trace()
+        trace.ParseFromString(MODULE.PerfettoExporter(records).serialize())
+        events = [p.track_event for p in trace.packet if p.HasField("track_event")]
+        self.assertTrue(all(not e.flow_ids and not e.terminating_flow_ids for e in events))
+        categories = {c for e in events for c in e.categories}
+        self.assertLessEqual(categories, {"anettrace.socket", "anettrace.packet",
+                                         "anettrace.syscall", "anettrace.metadata"})
+        self.assertIn("socket allocation", {e.name for e in events})
+        self.assertNotIn("socket lifetime", {e.name for e in events})
+        packets = [e for e in events if "anettrace.packet" in e.categories]
+        self.assertEqual(len(packets), 3)
+        args = {a.name: a.string_value for a in packets[0].debug_annotations}
+        for key in ("packet_id", "skb_id", "io_id", "call_id", "ip_id", "ip_id_hex",
+                    "saddr", "daddr", "sport", "dport", "ifindex", "netns", "mark"):
+            self.assertEqual(args[key], str(packet[key]), key)
+        self.assertEqual(args["socket_id"], "0000000000001001")
+        self.assertIn("anettrace.syscall", categories)
+
     def socket_overview_records(self) -> list[dict]:
         clock = MODULE.read_records(ROOT / "tests/fixtures/perfetto-events.jsonl")[0]
         start = int(clock["monotonic_ns"]) + 100000
@@ -454,6 +483,21 @@ class PerfettoConverterTest(unittest.TestCase):
                 self.assertEqual(list(packets[0].track_event.flow_ids), [0x3001])
                 self.assertEqual(list(packets[1].track_event.terminating_flow_ids), [0x3001])
                 self.assertEqual(list(packets[2].track_event.flow_ids), [0x3002])
+                for human_names in (False, True):
+                    tagged = [dict(request), dict(transmitted), dict(reply)]
+                    if human_names:
+                        title = "ICMP" if protocol == 1 else "ICMPv6"
+                        tagged[0]["stage"] = title + " packet send"
+                        tagged[2]["stage"] = title + " packet receive"
+                    minimal = Trace.FromString(MODULE.PerfettoExporter(
+                        [clock] + tagged, trace_tags=True).serialize())
+                    visible = [p.track_event for p in minimal.packet if p.HasField("track_event")]
+                    self.assertEqual(len(visible), 2)
+                    for event in visible:
+                        attrs = {a.name: a.string_value for a in event.debug_annotations}
+                        self.assertEqual(attrs["icmp_id"], "4660")
+                        self.assertEqual(attrs["icmp_seq"], "7")
+                        self.assertFalse(event.flow_ids or event.terminating_flow_ids)
 
     def test_icmp_errors_and_neighbor_discovery_do_not_display_echo_fields(self) -> None:
         clock = MODULE.read_records(ROOT / "tests/fixtures/perfetto-events.jsonl")[0]

@@ -164,6 +164,7 @@ static struct native_track *native_socket_track(u64 id, u32 pid, const char *nam
     return NULL;
 }
 static FILE *export_file, *native_file;
+static struct { struct { bool trace_tags; } args; } trace_ctx;
 static unsigned begins;
 static u64 begin_ts;
 static const char *trace_event_name(trace_t *t, const void *e) { return "UDP write"; }

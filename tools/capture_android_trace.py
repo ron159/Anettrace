@@ -731,6 +731,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     thread_target.add_argument("--tid", dest="pid", type=int, help="exact Android thread ID to trace")
     thread_target.add_argument("--pid", type=int, help="legacy alias for --tid; not a process-wide filter")
     target.add_argument(
+        "--trace-tags", action="store_true",
+        help="minimal network tags with full packet details and socket creation, without arrows",
+    )
+    target.add_argument(
         "--trace-detail",
         action="store_true",
         help=(
@@ -814,6 +818,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--rx-context requires --package or --uid without --tid/--pid")
     if args.uid == 0 and args.pid is None:
         parser.error("--uid 0 alone is too broad; add --tid")
+    if args.trace_tags and (args.trace_detail or args.connect_diagnostics):
+        parser.error("--trace-tags cannot be combined with --trace-detail or --connect-diagnostics")
     if args.duration is not None and args.duration <= 0:
         parser.error("duration must be a positive integer")
     if args.max_device_file_mib is not None and args.max_device_file_mib <= 0:
@@ -910,6 +916,7 @@ def capture(args: argparse.Namespace) -> Path:
         "duration_s": args.duration,
         "collector_safety_duration_s": collector_duration,
         "profile": args.profile,
+        "network_display": "tags" if args.trace_tags else "detailed" if args.trace_detail else "compact",
         "filter": {"uid": args.uid, "tid": args.pid},
         "wakeup_chain": {"enabled": args.wakeup_chain},
         "rx_context": {"enabled": args.rx_context},
@@ -1030,6 +1037,8 @@ def capture(args: argparse.Namespace) -> Path:
         if args.pid is not None:
             filter_args.extend(["--pid", str(args.pid)])
         trace_mode_args = ["--trace-detail"] if args.trace_detail else []
+        if args.trace_tags:
+            trace_mode_args.append("--trace-tags")
         diagnostic_args = ["--connect-diagnostics"] if args.connect_diagnostics else []
         wakeup_args = ["--wakeup-chain"] if args.wakeup_chain else []
         rx_context_args = ["--rx-context"] if args.rx_context else []

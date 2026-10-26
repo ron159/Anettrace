@@ -124,6 +124,13 @@ class CliContractTest(unittest.TestCase):
         args = MODULE.parse_args(["--uid", "10000", "--trace-detail"])
         self.assertTrue(args.trace_detail)
 
+    def test_trace_tags_is_opt_in_and_excludes_detailed_or_diagnostic_modes(self) -> None:
+        self.assertFalse(MODULE.parse_args(["--uid", "10000"]).trace_tags)
+        self.assertTrue(MODULE.parse_args(["--uid", "10000", "--trace-tags"]).trace_tags)
+        for other in ("--trace-detail", "--connect-diagnostics"):
+            with self.subTest(other=other), redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+                MODULE.parse_args(["--uid", "10000", "--trace-tags", other])
+
     def test_wakeup_chain_is_opt_in(self) -> None:
         self.assertFalse(MODULE.parse_args(["--uid", "10000"]).wakeup_chain)
         self.assertTrue(MODULE.parse_args(["--uid", "10000", "--wakeup-chain"]).wakeup_chain)
@@ -265,6 +272,7 @@ class FailureManifestTest(unittest.TestCase):
             output = root / "capture"
             args = MODULE.parse_args(
                 ["--package", "com.example.app", "--device", "PRIVATE-SERIAL",
+                 "--trace-tags",
                  "--anettrace", str(binary), "--out", str(output)]
             )
             with mock.patch.object(MODULE, "Adb") as adb:
@@ -612,7 +620,7 @@ class SuccessfulCaptureTest(unittest.TestCase):
             package_output = root / "package-capture"
             package_args = MODULE.parse_args(
                 ["--package", "com.example.app", "--device", "PRIVATE-SERIAL",
-                 "--duration", "1", "--profile", "none", "--skip-convert",
+                 "--trace-tags", "--duration", "1", "--profile", "none", "--skip-convert",
                  "--anettrace", str(binary), "--out", str(package_output)]
             )
             with mock.patch.object(MODULE, "Adb", FakeAdb):
@@ -630,6 +638,8 @@ class SuccessfulCaptureTest(unittest.TestCase):
             command = package_manifest["commands"]["anettrace"]
             self.assertEqual(command[command.index("--uid") + 1], "10123")
             self.assertNotIn("--package", command)
+            self.assertIn("--trace-tags", command)
+            self.assertEqual(package_manifest["network_display"], "tags")
 
             FakeAdb.package_uid = 0
             package_args.out = root / "root-package-capture"

@@ -11,13 +11,13 @@ import tempfile
 import time
 
 
-def exercise(binary):
+def exercise(binary, trace_tags=False):
     with tempfile.TemporaryDirectory() as tmp:
         events = Path(tmp) / 'events.jsonl'
         log = Path(tmp) / 'capture.log'
         with log.open('w') as output:
             tracer = subprocess.Popen([str(binary), '--libbpf-debug', '--perfetto-events', str(events),
-                                       '--pid', str(os.getpid())],
+                                       '--pid', str(os.getpid()), *(['--trace-tags'] if trace_tags else [])],
                                       stdout=output, stderr=subprocess.STDOUT)
             try:
                 deadline = time.monotonic() + 180
@@ -86,8 +86,17 @@ def exercise(binary):
         call_ids = {r['call_id'] for r in calls}
         assert all(r['io_id'] in io_ids for r in links), records
         assert all(r['call_id'] in call_ids for r in links), records
-        assert any(len({r['stage'] for r in packets if r['packet_id'] == pid}) > 1
-                   for pid in packet_ids), records
+        if trace_tags:
+            assert all(r['trace_tags'] for r in records if r['type'] == 'clock_snapshot'), records
+            created = [r for r in records if r['type'] == 'socket_create']
+            assert created and all(r['start_ts_ns'] <= r['ts_ns'] for r in created), records
+            for packet in packets:
+                assert packet['stage'] in ('UDP packet send', 'UDP packet receive'), packet
+                assert {'packet_id', 'skb_id', 'socket_id', 'flow_id', 'io_id', 'call_id',
+                        'ip_id', 'ip_id_hex', 'saddr', 'daddr', 'sport', 'dport', 'netns'} <= packet.keys(), packet
+        else:
+            assert any(len({r['stage'] for r in packets if r['packet_id'] == pid}) > 1
+                       for pid in packet_ids), records
         print(f'UDP trace: {len(packets)} stages, {len(packet_ids)} skb instances, '
               f'{len(flows)} flows, {len(calls)} syscalls, {len(links)} I/O links')
 
@@ -95,4 +104,6 @@ def exercise(binary):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('binary', type=Path)
-    exercise(parser.parse_args().binary.resolve())
+    parser.add_argument('--trace-tags', action='store_true')
+    args = parser.parse_args()
+    exercise(args.binary.resolve(), args.trace_tags)

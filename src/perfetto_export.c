@@ -858,7 +858,7 @@ static void native_event_start(struct proto_buffer *event, u32 type, u64 uuid,
 static void native_event_flow(struct proto_buffer *event, u64 flow_id,
 			      bool terminating)
 {
-	if (!flow_id)
+	if (!flow_id || trace_ctx.args.trace_tags)
 		return;
 	proto_fixed64(event, terminating ? 48 : 47, flow_id);
 }
@@ -933,6 +933,8 @@ static void native_slice(u64 timestamp_ns, u64 uuid, u32 type,
 {
 	struct proto_buffer event = {};
 
+	if (trace_ctx.args.trace_tags && !strcmp(category, "anettrace.socket"))
+		return;
 	native_event_start(&event, type, uuid, name, category);
 	native_event_flow(&event, flow_id, terminating);
 	if (!strcmp(category, "anettrace.socket"))
@@ -1293,7 +1295,7 @@ static void flow_link_socket(struct flow_state *flow, u64 timestamp_ns)
 			"\"task\":\"%s\",\"evidence\":\"socket_instance\"}\n",
 			PERFETTO_SCHEMA, timestamp_ns, flow->socket_id, flow->id, tag,
 			flow->owner_tid, flow->owner_tgid, flow->owner_uid, task);
-	if (!native_file)
+	if (!native_file || trace_ctx.args.trace_tags)
 		return;
 	socket = native_socket_track(flow->socket_id,
 		flow->owner_valid ? flow->owner_tgid : 0,
@@ -1336,7 +1338,7 @@ static void flow_emit_start(struct flow_state *flow)
 			flow->owner_tgid, flow->owner_uid, task, flow->local_addr,
 			flow->local_port, flow->remote_addr, flow->remote_port,
 			flow->netns, flow->tuple_id);
-	if (!native_file)
+	if (!native_file || trace_ctx.args.trace_tags)
 		return;
 	track = native_flow_track(flow);
 	if (!track)
@@ -1401,7 +1403,7 @@ static void flow_finish(struct flow_state *flow, u64 end_ts,
 			flow->owner_tgid, flow->owner_uid, task, flow->local_addr,
 			flow->local_port, flow->remote_addr, flow->remote_port,
 			reason, incomplete ? "true" : "false");
-	if (native_file && flow->native_track_uuid) {
+	if (native_file && flow->native_track_uuid && !trace_ctx.args.trace_tags) {
 		native_event_start(&event, 2, flow->native_track_uuid, NULL,
 				   "anettrace.flow");
 		native_event_flow(&event, flow->id, true);
@@ -1693,7 +1695,7 @@ static void pending_io_emit_start(struct pending_io *pending, trace_t *trace,
 			pending->cpu, pending->tid, pending->tgid, pending->uid,
 			task, pending->owner_tid, pending->owner_tgid,
 			pending->owner_uid, pending->io_id, call_id);
-	if (native_file && pending->native_track_uuid) {
+	if (native_file && pending->native_track_uuid && !trace_ctx.args.trace_tags) {
 		/* A distinct per-call bridge connects socket lifetime to this I/O;
 		 * packet arrows remain scoped to their individual skb identities. */
 		struct native_track *socket = pending->socket_id ?
@@ -1801,7 +1803,7 @@ static void pending_io_finish(struct pending_io *pending, u64 timestamp_ns,
 			incomplete ? "true" : "false", pending->io_id, call_id,
 			pending->flow_ambiguous ? "multiple_flows" :
 			(pending->flow_id ? "associated" : "unassociated"));
-	if (native_file && pending->native_track_uuid) {
+	if (native_file && pending->native_track_uuid && !trace_ctx.args.trace_tags) {
 		native_event_start(&event, 2, pending->native_track_uuid, NULL,
 				   category);
 		native_annotation_id(&event, "io_id", pending->io_id);
@@ -1831,7 +1833,7 @@ static void pending_io_finish(struct pending_io *pending, u64 timestamp_ns,
 			pending->socket_id, pending->flow_id, tag, pending->tid, pending->tgid,
 			pending->tx ? "tx" : "rx", result, bytes, error,
 			incomplete ? "true" : "false", association);
-	if (native_file && pending->native_track_uuid) {
+	if (native_file && pending->native_track_uuid && !trace_ctx.args.trace_tags) {
 		snprintf(name, sizeof(name), "%s%s%s completed", tag, tag[0] ? " · " : "",
 			 pending->tx ? "write" : "read");
 		native_event_start(&event, 3, pending->native_track_uuid, name,
@@ -1968,7 +1970,7 @@ static void export_packet_io_link(const detail_event_t *detail, struct flow_stat
 			flow ? flow->id : 0, socket_id, tag, detail->io_tid, detail->io_tgid,
 			detail->io_role == 1 ? "tx" : "rx", detail->io_offset, detail->io_bytes,
 			evidence);
-	if (!native_file)
+	if (!native_file || trace_ctx.args.trace_tags)
 		return;
 	thread = native_thread_track(detail->io_tgid, detail->io_tid, detail->task);
 	if (!thread)
@@ -2025,9 +2027,12 @@ static void native_export_socket_create(const detail_event_t *detail,
 	if (!thread)
 		return;
 	thread_uuid = thread->uuid;
-	socket = native_socket_track(socket_id, event->tgid, detail->task);
-	if (!socket)
-		return;
+	socket = NULL;
+	if (!trace_ctx.args.trace_tags) {
+		socket = native_socket_track(socket_id, event->tgid, detail->task);
+		if (!socket)
+			return;
+	}
 	native_event_start(&allocation, 1, thread_uuid, "socket allocation",
 			   "anettrace.socket");
 	native_event_flow(&allocation, socket_id, false);
@@ -2036,6 +2041,13 @@ static void native_export_socket_create(const detail_event_t *detail,
 	native_annotation_uint(&allocation, "uid", event->uid);
 	native_event_write(start_ts, &allocation);
 	proto_free(&allocation);
+	if (trace_ctx.args.trace_tags) {
+		native_event_start(&allocation, 2, thread_uuid, NULL, "anettrace.socket");
+		native_annotation_id(&allocation, "socket_id", socket_id);
+		native_event_write(event->ske.ts, &allocation);
+		proto_free(&allocation);
+		return;
+	}
 	native_slice(event->ske.ts, thread_uuid, 2, NULL, "anettrace.socket",
 		     socket_id, false);
 	if (socket->active)
@@ -2084,6 +2096,8 @@ static void native_export_socket_state(const detail_event_t *detail,
 	char source[INET6_ADDRSTRLEN], dest[INET6_ADDRSTRLEN], name[64];
 	bool terminal = newstate == TCP_CLOSE;
 
+	if (trace_ctx.args.trace_tags)
+		return;
 	socket = native_socket_track(socket_id,
 		detail->owner_valid ? detail->owner_tgid : 0,
 		detail->owner_valid && detail->owner_tgid == event->tgid ? detail->task : NULL);
@@ -2132,6 +2146,8 @@ static void native_export_socket_event(const detail_event_t *detail,
 	const char *stage = trace_event_name(trace, event);
 	bool terminal = socket_trace_terminal(trace);
 
+	if (trace_ctx.args.trace_tags)
+		return;
 	thread = native_thread_track(event->tgid, event->tid, detail->task);
 	if (!thread)
 		return;
@@ -2257,7 +2273,9 @@ static void native_packet_overview_flush_one(void)
 			owner_tgid = flow->owner_valid ? flow->owner_tgid : 0;
 		}
 	}
-	if (socket_id)
+	if (trace_ctx.args.trace_tags && !pending->socket_id)
+		native_annotation_id(&pending->event, "socket_id", socket_id);
+	if (socket_id && !trace_ctx.args.trace_tags)
 		lane = native_socket_packet_track(socket_id, owner_tgid, pending->direction);
 	if (lane) {
 		navigation_id = native_uuid("packet-navigation", ++native_navigation_serial, 0);
@@ -2274,9 +2292,9 @@ static void native_packet_overview_flush_one(void)
 		native_annotation_uint(&mirror, "source_ts_ns", pending->timestamp_ns);
 		native_annotation_id(&mirror, "source_track_uuid", pending->source_track_uuid);
 		native_overview_emitted++;
-	} else if (ambiguous) {
+	} else if (!trace_ctx.args.trace_tags && ambiguous) {
 		native_overview_ambiguous++;
-	} else {
+	} else if (!trace_ctx.args.trace_tags) {
 		native_overview_unresolved++;
 	}
 	/* Arrival order is preserved, with each mirror after its original at the
@@ -2377,6 +2395,8 @@ static void native_packet_overview_queue(const detail_event_t *detail, u64 flow_
 	if (!pending) {
 		/* Preserve original packet evidence if the optional view cannot fit. */
 		native_packet_overview_flush(0, true);
+		if (trace_ctx.args.trace_tags && !detail->owner_socket_key)
+			native_annotation_id(event, "socket_id", 0);
 		native_event_write(detail->pkt.ts, event);
 		native_overview_unresolved++;
 		return;
@@ -2554,7 +2574,8 @@ static void native_export_packet_event(const detail_event_t *detail,
 					       qdisc->last_update);
 	}
 	annotation_size = track_event.size - annotation_offset;
-	native_annotation_id(&track_event, "socket_id", socket_id);
+	if (!trace_ctx.args.trace_tags || socket_id)
+		native_annotation_id(&track_event, "socket_id", socket_id);
 	native_packet_overview_queue(detail, flow_id, thread->uuid, name,
 		&track_event, annotation_offset, annotation_size);
 	proto_free(&track_event);
@@ -2623,9 +2644,10 @@ static void write_clock_snapshot(void)
 		fprintf(export_file,
 			"{\"schema\":\"%s\",\"type\":\"clock_snapshot\","
 			"\"monotonic_ns\":%llu,\"boottime_ns\":%llu,"
-			"\"realtime_ns\":%llu}\n",
+			"\"realtime_ns\":%llu%s}\n",
 			PERFETTO_SCHEMA, monotonic_ns,
-			timespec_to_ns(&boottime), timespec_to_ns(&realtime));
+			timespec_to_ns(&boottime), timespec_to_ns(&realtime),
+			trace_ctx.args.trace_tags ? ",\"trace_tags\":true" : "");
 	native_clock_snapshot(monotonic_ns, timespec_to_ns(&boottime),
 			      timespec_to_ns(&realtime));
 	last_clock_snapshot_ns = monotonic_ns;
@@ -3184,7 +3206,7 @@ static void export_rx_handoff(const rx_handoff_event_t *ready, int cpu)
 			dest, ntohs(ready->ske.l4.min.dport),
 			ready->owner_valid ? "true" : "false",
 			ready->owner_tid, ready->owner_tgid, ready->owner_uid);
-	if (!native_file)
+	if (!native_file || trace_ctx.args.trace_tags)
 		return;
 	thread = native_thread_track(ready->tgid, ready->tid, ready->task);
 	if (!thread)
@@ -3416,6 +3438,8 @@ static void export_network_syscall(const network_syscall_event_t *call,
 	native_event_start(&event, 2, uuid, NULL, "anettrace.syscall");
 	native_event_write(call->ts, &event);
 	proto_free(&event);
+	if (trace_ctx.args.trace_tags)
+		return;
 	/* Perfetto associates flows on slice END with the beginning of that
 	 * duration. A separate result instant gives RX a forward-time endpoint. */
 	snprintf(name, sizeof(name), "%s returned%s%s", names[call->kind],

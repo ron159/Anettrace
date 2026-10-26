@@ -243,7 +243,7 @@ printf("%u %llu %u", detail.io_multiple, detail.io_start_ts, detail.io_role);
 typedef struct { const char *name; } trace_t;
 typedef struct { packet_t pkt; } event_t;
 static struct { struct { bool perfetto; } bpf_args;
-    struct { bool trace_detail, connect_diagnostics; } args; } trace_ctx = {
+    struct { bool trace_detail, trace_tags, connect_diagnostics; } args; } trace_ctx = {
     .bpf_args.perfetto = true};
 ''' + function(source, "trace_name_matches") + function(source, "trace_event_visible")
         result = self.run_source(helpers, r'''
@@ -257,8 +257,13 @@ for (unsigned i = 0; i < sizeof(names)/sizeof(names[0]); i++) {
 trace_ctx.args.trace_detail = true;
 trace_t ip = {.name = "ip_rcv"};
 printf("%d", trace_event_visible(&ip, &event));
+trace_ctx.args.trace_detail=false; trace_ctx.args.trace_tags=true;
+const char *tags[] = {"sk_alloc", "tcp_sendmsg", "ip_output", "tcp_v4_rcv", "tcp_queue_rcv", "skb_copy_datagram_iter", "kfree_skb"};
+for (unsigned i=0;i<sizeof(tags)/sizeof(tags[0]);i++) {
+    trace_t trace={.name=tags[i]}; printf(" %d",trace_event_visible(&trace,&event));
+}
 ''')
-        self.assertEqual(result, ["1", "1", "1", "1", "0", "1"])
+        self.assertEqual(result, ["1", "1", "1", "1", "0", "1", "1", "1", "1", "1", "0", "0", "0"])
 
     def test_explicit_protocol_selection_keeps_rx_identity_dependencies(self):
         source = function((ROOT / "src/trace.c").read_text(), "trace_enable_perfetto_output")

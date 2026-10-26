@@ -95,7 +95,7 @@ for (unsigned i=0; i<sizeof(protocols)/sizeof(protocols[0]); i++) {
 typedef struct { const char *name; } trace_t;
 typedef struct { union { packet_t pkt; sock_t ske; }; } event_t;
 static struct { struct { bool perfetto; } bpf_args;
-    struct { bool trace_detail, connect_diagnostics; } args;
+    struct { bool trace_detail, trace_tags, connect_diagnostics; } args;
 } trace_ctx = {.bpf_args.perfetto=true};
 ''' + "".join(function(source, name) for name in (
             "trace_name_matches", "trace_event_visible", "trace_event_name"))

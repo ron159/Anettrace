@@ -137,6 +137,7 @@ typedef struct trace_args {
 	bool system_trace_only;
 	bool ring_buffer;
 	bool trace_detail;
+	bool trace_tags;
 	bool connect_diagnostics;
 	char *trace_profile;
 	char *perfetto_config;

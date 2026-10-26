@@ -50,7 +50,7 @@ typedef struct { const char *name; unsigned status; } trace_t;
 static FILE *native_file;
 static u64 export_salt=123;
 static bool native_failed, native_sequence_started;
-static struct { struct { bool trace_detail, connect_diagnostics; } args; } trace_ctx;
+static struct { struct { bool trace_detail, trace_tags, connect_diagnostics; } args; } trace_ctx;
 '''
         structures = "".join(declaration(source, name) for name in (
             "enum native_track_kind", "struct native_track", "struct proto_buffer",
@@ -97,6 +97,7 @@ static detail_event_t sample(u64 key, u64 ts, u8 direction, u64 socket) {
         .owner_socket_key=socket,.owner_socket_generation=1,.owner_tgid=42,.owner_tid=43,
         .owner_valid=socket != 0};
     d.pkt.ts=ts; d.pkt.proto_l3=ETH_P_IP; d.pkt.proto_l4=IPPROTO_TCP;
+    d.pkt.ip_id_valid=true; d.pkt.l3.ipv4.id=4660;
     d.pkt.l3.ipv4.saddr=inet_addr("127.0.0.1");
     d.pkt.l3.ipv4.daddr=inet_addr("127.0.0.1");
     d.pkt.l4.min.sport=htons(9000); d.pkt.l4.min.dport=htons(9001);
@@ -116,7 +117,8 @@ int main(int argc,char **argv) {
     native_file=fopen(argv[1],"wb"); assert(native_file);
     const u64 base=10000000000ULL;
     native_clock_snapshot(base,base,base);
-    if (!strcmp(argv[2],"late")) {
+    trace_ctx.args.trace_tags=!strcmp(argv[2],"tags");
+    if (!strcmp(argv[2],"late") || trace_ctx.args.trace_tags) {
         /* Same skb crosses two local sockets: direction-specific evidence. */
         detail_event_t rx=sample(1,base,PACKET_DIRECTION_RX,0);
         emit(rx,"ip_rcv");
@@ -281,6 +283,27 @@ int main(int argc,char **argv) {
                 self.assertNotEqual(row.socket_id, "0000000000000000")
             errors = list(processor.query("SELECT name,value FROM stats WHERE severity='error' AND value>0"))
             self.assertFalse(errors, errors)
+
+    def test_tags_keep_late_socket_evidence_on_original_packets_without_mirrors(self):
+        _, _, baseline, _ = self.run_case("late")
+        expected = [self.args(e)["socket_id"] for _, e in baseline
+                    if "anettrace.socket.packet" in e.categories]
+        path, trace, events, counts = self.run_case("tags")
+        packets = [e for _, e in events if "anettrace.packet" in e.categories]
+        self.assertEqual(len(packets), 4)
+        self.assertEqual([self.args(e)["socket_id"] for e in packets], expected)
+        self.assertEqual(counts["mirrored"], 0)
+        self.assertTrue(all(not e.flow_ids and not e.terminating_flow_ids for _, e in events))
+        for event in packets:
+            args = self.args(event)
+            self.assertEqual(args["ip_id"], "4660")
+            self.assertEqual(args["ip_id_hex"], "0x1234")
+            self.assertEqual(sum(a.name == "socket_id" for a in event.debug_annotations), 1)
+        descriptors = [p.track_descriptor.name for p in trace.packet if p.HasField("track_descriptor")]
+        self.assertNotIn("RX packets", descriptors)
+        self.assertNotIn("TX packets", descriptors)
+        with TraceProcessor(trace=str(path)) as processor:
+            self.assertEqual(list(processor.query("SELECT COUNT(*) n FROM flow"))[0].n, 0)
 
     def test_flow_endpoint_guard_and_owner_name(self):
         _, trace, events, counts = self.run_case("flow")

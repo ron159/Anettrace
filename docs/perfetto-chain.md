@@ -1,11 +1,32 @@
 # Perfetto 收发链路分析
 
-两种网络显示模式共用相同的关联字段和连线。默认精简模式保留关键节点；
+默认精简模式保留关键节点，`--trace-tags` 极简模式保留 socket 创建、应用调用与关键收发包；
 `--trace-detail` 展开 `trace.yaml` 中已注册且设备可挂载的路径探针。
 详细模式表示全部受支持的观测点，不表示任意内核函数的完整调用栈；
 内联函数、厂商驱动私有路径及硬件卸载阶段可能没有探针。
 
 ## 抓取
+
+极简模式使用 `--trace-tags`，与 `--trace-detail`、`--connect-diagnostics` 互斥。
+必要的 socket 归属、skb 生命周期及调用关联探针继续采集。packet 参数保留
+`socket_id`、`packet_id`、`skb_id`、`flow_id`、`io_id`、`call_id`、IP ID（可用时）、
+地址、端口、TCP/ICMP/DNS 字段和执行上下文；缺失的证据仍保留未知。
+socket 创建的起止时间作为 `socket allocation` 显示，参数含同一 `socket_id`。
+不显示关联箭头、socket 生命周期长条、协议层 I/O 切片或 socket packet 镜像。
+
+```sh
+./anettrace --capture-trace --trace-tags --uid 10187 --duration 20 \
+  --output /data/local/tmp/network-tags.pftrace
+
+python3 tools/capture_android_trace.py --package com.example.app --trace-tags \
+  --duration 20 --out output/app-tags
+
+# 已有 JSONL 可以重新生成极简展示；源文件内容保留
+python3 tools/anettrace_to_perfetto.py events.jsonl network-tags.pftrace --trace-tags
+```
+
+直接采集的 JSONL 会记录显示模式，后续转换自动采用极简展示。
+以下默认精简/详细模式的连线和概览说明，适用于未启用 `--trace-tags` 的轨迹。
 
 在设备 root shell 中运行，将 UID 替换为目标应用的实际 UID：
 

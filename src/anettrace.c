@@ -22,10 +22,11 @@ arg_config_t config = {
 	.summary = "a tool to trace skb in kernel and diagnose network problem",
 	.desc = "Perfetto network trace modes:\n"
 		"  Compact (default): socket lifecycle, application send/recv and key packets.\n"
+		"  Tags (--trace-tags): socket creation, application calls and key packets; no arrows.\n"
 		"  Detailed (--trace-detail): available registered network probes; defaults to all.\n"
 		"    Explicit --trace (JSONL only), --trace-exclude and --connect-diagnostics\n"
 		"    still constrain probe selection; this is not a full kernel call tree.\n"
-		"  --force works with either mode; supplied filters stay active.\n"
+		"  --force works with any network mode; supplied filters stay active.\n"
 		"  --detail adds packet fields; --trace-profile selects system data sources.\n"
 		"\nExamples (network capture requires root; replace UID with the app UID):\n"
 		"  anettrace --capture-trace --uid 10187 --duration 10 --output compact.pftrace\n"
@@ -288,6 +289,12 @@ static void do_parse_args(int argc, char *argv[])
 			.lname = "ring-buffer", .dest = &trace_args->ring_buffer,
 			.type = OPTION_BOOL,
 			.desc = "run until interrupted and save the trailing --duration window",
+		},
+		{
+			.lname = "trace-tags", .dest = &trace_args->trace_tags,
+			.type = OPTION_BOOL,
+			.desc = "minimal network tags; keep packet details and socket creation, hide arrows;\n"
+				"                     requires --capture-trace or --perfetto-events",
 		},
 		{
 			.lname = "trace-detail", .dest = &trace_args->trace_detail,
@@ -574,6 +581,16 @@ static void do_parse_args(int argc, char *argv[])
 	    access(trace_args->perfetto_config, R_OK)) {
 		pr_err("cannot read Perfetto config %s: %s\n",
 		       trace_args->perfetto_config, strerror(errno));
+		goto err;
+	}
+	if (trace_args->trace_tags && !trace_args->capture_trace &&
+	    !trace_args->perfetto_events) {
+		pr_err("--trace-tags requires --capture-trace or --perfetto-events\n");
+		goto err;
+	}
+	if (trace_args->trace_tags &&
+	    (trace_args->trace_detail || trace_args->connect_diagnostics)) {
+		pr_err("--trace-tags cannot be combined with --trace-detail or --connect-diagnostics\n");
 		goto err;
 	}
 	if (trace_args->trace_detail && !trace_args->capture_trace &&

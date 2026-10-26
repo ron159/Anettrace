@@ -69,7 +69,7 @@ enum { TCP_ESTABLISHED=1, TCP_SYN_SENT, TCP_SYN_RECV, TCP_FIN_WAIT1,
 typedef struct { const char *name; unsigned status; } trace_t;
 static FILE *native_file, *export_file;
 static u64 export_salt = 123;
-static struct { struct { bool trace_detail, connect_diagnostics; } args; } trace_ctx;
+static struct { struct { bool trace_detail, trace_tags, connect_diagnostics; } args; } trace_ctx;
 '''
         structures = "".join(declaration(source, name) for name in (
             "enum native_track_kind", "struct native_track", "struct proto_buffer",
@@ -132,19 +132,26 @@ static void native_packet_overview_queue(const detail_event_t *detail, u64 flow_
             "export_packet_event", "export_rx_handoff", "tcp_state_name",
             "socket_trace_terminal", "native_slice", "native_close_socket", "native_open_socket",
             "native_socket_snapshot", "export_socket_snapshot",
-            "native_export_socket_event", "export_socket_event", "network_wakeup_status",
+            "native_export_socket_event", "native_export_socket_create", "export_socket_event", "network_wakeup_status",
             "network_waking_context", "export_syscall_wakeup", "native_syscall_wakeup",
             "export_network_syscall"))
         body = r'''
 int main(int argc, char **argv) {
     native_file=fopen(argv[1],"wb"); export_file=fopen(argv[2],"w");
     if (!native_file || !export_file) return 1;
+    if (argc > 3) {
+        trace_ctx.args.trace_tags=true;
+        detail_event_t created={.key=90,.key_generation=1,.tgid=6,.tid=7};
+        created.ske.ts=95;
+        native_export_socket_create(&created,90,0);
+    }
     detail_event_t packet = {.key=99,.key_generation=1,.tid=7,.tgid=6,
         .owner_socket_key=90,.owner_socket_generation=1,.owner_evidence=2,
         .io_role=1,.io_tid=7,.io_tgid=6,.io_start_ts=100,.syscall_start_ts=90,
         .direction=PACKET_DIRECTION_TX};
     packet.pkt.proto_l3=ETH_P_IP; packet.pkt.proto_l4=IPPROTO_TCP;
     packet.pkt.ts=110; packet.pkt.l4.min.sport=htons(45000); packet.pkt.l4.min.dport=htons(443);
+    packet.pkt.ip_id_valid=true; packet.pkt.l3.ipv4.id=4660;
     flow.socket_id=socket_instance_id(90,1);
     flow_link_socket(&flow,95);
     flow_link_socket(&flow,96); /* Repeated association is not another edge. */
@@ -247,6 +254,7 @@ int main(int argc, char **argv) {
         if result.returncode:
             raise AssertionError(result.stderr)
         native, jsonl = base / "native.bin", base / "events.jsonl"
+        cls.base, cls.binary = base, binary
         subprocess.run([str(binary), str(native), str(jsonl)], check=True)
         cls.records = [json.loads(line) for line in jsonl.read_text().splitlines()]
         raw = native.read_bytes()
@@ -269,6 +277,30 @@ int main(int argc, char **argv) {
     def events_in(self, category, protocol=None):
         return [(ts, event) for ts, event in self.events if category in event.categories
                 and (protocol is None or self.args(event).get("proto_l4") == str(protocol))]
+
+    def test_native_tags_preserve_packet_arguments_and_allocation_without_io_layers(self):
+        native, jsonl = self.base / "tags.bin", self.base / "tags.jsonl"
+        subprocess.run([str(self.binary), str(native), str(jsonl), "tags"], check=True)
+        events, raw = [], native.read_bytes()
+        while raw:
+            length, timestamp = struct.unpack_from("=IQ", raw)
+            event = TrackEvent()
+            event.ParseFromString(raw[12:12 + length])
+            events.append((timestamp, event))
+            raw = raw[12 + length:]
+        self.assertTrue(all(not e.flow_ids and not e.terminating_flow_ids for _, e in events))
+        self.assertTrue(all(c in ("anettrace.packet", "anettrace.socket", "anettrace.syscall")
+                            for _, e in events for c in e.categories))
+        allocation = [(ts, e) for ts, e in events if e.name == "socket allocation"]
+        self.assertEqual([ts for ts, _ in allocation], [90])
+        self.assertEqual(self.args(allocation[0][1])["socket_id"], self.args(self.events_in("anettrace.packet")[0][1])["socket_id"])
+        self.assertNotIn("socket lifetime", {e.name for _, e in events})
+        packet = next(e for _, e in events if "anettrace.packet" in e.categories)
+        expected = self.args(self.events_in("anettrace.packet")[0][1])
+        actual = self.args(packet)
+        for key in ("packet_id", "skb_id", "socket_id", "flow_id", "io_id", "call_id",
+                    "ip_id", "ip_id_hex", "tcp_seq", "tcp_ack", "tcp_flags", "sport", "dport"):
+            self.assertEqual(actual[key], expected[key], key)
 
     def test_socket_snapshots_preserve_zeros_and_omit_inapplicable_tcp_fields(self):
         records = [r for r in self.records if r["type"] == "socket_event"]

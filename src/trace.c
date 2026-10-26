@@ -86,6 +86,21 @@ bool trace_event_visible(const trace_t *trace, const event_t *event)
 	if (!trace || !event || !trace_ctx.bpf_args.perfetto ||
 	    trace_ctx.args.trace_detail)
 		return true;
+	if (trace_ctx.args.trace_tags) {
+		/* Keep socket/I/O evidence live internally; only packet anchors are
+		 * drawn. The exporter hides the internal socket and I/O events. */
+		static const char *const tag_events[] = {
+			"sk_alloc", "inet_sock_set_state", "tcp_sendmsg", "tcp_recvmsg",
+			"tcp_close", "tcp_v4_destroy_sock", "udp_destroy_sock", "udpv6_destroy_sock",
+			"udp_sendmsg", "udpv6_sendmsg", "udp_recvmsg", "udpv6_recvmsg",
+			"ip_output", "ip6_output", "tcp_v4_rcv", "tcp_v6_rcv",
+			"udp_rcv", "udpv6_rcv", "icmp_rcv", "icmpv6_rcv",
+		};
+		for (i = 0; i < sizeof(tag_events) / sizeof(tag_events[0]); i++)
+			if (trace_name_matches(trace, tag_events[i]))
+				return true;
+		return false;
+	}
 	if (trace_name_matches(trace, "__tcp_transmit_skb"))
 		return trace_ctx.args.connect_diagnostics;
 	if (trace_name_matches(trace, "ip_output") ||

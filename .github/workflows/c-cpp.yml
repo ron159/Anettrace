@@ -137,7 +137,9 @@ jobs:
           sudo python3 tests/traffic_udp_integration.py ./src/anettrace
           sudo python3 tests/traffic_udp_integration.py ./src/anettrace --protocol all
       - name: Verify ordinary UDP trace and application I/O association
-        run: sudo python3 tests/udp_trace_integration.py ./src/anettrace
+        run: |
+          sudo python3 tests/udp_trace_integration.py ./src/anettrace
+          sudo python3 tests/udp_trace_integration.py ./src/anettrace --trace-tags
 
       - name: Verify observed wake-to-run context on the running kernel
         run: sudo python3 tests/wakeup_trace_integration.py ./src/anettrace

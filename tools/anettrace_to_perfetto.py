@@ -116,8 +116,12 @@ SOCKET_SNAPSHOT_FIELDS = (
 
 
 class PerfettoExporter:
-    def __init__(self, records: Iterable[dict[str, Any]]) -> None:
+    def __init__(self, records: Iterable[dict[str, Any]], *, trace_tags: bool = False) -> None:
         self.records = list(records)
+        self.trace_tags = trace_tags or any(
+            r.get("type") == "clock_snapshot" and r.get("trace_tags") is True
+            for r in self.records
+        )
         self.builder = TraceProtoBuilder()
         self.descriptors: set[int] = set()
         self.process_tracks: dict[int, int] = {}
@@ -426,13 +430,13 @@ class PerfettoExporter:
         if name:
             track_event.name = name
         track_event.categories.append(category)
-        if flow_id:
+        if flow_id and not self.trace_tags:
             if terminating_flow:
                 track_event.terminating_flow_ids.append(flow_id)
             else:
                 track_event.flow_ids.append(flow_id)
         for linked_flow_id in linked_flow_ids:
-            if linked_flow_id and linked_flow_id not in track_event.flow_ids:
+            if not self.trace_tags and linked_flow_id and linked_flow_id not in track_event.flow_ids:
                 track_event.flow_ids.append(linked_flow_id)
         if correlation_id:
             track_event.correlation_id = correlation_id
@@ -459,6 +463,8 @@ class PerfettoExporter:
             category="anettrace.socket",
             flow_id=flow_id,
         )
+        if self.trace_tags:
+            return
         socket_track = self.socket_track(socket_id, record)
         if socket_id in self.socket_lifetimes:
             self.event(
@@ -603,6 +609,15 @@ class PerfettoExporter:
             self.closed_sockets.add(socket_id)
 
     def export_packet_event(self, record: dict[str, Any]) -> None:
+        if self.trace_tags and not (
+            packet_flow_anchor(record)
+            or (int(record.get("proto_l4", 0)) in (1, 58)
+                and str(record.get("stage", "")).split(".")[0] in (
+                    "ip_output", "ip6_output", "icmp_rcv", "icmpv6_rcv",
+                    "ICMP packet send", "ICMP packet receive",
+                    "ICMPv6 packet send", "ICMPv6 packet receive"))
+        ):
+            return
         packet_id = str(record["packet_id"])
         flow_id = str(record.get("flow_id", "0"))
         packet_record = self.chain_record(record)
@@ -616,8 +631,10 @@ class PerfettoExporter:
                 protocol_fields += ("icmp_id", "icmp_seq")
         source_track = self.thread_track(record)
         socket = self.packet_socket_id(record)
+        if self.trace_tags:
+            packet_record["socket_id"] = f"{socket or 0:016x}"
         navigation_id = None
-        if socket:
+        if socket and not self.trace_tags:
             self.packet_navigation_serial += 1
             navigation_id = stable_uuid("socket-packet-navigation", self.packet_navigation_serial)
             packet_record["navigation_id"] = f"{navigation_id:016x}"
@@ -688,7 +705,7 @@ class PerfettoExporter:
             ),
         )
 
-        if socket:
+        if socket and not self.trace_tags:
             overview = dict(packet_record, socket_id=f"{socket:016x}",
                             source_tid=int(record.get("tid", 0)),
                             source_tgid=int(record.get("tgid", 0)),
@@ -1052,6 +1069,8 @@ class PerfettoExporter:
                    flow_id=id_value(str(record["call_id"])) if record.get("call_id") else None,
                    annotations=(args, tuple(k for k in args if k not in ("schema", "type"))))
         self.event(end, track, TrackEvent.TYPE_SLICE_END, category="anettrace.syscall")
+        if self.trace_tags:
+            return
         # Perfetto anchors duration END flows to the start of the duration.
         # Use an explicit return point so receive packet -> copy -> return edges
         # follow the observed order and expose the actual syscall result.
@@ -1088,6 +1107,11 @@ class PerfettoExporter:
         for record in self.records:
             record_type = record.get("type")
             if record_type == "clock_snapshot":
+                continue
+            if self.trace_tags and record_type not in (
+                "socket_create", "packet_event", "network_syscall",
+                "lost_events", "trace_end", "rx_context",
+            ):
                 continue
             if record_type == "socket_create":
                 self.export_socket_create(record)
@@ -1160,6 +1184,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="Anettrace JSONL event file")
     parser.add_argument("output", type=Path, help="output Perfetto .pftrace file")
+    parser.add_argument("--trace-tags", action="store_true",
+                        help="minimal network tags with full packet details and socket creation, without arrows")
     return parser.parse_args()
 
 
@@ -1167,7 +1193,7 @@ def main() -> int:
     args = parse_args()
     try:
         records = read_records(args.input)
-        encoded = PerfettoExporter(records).serialize()
+        encoded = PerfettoExporter(records, trace_tags=args.trace_tags).serialize()
         args.output.write_bytes(encoded)
     except (OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)

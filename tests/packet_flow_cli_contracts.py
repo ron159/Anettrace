@@ -11,10 +11,17 @@ def main():
     binary = str(parser.parse_args().binary.resolve())
     result = subprocess.run([binary, "--help"], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
-    for option in ("--tid", "--pid", "--wakeup-chain", "--rx-context"):
+    for option in ("--tid", "--pid", "--wakeup-chain", "--rx-context", "--trace-tags"):
         assert option in result.stdout, option
     cases = [
         (["--tid", "12", "--pid", "12"], "--pid and --tid are aliases"),
+        (["--trace-tags"], "--trace-tags requires --capture-trace or --perfetto-events"),
+        (["--perfetto-events", "/tmp/unused.jsonl", "--trace-tags", "--trace-detail"],
+         "--trace-tags cannot be combined with --trace-detail or --connect-diagnostics"),
+        (["--perfetto-events", "/tmp/unused.jsonl", "--trace-tags", "--connect-diagnostics"],
+         "--trace-tags cannot be combined with --trace-detail or --connect-diagnostics"),
+        (["--capture-trace", "--system-trace-only", "--trace-tags"],
+         "--system-trace-only cannot be combined with --trace-tags"),
         (["--wakeup-chain"], "--wakeup-chain requires --capture-trace or --perfetto-events"),
         (["--rx-context"], "--rx-context requires --capture-trace or --perfetto-events"),
         (["--rx-context", "--perfetto-events", "/tmp/unused.jsonl", "--force"],

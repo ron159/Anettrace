@@ -82,6 +82,7 @@ static size_t pending_syscall_count;
 static u64 lost_events;
 static u64 native_ring_window_ns, native_ring_latest_ns;
 static FILE *export_file, *native_file;
+static struct { struct { bool trace_tags; } args; } trace_ctx;
 static u64 begin_ts, end_ts;
 static unsigned event_type, begins, ends;
 static struct flow_state *flow_find_any(u64 id) { return id == 123 ? &flow : NULL; }

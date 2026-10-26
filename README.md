@@ -65,6 +65,10 @@ sudo ./src/anettrace --traffic-ui --proto tcp --uid 1000 --interval 1
   --duration 10 --uid 10187 \
   --output /data/local/tmp/custom-network.pftrace
 
+# 极简展示：socket 创建、应用调用和收发包；点击 packet 保留完整参数
+./anettrace --capture-trace --trace-tags --uid 10187 \
+  --duration 10 --output /data/local/tmp/network-tags.pftrace
+
 # 后台持续抓取，Ctrl+C 后保存停止前 30 秒，同时显示流量
 ./anettrace --traffic --capture-trace --ring-buffer \
   --duration 30 --interval 2 --proto tcp --uid 10187 \
@@ -82,6 +86,10 @@ sudo ./src/anettrace --traffic-ui --proto tcp --uid 1000 --interval 1
 
 `--traffic-ui` 已包含 `--traffic`，也支持与后台 `--capture-trace` 联用。输出重定向或
 `TERM=dumb` 时自动使用旧表格；完整操作与统计限制见[流量概览说明](docs/traffic-overview-experiment.md)。
+
+增加 `--trace-tags` 使用**极简模式**：显示 socket 创建、应用网络调用和关键收发包，
+保留 packet 的 `socket_id`、`ip_id`、端点和关联字段，隐藏箭头、socket I/O 切片及重复概览。
+主机采集工具也支持此选项；已有 JSONL 可用 `tools/anettrace_to_perfetto.py --trace-tags` 转换。
 
 网络采集默认使用**精简模式**，显示 socket 创建/关闭、应用收发、TCP 握手和
 关键包事件。增加 `--trace-detail` 切换为**详细模式**，显示探针目录支持且设备
