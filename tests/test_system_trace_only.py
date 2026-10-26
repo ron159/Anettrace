@@ -72,11 +72,34 @@ while True:
 '''
 
 DRIVER = r'''
+#include <errno.h>
+#include <fcntl.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #include "trace_capture.h"
+/* Shell may read/unlink traces but SELinux forbids creating files there.
+ * The separately executed fake Perfetto is not subject to this shim.
+ */
+int open(const char *path, int flags, ...) {
+    const char *root = getenv("PERFETTO_TEST_ROOT");
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list args;
+        va_start(args, flags);
+        mode = va_arg(args, int);
+        va_end(args);
+        if (root && !strncmp(path, root, strlen(root)) &&
+            !strncmp(path + strlen(root), "/traces/", 8)) {
+            errno = EACCES;
+            return -1;
+        }
+    }
+    return openat(AT_FDCWD, path, flags, mode);
+}
 static volatile sig_atomic_t stopped;
 static void stop(int sig) { (void)sig; stopped = 1; }
 int main(int argc, char **argv) {

@@ -214,7 +214,7 @@ require_text '.lname = "output"' src/anettrace.c
 require_text 'perfetto_export_native_open' src/anettrace.c
 require_text 'perfetto_export_native_open_ring' src/anettrace.c
 require_text 'NATIVE_RING_MAX_BYTES' src/perfetto_export.c
-require_text 'perfetto_trim_file' src/trace_capture.c
+require_text 'perfetto_trim_stream' src/trace_capture.c
 require_text 'Trace.packet' src/perfetto_export.c
 require_text 'trace_capture_finish' src/anettrace.c
 require_text 'sched/sched_switch' src/trace_capture.c

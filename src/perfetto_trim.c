@@ -530,9 +530,9 @@ static int trim_stream_packets(int input_fd, int output_fd,
 	}
 }
 
-static int trim_stream(int input_fd, int output_fd,
-		       uint64_t boottime_cutoff_ns,
-		       uint64_t monotonic_cutoff_ns)
+int perfetto_trim_stream(int input_fd, int output_fd,
+			uint64_t boottime_cutoff_ns,
+			uint64_t monotonic_cutoff_ns)
 {
 	struct trim_state state = {};
 	int err = trim_stream_packets(input_fd, output_fd,
@@ -565,8 +565,8 @@ int perfetto_trim_file(const char *path, uint64_t boottime_cutoff_ns,
 		err = -errno;
 		goto out;
 	}
-	err = trim_stream(input_fd, output_fd, boottime_cutoff_ns,
-			  monotonic_cutoff_ns);
+	err = perfetto_trim_stream(input_fd, output_fd, boottime_cutoff_ns,
+				   monotonic_cutoff_ns);
 	if (!err && fsync(output_fd))
 		err = -errno;
 	if (close(output_fd) && !err)

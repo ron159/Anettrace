@@ -400,10 +400,10 @@ static int copy_file(int output_fd, const char *path)
 	return err;
 }
 
-static int merge_traces(void)
+static int merge_traces(u64 boottime_cutoff_ns, u64 monotonic_cutoff_ns)
 {
 	char temporary[PATH_MAX];
-	int fd, err;
+	int input_fd, fd, err;
 
 	err = temporary_path(temporary, sizeof(temporary), "combined");
 	if (err)
@@ -411,7 +411,23 @@ static int merge_traces(void)
 	fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
 	if (fd < 0)
 		return -errno;
-	err = copy_file(fd, capture.system_trace);
+	if (capture.ring_buffer) {
+		/* Shell can read the Perfetto trace but cannot create a trim file
+		 * beside it. Stream the trimmed packets into our output staging file.
+		 */
+		input_fd = open(capture.system_trace, O_RDONLY | O_CLOEXEC);
+		if (input_fd < 0) {
+			err = -errno;
+		} else {
+			err = perfetto_trim_stream(input_fd, fd, boottime_cutoff_ns,
+						   monotonic_cutoff_ns);
+			close(input_fd);
+		}
+	} else {
+		err = copy_file(fd, capture.system_trace);
+	}
+	if (!err)
+		err = file_nonempty(temporary);
 	if (!err && !capture.system_only)
 		err = copy_file(fd, capture.network_trace);
 	if (!err && fsync(fd))
@@ -648,6 +664,7 @@ void trace_capture_stop(void)
 
 int trace_capture_finish(void)
 {
+	u64 boottime_cutoff_ns = 0, monotonic_cutoff_ns = 0;
 	int status = 0, err;
 
 	if (!capture.started)
@@ -682,7 +699,6 @@ int trace_capture_finish(void)
 	}
 	if (capture.ring_buffer) {
 		struct timespec boottime, monotonic;
-		u64 boottime_cutoff_ns, monotonic_cutoff_ns;
 		u64 window_ns = (u64)capture.window_s * 1000000000ULL;
 
 		if (clock_gettime(CLOCK_BOOTTIME, &boottime) ||
@@ -704,14 +720,6 @@ int trace_capture_finish(void)
 			monotonic_cutoff_ns -= window_ns;
 		else
 			monotonic_cutoff_ns = 0;
-		err = perfetto_trim_file(capture.system_trace,
-					 boottime_cutoff_ns,
-					 monotonic_cutoff_ns);
-		if (err) {
-			pr_err("failed to trim system Perfetto ring window: %s\n",
-			       strerror(-err));
-			goto out;
-		}
 	}
 	err = file_nonempty(capture.system_trace);
 	if (err) {
@@ -726,7 +734,7 @@ int trace_capture_finish(void)
 			goto out;
 		}
 	}
-	err = merge_traces();
+	err = merge_traces(boottime_cutoff_ns, monotonic_cutoff_ns);
 	if (err) {
 		pr_err("failed to create trace %s: %s\n",
 		       capture.output, strerror(-err));
