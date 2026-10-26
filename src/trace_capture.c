@@ -24,6 +24,13 @@
 
 #define PERFETTO_READY_TIMEOUT_MS 30000
 
+#ifndef PERFETTO_CONFIG_DIR
+#define PERFETTO_CONFIG_DIR "/data/misc/perfetto-configs"
+#endif
+#ifndef PERFETTO_TRACE_DIR
+#define PERFETTO_TRACE_DIR "/data/misc/perfetto-traces"
+#endif
+
 struct capture_state {
 	pid_t perfetto_pid;
 	char output[PATH_MAX];
@@ -220,13 +227,6 @@ static int temporary_path(char *dest, size_t size, const char *suffix)
 
 static int system_temporary_paths(void)
 {
-	if (capture.system_only) {
-		int err = temporary_path(capture.system_trace,
-					 sizeof(capture.system_trace), "system");
-		if (err)
-			return err;
-		return temporary_path(capture.config, sizeof(capture.config), "config");
-	}
 #ifdef ANETTRACE_ANDROID_TARGET
 	struct timespec now;
 	unsigned long long nonce;
@@ -235,10 +235,10 @@ static int system_temporary_paths(void)
 		return -errno;
 	nonce = (unsigned long long)now.tv_nsec;
 	if (snprintf(capture.system_trace, sizeof(capture.system_trace),
-		     "/data/misc/perfetto-traces/anettrace-%d-%llu.pftrace",
+		     PERFETTO_TRACE_DIR "/anettrace-%d-%llu.pftrace",
 		     getpid(), nonce) >= (int)sizeof(capture.system_trace) ||
 	    snprintf(capture.config, sizeof(capture.config),
-		     "/data/misc/perfetto-configs/anettrace-%d-%llu.pbtxt",
+		     PERFETTO_CONFIG_DIR "/anettrace-%d-%llu.pbtxt",
 		     getpid(), nonce) >= (int)sizeof(capture.config))
 		return -ENAMETOOLONG;
 	if (!access(capture.system_trace, F_OK) || !access(capture.config, F_OK))
@@ -429,8 +429,7 @@ static int merge_traces(void)
 
 static void cleanup_temporary(void)
 {
-	if (capture.system_trace[0] &&
-	    (!capture.system_only || capture.system_created))
+	if (capture.system_created)
 		unlink(capture.system_trace);
 	if (capture.network_trace[0])
 		unlink(capture.network_trace);
@@ -477,11 +476,15 @@ int trace_capture_start(const char *output, __u32 duration_s,
 	capture.window_s = duration_s;
 	err = write_config(duration_s + PERFETTO_READY_TIMEOUT_MS / 1000,
 			   profile, perfetto_config, ring_buffer);
-	if (err)
+	if (err) {
+		pr_err("failed to write Perfetto config %s: %s\n",
+		       capture.config, strerror(-err));
 		goto fail;
+	}
+#ifndef ANETTRACE_ANDROID_TARGET
 	if (system_only) {
-		/* Open as the caller, then pass descriptors across Android's exec
-		 * domain transition; perfetto need not open files in shell's directory.
+		/* Android instead uses labelled paths: SELinux can deny writes even
+		 * through an inherited descriptor opened by the shell.
 		 */
 		config_fd = open(capture.config, O_RDONLY | O_CLOEXEC);
 		if (config_fd < 0) {
@@ -496,6 +499,7 @@ int trace_capture_start(const char *output, __u32 duration_s,
 		}
 		capture.system_created = true;
 	}
+#endif
 	if (pipe(ready_pipe) ||
 	    fcntl(ready_pipe[0], F_SETFD, FD_CLOEXEC) < 0 ||
 	    fcntl(ready_pipe[1], F_SETFD, FD_CLOEXEC) < 0) {
@@ -513,7 +517,7 @@ int trace_capture_start(const char *output, __u32 duration_s,
 		close(ready_pipe[0]);
 		if (fcntl(ready_pipe[1], F_SETFD, 0) < 0)
 			_exit(126);
-		if (system_only) {
+		if (config_fd >= 0) {
 			if (dup2(config_fd, STDIN_FILENO) < 0 ||
 			    dup2(system_fd, STDOUT_FILENO) < 0 ||
 			    fcntl(STDIN_FILENO, F_SETFD, 0) < 0 ||
@@ -539,6 +543,10 @@ int trace_capture_start(const char *output, __u32 duration_s,
 		close(system_fd);
 		system_fd = -1;
 	}
+	/* Perfetto creates its own trace on Android; shell cannot create files
+	 * in PERFETTO_TRACE_DIR on an unrooted device.
+	 */
+	capture.system_created = true;
 	capture.started = true;
 	close(ready_pipe[1]);
 	ready_pipe[1] = -1;
@@ -707,7 +715,8 @@ int trace_capture_finish(void)
 	}
 	err = file_nonempty(capture.system_trace);
 	if (err) {
-		pr_err("system Perfetto trace is missing or empty\n");
+		pr_err("system Perfetto trace is missing or empty: %s (%s)\n",
+		       capture.system_trace, strerror(-err));
 		goto out;
 	}
 	if (!capture.system_only) {

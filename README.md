@@ -110,8 +110,11 @@ sudo ./src/anettrace --traffic-ui --proto tcp --uid 1000 --interval 1
 `--perfetto-config` 和 `--ring-buffer`。不接受 `--uid`、`--pid`、`--traffic`、
 `--trace-detail` 等网络过滤、分析或 BPF 参数；系统采集范围由 Perfetto 配置决定。
 这里的无需 root 是指使用有系统 Perfetto 访问权限的 `adb shell` 用户，并不保证普通
-Android 应用身份可采集。设备 ROM 仍可能限制某些数据源。配置通过标准输入传递，输出
-通过标准输出写入调用者可写的临时文件，最终保存为单个纯系统 `.pftrace`。
+Android 应用身份可采集。设备 ROM 仍可能限制某些数据源。Android 版将配置临时写入
+`/data/misc/perfetto-configs`，由 Perfetto 自行在 `/data/misc/perfetto-traces` 创建
+trace，避免 SELinux 拒绝访问输出目录或继承的文件描述符。采集完成后，由 Anettrace
+读取并保存到 `--output` 指定的路径，清理本次配置和 trace 临时文件；最终输出目录
+只需调用者可写，无需 Perfetto 可写。自定义配置仍可放在 `/data/local/tmp`。
 若自定义配置自身启用了系统网络数据源，这些系统事件仍由 Perfetto 正常采集。
 
 `--perfetto-config` 与 `--trace-profile` 互斥。自定义配置中的顶层 `duration_ms`

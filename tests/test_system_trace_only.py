@@ -17,6 +17,12 @@ assert len(args) == 7 and args[0] == "--notify-fd"
 notify_fd = int(args[1])
 assert args[2:4] == ["--txt", "-c"] and args[5] == "-o"
 config = sys.stdin.read() if args[4] == "-" else open(args[4]).read()
+# Simulate a ROM which permits Perfetto only in its labelled directories.
+if "PERFETTO_TEST_ROOT" in os.environ:
+    root = os.environ["PERFETTO_TEST_ROOT"]
+    assert args[4].startswith(root + "/configs/")
+    assert args[6].startswith(root + "/traces/")
+    assert not os.path.exists(args[6]), "shell must not pre-create the trace"
 trace = sys.stdout.buffer if args[6] == "-" else open(args[6], "wb")
 with open(os.environ["CONFIG_LOG"], "w") as log:
     log.write(config)
@@ -115,13 +121,21 @@ typedef unsigned long long u64;
 ''')
         (base / "driver.c").write_text(DRIVER)
         cls.driver = base / "capture"
-        cls.combined_driver = base / "capture-combined"
+        cls.combined_driver = cls.driver
+        cls.android_driver = base / "capture-android"
+        cls.perfetto_root = base / "perfetto-data"
+        (cls.perfetto_root / "configs").mkdir(parents=True)
+        (cls.perfetto_root / "traces").mkdir()
         cmd = ["cc", "-std=gnu11", "-Wall", "-Wextra", "-Werror",
                f"-I{base}", f"-I{ROOT / 'src'}"]
         if sys.platform == "darwin":
             cmd += ["-DCLOCK_BOOTTIME=CLOCK_MONOTONIC"]
-        for driver in (cls.driver, cls.combined_driver):
-            target_flags = ["-DANETTRACE_ANDROID_TARGET"] if driver == cls.driver else []
+        for driver in (cls.driver, cls.android_driver):
+            target_flags = [
+                "-DANETTRACE_ANDROID_TARGET",
+                f'-DPERFETTO_CONFIG_DIR="{cls.perfetto_root}/configs"',
+                f'-DPERFETTO_TRACE_DIR="{cls.perfetto_root}/traces"',
+            ] if driver == cls.android_driver else []
             subprocess.run(cmd + target_flags + [str(base / "driver.c"),
                            str(ROOT / "src/trace_capture.c"),
                            str(ROOT / "src/perfetto_config.c"),
@@ -213,7 +227,7 @@ typedef unsigned long long u64;
         self.assertTrue(self.output.read_bytes().endswith(b"network"))
         self.assert_clean()
 
-    def test_duration_stdin_stdout_and_no_network(self):
+    def test_duration_and_no_network(self):
         start = time.monotonic()
         result = self.run_capture()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -264,10 +278,27 @@ typedef unsigned long long u64;
                 existing = Path(str(self.output) + suffix)
                 existing.write_bytes(b"keep")
                 result = self.run_capture()
-                self.assertNotEqual(result.returncode, 0)
+                if "PERFETTO_TEST_ROOT" in self.env and suffix:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.output.unlink()
+                else:
+                    self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(existing.read_bytes(), b"keep")
                 existing.unlink()
                 self.assert_clean()
+
+
+class AndroidSystemOnlyCaptureTest(SystemOnlyCaptureTest):
+    def setUp(self):
+        super().setUp()
+        self.driver = self.android_driver
+        self.combined_driver = self.android_driver
+        self.env["PERFETTO_TEST_ROOT"] = str(self.perfetto_root)
+
+    def assert_clean(self):
+        super().assert_clean()
+        for directory in ("configs", "traces"):
+            self.assertEqual(list((self.perfetto_root / directory).iterdir()), [])
 
 
 @unittest.skipUnless(os.environ.get("ANETTRACE_TEST_BIN"), "full CLI binary not supplied")
