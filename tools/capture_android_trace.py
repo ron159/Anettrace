@@ -429,6 +429,17 @@ def stop_remote(
     return wait_remote(adb, process, 2.0)
 
 
+def perfetto_supports_notify(adb: Adb) -> bool:
+    result = adb.shell("toybox timeout -s KILL 3 perfetto --help", check=False)
+    help_text = result.stdout + result.stderr
+    # Android Perfetto normally exits with 1 after printing its help.
+    if (result.returncode not in (0, 1) or "--txt" not in help_text or
+            not any(flag in help_text for flag in ("--config", "-c")) or
+            not any(flag in help_text for flag in ("--out", "-o"))):
+        raise CaptureError("failed to query Perfetto capabilities")
+    return "--notify-fd" in help_text
+
+
 def wait_perfetto_ready(adb: Adb, process: RemoteProcess, status_path: str, timeout_s: float) -> None:
     """Wait for --notify-fd's binary status byte while retaining the child PID."""
     deadline = time.monotonic() + timeout_s
@@ -444,7 +455,7 @@ def wait_perfetto_ready(adb: Adb, process: RemoteProcess, status_path: str, time
                 return
             raise CaptureError("Perfetto data sources failed to become ready")
         if not remote_alive(adb, process):
-            raise CaptureError("Perfetto exited during startup; --notify-fd support is required")
+            raise CaptureError("Perfetto exited during startup")
         time.sleep(0.1)
     raise CaptureError(f"Perfetto data sources did not become ready within {timeout_s:g} seconds")
 
@@ -1002,6 +1013,7 @@ def capture(args: argparse.Namespace) -> Path:
         if args.profile != "none":
             if device_value(adb, "command -v perfetto") == "":
                 raise CaptureError("device has no perfetto command")
+            notify_ready = perfetto_supports_notify(adb)
             local_config = output_dir / "perfetto-config.pbtxt"
             if args.perfetto_config:
                 config_text = bound_perfetto_config(
@@ -1072,8 +1084,7 @@ def capture(args: argparse.Namespace) -> Path:
         if args.profile != "none":
             commands["perfetto"] = [
                 "perfetto",
-                "--notify-fd",
-                "3",
+                *(["--notify-fd", "3"] if notify_ready else []),
                 "--txt",
                 "-c",
                 remote_config,
@@ -1081,7 +1092,8 @@ def capture(args: argparse.Namespace) -> Path:
                 remote_system_trace,
             ]
             perfetto_command = " ".join(shlex.quote(part) for part in commands["perfetto"])
-            perfetto_command += f" 3>{shlex.quote(remote_perfetto_ready)}"
+            if notify_ready:
+                perfetto_command += f" 3>{shlex.quote(remote_perfetto_ready)}"
             perfetto_process = start_remote(
                 adb,
                 "perfetto",
@@ -1091,8 +1103,17 @@ def capture(args: argparse.Namespace) -> Path:
             )
             remote_processes.append(perfetto_process)
             companion_processes.append(perfetto_process)
-            wait_perfetto_ready(adb, perfetto_process, remote_perfetto_ready, ANETTRACE_STARTUP_TIMEOUT_S)
-            manifest["readiness"]["perfetto"] = "ready"
+            if notify_ready:
+                wait_perfetto_ready(adb, perfetto_process, remote_perfetto_ready, ANETTRACE_STARTUP_TIMEOUT_S)
+                manifest["readiness"]["perfetto"] = "ready"
+            else:
+                time.sleep(0.2)
+                if not remote_alive(adb, perfetto_process):
+                    raise CaptureError("Perfetto exited during startup")
+                manifest["readiness"]["perfetto"] = "started_unconfirmed"
+                warning = "Perfetto has no --notify-fd; capturing without data-source readiness confirmation"
+                warnings.append(warning)
+                print(f"warning: {warning}", file=sys.stderr)
 
         if args.simpleperf_app or args.simpleperf_pid:
             if device_value(adb, "command -v simpleperf") == "":

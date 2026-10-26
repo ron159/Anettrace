@@ -23,6 +23,7 @@
 #include "trace_capture.h"
 
 #define PERFETTO_READY_TIMEOUT_MS 30000
+#define PERFETTO_HELP_TIMEOUT_MS 3000
 
 #ifndef PERFETTO_CONFIG_DIR
 #define PERFETTO_CONFIG_DIR "/data/misc/perfetto-configs"
@@ -338,6 +339,99 @@ static int wait_child(pid_t pid, unsigned int timeout_ms, int *status)
 	return -ETIMEDOUT;
 }
 
+static int perfetto_supports_notify(bool *supported)
+{
+	struct timespec start, now;
+	struct pollfd input;
+	char help[16384];
+	size_t used = 0;
+	int help_pipe[2], status, err = 0;
+	pid_t pid;
+
+	if (pipe(help_pipe))
+		return -errno;
+	pid = fork();
+	if (!pid) {
+		close(help_pipe[0]);
+		if (dup2(help_pipe[1], STDOUT_FILENO) < 0 ||
+		    dup2(help_pipe[1], STDERR_FILENO) < 0)
+			_exit(126);
+		close(help_pipe[1]);
+		execl("/system/bin/perfetto", "perfetto", "--help", NULL);
+		execlp("perfetto", "perfetto", "--help", NULL);
+		_exit(127);
+	}
+	close(help_pipe[1]);
+	if (pid < 0) {
+		err = -errno;
+		close(help_pipe[0]);
+		return err;
+	}
+	input = (struct pollfd){ .fd = help_pipe[0], .events = POLLIN };
+	if (clock_gettime(CLOCK_MONOTONIC, &start)) {
+		err = -errno;
+		goto out;
+	}
+	for (;;) {
+		long remaining;
+		ssize_t count;
+		int ready;
+
+		if (clock_gettime(CLOCK_MONOTONIC, &now)) {
+			err = -errno;
+			break;
+		}
+		remaining = PERFETTO_HELP_TIMEOUT_MS -
+			(now.tv_sec - start.tv_sec) * 1000 -
+			(now.tv_nsec - start.tv_nsec) / 1000000;
+		if (remaining <= 0) {
+			err = -ETIMEDOUT;
+			break;
+		}
+		ready = poll(&input, 1, remaining);
+		if (ready <= 0) {
+			err = ready ? -errno : -ETIMEDOUT;
+			break;
+		}
+		if (!(input.revents & (POLLIN | POLLHUP))) {
+			err = -EIO;
+			break;
+		}
+		count = read(input.fd, help + used, sizeof(help) - 1 - used);
+		if (count < 0) {
+			err = -errno;
+			break;
+		}
+		if (!count)
+			break;
+		used += count;
+		if (used == sizeof(help) - 1) {
+			err = -EOVERFLOW;
+			break;
+		}
+	}
+out:
+	close(help_pipe[0]);
+	if (!err)
+		err = wait_child(pid, 250, &status);
+	if (err) {
+		kill(pid, SIGKILL);
+		while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+			;
+		return err;
+	}
+	/* Perfetto's normal --help path exits with 1 on Android. */
+	if (!WIFEXITED(status) || WEXITSTATUS(status) > 1)
+		return -ECHILD;
+	help[used] = '\0';
+	if (!strstr(help, "--txt") ||
+	    (!strstr(help, "--config") && !strstr(help, "-c")) ||
+	    (!strstr(help, "--out") && !strstr(help, "-o")))
+		return -EPROTO;
+	*supported = strstr(help, "--notify-fd") != NULL;
+	return 0;
+}
+
 static int wait_perfetto_ready(int fd)
 {
 	struct pollfd ready = { .fd = fd, .events = POLLIN };
@@ -459,6 +553,9 @@ int trace_capture_start(const char *output, __u32 duration_s,
 {
 	const char *profile_name = perfetto_config ? "custom" : profile;
 	char notify_fd[16];
+	char *perfetto_args[10];
+	bool notify_ready;
+	int arg_count = 0;
 	int status, err;
 	int config_fd = -1, system_fd = -1;
 	int ready_pipe[2] = { -1, -1 };
@@ -488,6 +585,11 @@ int trace_capture_start(const char *output, __u32 duration_s,
 	err = system_temporary_paths();
 	if (err)
 		goto fail;
+	err = perfetto_supports_notify(&notify_ready);
+	if (err) {
+		pr_err("failed to query Perfetto capabilities: %s\n", strerror(-err));
+		goto fail;
+	}
 	capture.ring_buffer = ring_buffer;
 	capture.window_s = duration_s;
 	err = write_config(duration_s + PERFETTO_READY_TIMEOUT_MS / 1000,
@@ -516,13 +618,24 @@ int trace_capture_start(const char *output, __u32 duration_s,
 		capture.system_created = true;
 	}
 #endif
-	if (pipe(ready_pipe) ||
-	    fcntl(ready_pipe[0], F_SETFD, FD_CLOEXEC) < 0 ||
-	    fcntl(ready_pipe[1], F_SETFD, FD_CLOEXEC) < 0) {
-		err = -errno;
-		goto fail;
+	perfetto_args[arg_count++] = "perfetto";
+	if (notify_ready) {
+		if (pipe(ready_pipe) ||
+		    fcntl(ready_pipe[0], F_SETFD, FD_CLOEXEC) < 0 ||
+		    fcntl(ready_pipe[1], F_SETFD, FD_CLOEXEC) < 0) {
+			err = -errno;
+			goto fail;
+		}
+		snprintf(notify_fd, sizeof(notify_fd), "%d", ready_pipe[1]);
+		perfetto_args[arg_count++] = "--notify-fd";
+		perfetto_args[arg_count++] = notify_fd;
 	}
-	snprintf(notify_fd, sizeof(notify_fd), "%d", ready_pipe[1]);
+	perfetto_args[arg_count++] = "--txt";
+	perfetto_args[arg_count++] = "-c";
+	perfetto_args[arg_count++] = config_fd >= 0 ? "-" : capture.config;
+	perfetto_args[arg_count++] = "-o";
+	perfetto_args[arg_count++] = system_fd >= 0 ? "-" : capture.system_trace;
+	perfetto_args[arg_count] = NULL;
 
 	capture.perfetto_pid = fork();
 	if (capture.perfetto_pid < 0) {
@@ -530,25 +643,20 @@ int trace_capture_start(const char *output, __u32 duration_s,
 		goto fail;
 	}
 	if (!capture.perfetto_pid) {
-		close(ready_pipe[0]);
-		if (fcntl(ready_pipe[1], F_SETFD, 0) < 0)
-			_exit(126);
+		if (notify_ready) {
+			close(ready_pipe[0]);
+			if (fcntl(ready_pipe[1], F_SETFD, 0) < 0)
+				_exit(126);
+		}
 		if (config_fd >= 0) {
 			if (dup2(config_fd, STDIN_FILENO) < 0 ||
 			    dup2(system_fd, STDOUT_FILENO) < 0 ||
 			    fcntl(STDIN_FILENO, F_SETFD, 0) < 0 ||
 			    fcntl(STDOUT_FILENO, F_SETFD, 0) < 0)
 				_exit(126);
-			execl("/system/bin/perfetto", "perfetto", "--notify-fd",
-			      notify_fd, "--txt", "-c", "-", "-o", "-", NULL);
-			execlp("perfetto", "perfetto", "--notify-fd", notify_fd,
-			       "--txt", "-c", "-", "-o", "-", NULL);
-			_exit(127);
 		}
-		execl("/system/bin/perfetto", "perfetto", "--notify-fd", notify_fd,
-		      "--txt", "-c", capture.config, "-o", capture.system_trace, NULL);
-		execlp("perfetto", "perfetto", "--notify-fd", notify_fd, "--txt",
-		       "-c", capture.config, "-o", capture.system_trace, NULL);
+		execv("/system/bin/perfetto", perfetto_args);
+		execvp("perfetto", perfetto_args);
 		_exit(127);
 	}
 	if (config_fd >= 0) {
@@ -564,14 +672,28 @@ int trace_capture_start(const char *output, __u32 duration_s,
 	 */
 	capture.system_created = true;
 	capture.started = true;
-	close(ready_pipe[1]);
-	ready_pipe[1] = -1;
-	err = wait_perfetto_ready(ready_pipe[0]);
-	close(ready_pipe[0]);
-	ready_pipe[0] = -1;
-	if (err) {
-		pr_err("Perfetto did not acknowledge data-source readiness (--notify-fd required)\n");
-		goto fail;
+	if (notify_ready) {
+		close(ready_pipe[1]);
+		ready_pipe[1] = -1;
+		err = wait_perfetto_ready(ready_pipe[0]);
+		close(ready_pipe[0]);
+		ready_pipe[0] = -1;
+		if (err) {
+			pr_err("Perfetto did not acknowledge data-source readiness\n");
+			goto fail;
+		}
+	} else {
+		/* Keep Perfetto in the foreground so stop/reap and exit checks work
+		 * on older versions too. A live process is not a readiness ACK.
+		 */
+		err = wait_child(capture.perfetto_pid, 200, &status);
+		if (!err) {
+			capture.started = false;
+			err = -ECHILD;
+		}
+		if (err != -ETIMEDOUT)
+			goto fail;
+		pr_warn("Perfetto has no --notify-fd; capturing without data-source readiness confirmation (duration starts after launch)\n");
 	}
 	err = waitpid(capture.perfetto_pid, &status, WNOHANG);
 	if (err == capture.perfetto_pid) {

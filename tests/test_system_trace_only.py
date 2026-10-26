@@ -13,17 +13,35 @@ ROOT = Path(__file__).resolve().parents[1]
 FAKE_PERFETTO = r'''
 import os, re, signal, sys, time
 args = sys.argv[1:]
-assert len(args) == 7 and args[0] == "--notify-fd"
-notify_fd = int(args[1])
-assert args[2:4] == ["--txt", "-c"] and args[5] == "-o"
-config = sys.stdin.read() if args[4] == "-" else open(args[4]).read()
+legacy = os.environ.get("FAKE_LEGACY") == "1"
+if args == ["--help"]:
+    with open(os.environ["PROBE_PID_LOG"], "w") as log:
+        log.write(str(os.getpid()))
+    if os.environ.get("FAKE_MODE") == "help-fail":
+        sys.exit(7)
+    if os.environ.get("FAKE_MODE") == "help-hang":
+        time.sleep(60)
+    if os.environ.get("FAKE_MODE") == "help-invalid":
+        print("unrecognized help option", file=sys.stderr)
+        sys.exit(1)
+    print("--txt -c CONFIG -o TRACE" + ("" if legacy else " --notify-fd FD"), file=sys.stderr)
+    sys.exit(1)  # Perfetto normally returns 1 after printing --help.
+notify_fd = None
+if args[:1] == ["--notify-fd"]:
+    if legacy:
+        print("perfetto: unrecognized option '--notify-fd'", file=sys.stderr)
+        sys.exit(2)
+    notify_fd = int(args[1])
+    args = args[2:]
+assert len(args) == 5 and args[:2] == ["--txt", "-c"] and args[3] == "-o"
+config = sys.stdin.read() if args[2] == "-" else open(args[2]).read()
 # Simulate a ROM which permits Perfetto only in its labelled directories.
 if "PERFETTO_TEST_ROOT" in os.environ:
     root = os.environ["PERFETTO_TEST_ROOT"]
-    assert args[4].startswith(root + "/configs/")
-    assert args[6].startswith(root + "/traces/")
-    assert not os.path.exists(args[6]), "shell must not pre-create the trace"
-trace = sys.stdout.buffer if args[6] == "-" else open(args[6], "wb")
+    assert args[2].startswith(root + "/configs/")
+    assert args[4].startswith(root + "/traces/")
+    assert not os.path.exists(args[4]), "shell must not pre-create the trace"
+trace = sys.stdout.buffer if args[4] == "-" else open(args[4], "wb")
 with open(os.environ["CONFIG_LOG"], "w") as log:
     log.write(config)
 with open(os.environ["PID_LOG"], "w") as log:
@@ -54,7 +72,7 @@ if mode == "delayed-ready":
         if time.monotonic() >= expires:
             sys.exit(0)
         time.sleep(0.01)
-if mode != "no-ack":
+if notify_fd is not None and mode != "no-ack":
     os.write(notify_fd, b"\x01" if mode == "bad-ack" else b"0" if mode == "ascii-ack" else b"\x00")
     os.close(notify_fd)
 if os.environ.get("FAKE_MODE") == "fail":
@@ -175,8 +193,10 @@ typedef unsigned long long u64;
         self.output = self.base / "system.pftrace"
         self.log = self.base / "config.log"
         self.pid_log = self.base / "pid.log"
+        self.probe_pid_log = self.base / "probe.pid"
         self.env = dict(os.environ, PATH=f"{self.base}:{os.environ['PATH']}",
-                        CONFIG_LOG=str(self.log), PID_LOG=str(self.pid_log))
+                        CONFIG_LOG=str(self.log), PID_LOG=str(self.pid_log),
+                        PROBE_PID_LOG=str(self.probe_pid_log))
 
     def command(self, ring=False, custom="", duration=1):
         return [str(self.driver), str(self.output), str(duration),
@@ -188,9 +208,10 @@ typedef unsigned long long u64;
 
     def assert_clean(self):
         self.assertEqual(list(self.base.glob("*.tmp")), [])
-        if self.pid_log.exists():
-            with self.assertRaises(ProcessLookupError):
-                os.kill(int(self.pid_log.read_text()), 0)
+        for pid_log in (self.pid_log, self.probe_pid_log):
+            if pid_log.exists():
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(pid_log.read_text()), 0)
 
     def test_waits_for_delayed_binary_ready_ack(self):
         self.env["FAKE_MODE"] = "delayed-ready"
@@ -199,6 +220,36 @@ typedef unsigned long long u64;
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertGreaterEqual(time.monotonic() - start, 2.25)
         self.assert_clean()
+
+    def test_capability_probe_failure_and_timeout_are_not_legacy(self):
+        for mode in ("help-fail", "help-hang", "help-invalid"):
+            with self.subTest(mode=mode):
+                self.env["FAKE_MODE"] = mode
+                result = self.run_capture()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b"failed to query Perfetto capabilities", result.stderr)
+                self.assertFalse(self.pid_log.exists())
+                self.assertFalse(self.output.exists())
+                self.assert_clean()
+
+    def test_interrupt_during_capability_probe_reaps_child(self):
+        self.env["FAKE_MODE"] = "help-hang"
+        proc = subprocess.Popen(self.command(), env=self.env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            while not self.probe_pid_log.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(self.probe_pid_log.exists())
+            proc.send_signal(signal.SIGINT)
+            _, err = proc.communicate(timeout=5)
+            self.assertNotEqual(proc.returncode, 0, err)
+            self.assertFalse(self.output.exists())
+            self.assert_clean()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
 
     def test_bad_ack_is_rejected_and_child_is_reaped(self):
         for mode in ("bad-ack", "ascii-ack"):
@@ -250,6 +301,17 @@ typedef unsigned long long u64;
         self.assertTrue(self.output.read_bytes().endswith(b"network"))
         self.assert_clean()
 
+    def test_legacy_combined_capture(self):
+        if os.environ.get("ANETTRACE_TEST_BIN") and isinstance(self, SystemOnlyCliTest):
+            self.skipTest("combined driver test uses no BPF")
+        self.env["COMBINED"] = "1"
+        self.env["FAKE_LEGACY"] = "1"
+        result = subprocess.run([str(self.combined_driver), *self.command()[1:]],
+                                env=self.env, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.output.read_bytes().endswith(b"network"))
+        self.assert_clean()
+
     def test_duration_and_no_network(self):
         start = time.monotonic()
         result = self.run_capture()
@@ -269,7 +331,42 @@ typedef unsigned long long u64;
         self.assertIn("duration_ms: 32000", self.log.read_text())
         self.assert_clean()
 
+    def test_legacy_perfetto_without_notify_fd_captures(self):
+        self.env["FAKE_LEGACY"] = "1"
+        result = self.run_capture()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"without data-source readiness", result.stderr)
+        self.assertTrue(self.output.read_bytes().startswith(b"\x0a"))
+        self.assert_clean()
+
+    def test_legacy_custom_config(self):
+        self.env["FAKE_LEGACY"] = "1"
+        custom = self.base / "custom.pbtxt"
+        custom.write_text('duration_ms: 999999\nbuffers { size_kb: 1024 }\n')
+        result = self.run_capture(custom=custom)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("999999", self.log.read_text())
+        self.assertTrue(self.output.read_bytes().startswith(b"\x0a"))
+        self.assert_clean()
+
+    def test_legacy_perfetto_failure_and_empty_trace_are_rejected(self):
+        self.env["FAKE_LEGACY"] = "1"
+        for mode in ("early-fail", "fail", "empty"):
+            with self.subTest(mode=mode):
+                self.env["FAKE_MODE"] = mode
+                result = self.run_capture()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.output.exists())
+                self.assert_clean()
+
     def test_ring_waits_for_signal_and_saves(self):
+        self.assert_ring_capture()
+
+    def test_legacy_ring_waits_for_signal_and_saves(self):
+        self.env["FAKE_LEGACY"] = "1"
+        self.assert_ring_capture()
+
+    def assert_ring_capture(self):
         proc = subprocess.Popen(self.command(ring=True), env=self.env,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:

@@ -319,6 +319,22 @@ class FailureManifestTest(unittest.TestCase):
 
 
 class SuccessfulCaptureTest(unittest.TestCase):
+    def test_perfetto_capability_probe_accepts_help_exit_one(self) -> None:
+        adb = mock.Mock()
+        for notify in (True, False):
+            with self.subTest(notify=notify):
+                help_text = "--txt --config -c --out -o" + (" --notify-fd FD" if notify else "")
+                adb.shell.return_value = MODULE.subprocess.CompletedProcess([], 1, "", help_text)
+                self.assertEqual(MODULE.perfetto_supports_notify(adb), notify)
+
+    def test_perfetto_capability_probe_errors_are_not_legacy(self) -> None:
+        adb = mock.Mock()
+        for status, text in ((7, "--txt -c -o"), (137, ""), (1, "invalid help")):
+            with self.subTest(status=status, text=text):
+                adb.shell.return_value = MODULE.subprocess.CompletedProcess([], status, "", text)
+                with self.assertRaisesRegex(MODULE.CaptureError, "query Perfetto capabilities"):
+                    MODULE.perfetto_supports_notify(adb)
+
     def test_perfetto_readiness_requires_binary_zero_ack(self) -> None:
         process = MODULE.RemoteProcess("perfetto", 200, "/tmp/perfetto.log", "/tmp/session")
         adb = mock.Mock()
@@ -440,6 +456,7 @@ class SuccessfulCaptureTest(unittest.TestCase):
             package_uid = 10123
             readiness_delay = 0.0
             ready_status = 0
+            notify_supported = True
 
             def __init__(
                 self,
@@ -461,6 +478,9 @@ class SuccessfulCaptureTest(unittest.TestCase):
                 return self.result()
 
             def shell(self, script: str, *, check: bool = True):
+                if script == "toybox timeout -s KILL 3 perfetto --help":
+                    return self.result(returncode=1, stdout="--txt -c CONFIG -o TRACE" +
+                                       (" --notify-fd FD" if self.notify_supported else ""))
                 values = {
                     "id -u": "0\n",
                     "command -v perfetto": "/system/bin/perfetto\n",
@@ -478,6 +498,8 @@ class SuccessfulCaptureTest(unittest.TestCase):
                 if script in values:
                     return self.result(stdout=values[script])
                 if script.endswith("& echo $!"):
+                    if "--notify-fd" in script and not self.notify_supported:
+                        raise MODULE.CaptureError("perfetto: unrecognized option '--notify-fd'")
                     pid = self.next_pid
                     FakeAdb.next_pid += 1
                     self.alive[pid] = True
@@ -653,6 +675,17 @@ class SuccessfulCaptureTest(unittest.TestCase):
             failed_ready = MODULE.json.loads((args.out / "session-manifest.json").read_text())
             self.assertTrue(failed_ready["cleanup"]["verified"])
             self.assertNotIn("ready_at_utc", failed_ready["readiness"])
+
+            FakeAdb.notify_supported = False
+            args.out = root / "legacy-perfetto"
+            with mock.patch.object(MODULE, "Adb", FakeAdb):
+                legacy_path = MODULE.capture(args)
+            legacy = MODULE.json.loads(legacy_path.read_text())
+            self.assertEqual(legacy["status"], "success")
+            self.assertEqual(legacy["readiness"]["perfetto"], "started_unconfirmed")
+            self.assertNotIn("--notify-fd", legacy["commands"]["perfetto"])
+            self.assertTrue(any("without data-source readiness" in item for item in legacy["warnings"]))
+            self.assertTrue(legacy["cleanup"]["verified"])
 
 
 if __name__ == "__main__":
