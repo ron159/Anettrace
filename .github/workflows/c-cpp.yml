@@ -191,4 +191,5 @@ jobs:
             tests/test_perfetto_graph.py \
             tests/test_socket_overview_native.py \
             tests/test_trace_merge.py \
+            tests/test_network_report.py \
             tests/test_connect_diagnostics_schema.py

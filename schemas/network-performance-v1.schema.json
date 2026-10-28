@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ron159/Anettrace/schemas/network-performance-v1.schema.json",
+  "title": "Anettrace network performance report v1",
+  "type": "object",
+  "required": ["schema", "trace", "quality", "connections", "calls", "slow_calls", "excluded_calls"],
+  "properties": {
+    "schema": {"const": "anettrace.network-performance.v1"},
+    "trace": {
+      "type": "object", "required": ["name", "path", "size", "sha256"],
+      "properties": {
+        "name": {"type": "string"}, "path": {"type": "string"},
+        "size": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "quality": {
+      "type": "object", "required": ["status", "lost_events", "issues", "evidence", "packet_events", "calls"],
+      "properties": {
+        "status": {"enum": ["observed", "partial", "degraded"]},
+        "lost_events": {"type": ["integer", "null"], "minimum": 0},
+        "issues": {"type": "array", "items": {"type": "string"}},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "packet_events": {"type": "integer", "minimum": 0},
+        "calls": {"type": "integer", "minimum": 0}
+      }
+    },
+    "calls": {
+      "type": "object", "required": ["ranked_total", "excluded_total", "truncated", "limit"],
+      "properties": {
+        "ranked_total": {"type": "integer", "minimum": 0},
+        "excluded_total": {"type": "integer", "minimum": 0},
+        "truncated": {"type": "boolean"}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000}
+      }
+    },
+    "connections": {"type": "array", "items": {
+      "type": "object", "required": ["key", "socket_ids", "lifecycle_observed", "evidence"],
+      "properties": {"key": {"type": "string"}, "evidence": {"$ref": "#/$defs/evidence"}}
+    }},
+    "slow_calls": {"type": "array", "items": {"$ref": "#/$defs/call"}},
+    "excluded_calls": {"type": "array", "items": {"$ref": "#/$defs/call"}}
+  },
+  "$defs": {
+    "nanoseconds": {"type": "string", "pattern": "^-?[0-9]+$"},
+    "evidence": {
+      "type": "object", "required": ["sql", "ts_ns", "dur_ns", "perfetto_url"],
+      "properties": {
+        "sql": {"type": "string"}, "perfetto_url": {"type": "string", "pattern": "^https://ui\\.perfetto\\.dev/"},
+        "ts_ns": {"anyOf": [{"$ref": "#/$defs/nanoseconds"}, {"type": "null"}]},
+        "dur_ns": {"anyOf": [{"$ref": "#/$defs/nanoseconds"}, {"type": "null"}]}
+      }
+    },
+    "call": {
+      "type": "object", "required": ["name", "ts_ns", "dur_ns", "evidence"],
+      "properties": {
+        "name": {"type": "string"}, "ts_ns": {"$ref": "#/$defs/nanoseconds"},
+        "dur_ns": {"$ref": "#/$defs/nanoseconds"}, "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    }
+  }
+}

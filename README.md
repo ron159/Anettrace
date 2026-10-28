@@ -15,7 +15,8 @@ Anettrace 是面向 Linux 与已 root Android 设备的 eBPF 网络诊断工具�
 - `--traffic` 保留逐周期追加的线程流量表；`--traffic-ui` 启用当前速率、累计量、进程汇总及历史回看的交互界面；
 - `--capture-trace` 生成系统 Perfetto 与网络事件联合时间线；
 - `--ring-buffer` 持续抓取并在停止时保存最近 N 秒；
-- Android TCP 主动建连根因诊断与隐私受控报告。
+- Android TCP 主动建连根因诊断与隐私受控报告；
+- [通用收发性能报告与 Perfetto 入口](docs/network-performance-report.md)：从已有 `.pftrace` 查看采集质量、连接、慢调用和调度时间，每项可回到原始证据。
 
 ## 快速开始
 

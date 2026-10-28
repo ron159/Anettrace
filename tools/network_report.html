@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anettrace 收发性能报告</title>
+<style>
+:root{font:15px/1.6 system-ui,sans-serif;color:#18283c;background:#f3f6fa;color-scheme:light}
+body{max-width:1360px;margin:auto;padding:28px}h1{margin:0;font-size:28px}h2{font-size:21px;margin-top:0}
+header{margin-bottom:24px}header p{color:#53647a;margin:8px 0;overflow-wrap:anywhere}.muted{color:#53647a;font-size:13px}
+section{background:white;border:1px solid #dbe3ed;border-radius:10px;padding:22px;margin:20px 0}
+nav{display:flex;gap:20px;flex-wrap:wrap;margin-top:16px}a{color:#145aad}button{font:inherit;cursor:pointer;background:#edf4ff;color:#144e94;border:1px solid #b9cfee;border-radius:5px;padding:4px 10px;white-space:nowrap}
+button:hover{background:#dceaff}button:focus-visible,a:focus-visible{outline:3px solid #e58c19;outline-offset:3px}
+.scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid #e4eaf2}th{background:#f5f8fc;white-space:nowrap}td{max-width:380px;overflow-wrap:anywhere}
+.cards{display:flex;flex-wrap:wrap;gap:14px}.card{background:#f5f8fc;border:1px solid #e0e7f0;border-radius:7px;padding:12px;min-width:155px}.value{font-weight:650;font-size:22px}
+.actions{display:flex;gap:6px;flex-wrap:wrap}.badge{border-radius:4px;background:#fff0d2;padding:2px 8px}.bar{display:flex;min-width:180px;height:9px;border-radius:3px;overflow:hidden;background:#dfe4eb}.running{background:#16866d}.runnable{background:#e8ad32}.other{background:#6892ce}.uncovered{background:#dfe4eb}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:230px;overflow:auto}details{margin-top:6px}summary{cursor:pointer;color:#52657e}
+#status{position:sticky;bottom:12px;padding:12px;background:#18283c;color:white;border-radius:6px;display:none}#status a{color:#b6d6ff}
+@media(max-width:640px){body{padding:14px}section{padding:14px}.card{min-width:130px}h1{font-size:24px}}
+</style>
+<header>
+<div class="muted">ANETTRACE · 离线诊断</div><h1>收发性能报告</h1>
+<p id="source"></p><p class="muted" id="fingerprint"></p>
+<nav aria-label="报告导航"><a href="#quality">采集质量</a><a href="#connections">连接概览</a><a href="#calls">慢调用排行</a><a href="#schedule">调度时间</a><a href="report.json" download>下载 JSON</a></nav>
+</header>
+<section id="quality"><h2>采集质量 <span class="badge" id="quality-status"></span></h2><div class="cards" id="quality-cards"></div><ul id="issues"></ul><div id="metadata"></div></section>
+<section id="connections"><h2>连接概览</h2><p class="muted">按显式 flow_id 汇总；没有 flow_id 时按 socket_id 展示局部观测。共享 socket 的不同 flow 保持独立。skb 数不是线上包数，事件数包含同一 skb 的多个探针观测。</p><div class="scroll"><table><thead><tr><th>连接 / Socket</th><th>端点地址</th><th>调用</th><th>观测 TX / RX / skb</th><th>应用返回量</th><th>原始证据</th></tr></thead><tbody id="connection-rows"></tbody></table></div></section>
+<section id="calls"><h2>慢调用排行</h2><p id="call-summary" class="muted"></p><p class="muted">按完整、未裁剪应用系统调用的耗时降序排列。接收调用可能正常阻塞，耗时不直接代表异常或网络延迟。</p><div class="scroll"><table><thead><tr><th>调用 / 线程</th><th>耗时 ms</th><th>返回值</th><th>关联 ID</th><th>原始证据</th></tr></thead><tbody id="call-rows"></tbody></table></div><details><summary>未计入排行的调用</summary><div id="excluded"></div></details></section>
+<section id="schedule"><h2>调度时间</h2><p class="muted">以下为排行中每个调用窗口的状态交集：绿色 Running、黄色 Runnable（R / R+）、蓝色其他已观测状态、灰色未覆盖。其他状态不能等同于网络等待；仅按真实线程轨道关联，未按 socket 所有者或时间相近推断。</p><div class="scroll"><table><thead><tr><th>调用</th><th>状态分布</th><th>运行 ms</th><th>可运行等待 ms</th><th>其他 ms</th><th>未覆盖 ms</th><th>原始证据</th></tr></thead><tbody id="schedule-rows"></tbody></table></div></section>
+<footer class="muted">“在 Perfetto 定位”会打开官方 UI，通过浏览器 postMessage 载入本地 trace 并运行定位 SQL；点击查询结果可回到原始事件。trace 不上传到报告服务以外的服务器。直接打开 HTML 时可阅读及复制 SQL；完整入口请使用 network_report.py serve。</footer>
+<div id="status" role="status" aria-live="polite"></div>
+<script id="report-data" type="application/json">/*REPORT_DATA*/null</script>
+<script>
+'use strict';
+const report=JSON.parse(document.getElementById('report-data').textContent);
+const el=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
+const show=text=>{const s=document.getElementById('status');s.textContent=text;s.style.display='block';};
+const ms=ns=>(Number(ns)/1e6).toFixed(3);
+const text=value=>value===null||value===undefined?'未知':String(value);
+let traceBuffer;
+async function openEvidence(ev){
+  if(location.protocol!=='http:'||!['127.0.0.1','localhost'].includes(location.hostname)){
+    show('请运行 python3 tools/network_report.py serve <报告目录> --open，再点击定位。也可复制 SQL，在手动打开原始 trace 后执行。');return;
+  }
+  const origin='https://ui.perfetto.dev';
+  const target=window.open(ev.perfetto_url,'_blank');
+  if(!target){show('浏览器阻止了新窗口，请允许此本地报告打开 Perfetto。');return;}
+  show('正在载入原始 trace，等待 Perfetto 就绪…');
+  try{
+    const ready=new Promise((resolve,reject)=>{
+      const receive=event=>{
+        if(event.source===target&&event.origin===origin&&event.data==='PONG'){cleanup();resolve();}
+      };
+      const cleanup=()=>{clearInterval(ping);clearTimeout(timeout);window.removeEventListener('message',receive);};
+      window.addEventListener('message',receive);
+      const ping=setInterval(()=>{if(target.closed){cleanup();reject(new Error('Perfetto 窗口已关闭'));}else target.postMessage('PING',origin);},200);
+      const timeout=setTimeout(()=>{cleanup();reject(new Error('Perfetto 连接超时，请检查网络后重试'));},45000);
+    });
+    const load=async()=>{
+      if(!traceBuffer){
+        const response=await fetch('/trace.pftrace');
+        if(!response.ok)throw new Error('原始 trace 不可用或已改变，请重新生成报告');
+        const buffer=await response.arrayBuffer();
+        const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',buffer)),b=>b.toString(16).padStart(2,'0')).join('');
+        if(hash!==report.trace.sha256)throw new Error('Trace SHA-256 不匹配');
+        traceBuffer=buffer;
+      }
+    };
+    await Promise.all([ready,load()]);
+    target.postMessage({perfetto:{buffer:traceBuffer,title:report.trace.name,keepApiOpen:true}},origin);
+    show(ev.kind==='thread_state'?'原始线程状态已交给 Perfetto。在查询结果的 Interpret id as 中选择 thread_state.id，再点击 ID 箭头定位状态。':'已交给 Perfetto：查询结果保留精确事件条件。点击结果行可查看原始事件；SQL 可随时复制。');
+  }catch(error){show(error.message);}
+}
+function actions(ev){
+  const box=el('div');box.className='actions';
+  const open=el('button','在 Perfetto 定位');open.type='button';open.onclick=()=>openEvidence(ev);box.append(open);
+  const copy=el('button','复制 SQL');copy.type='button';copy.onclick=async()=>{try{await navigator.clipboard.writeText(ev.sql);show('定位 SQL 已复制');}catch{show('无法访问剪贴板，请展开 SQL 手动复制');}};box.append(copy);
+  const details=el('details');details.append(el('summary','SQL / 时间'));details.append(el('pre',ev.sql+'\n\nts_ns='+text(ev.ts_ns)+'; dur_ns='+text(ev.dur_ns)));box.append(details);
+  return box;
+}
+function row(parent,values){const tr=el('tr');for(const v of values){const td=el('td');if(v instanceof Node)td.append(v);else td.textContent=text(v);tr.append(td);}document.getElementById(parent).append(tr);}
+document.getElementById('source').textContent=report.trace.name+' · '+(report.trace.size/1048576).toFixed(2)+' MiB';
+document.getElementById('fingerprint').textContent='SHA-256 '+report.trace.sha256;
+const q=report.quality;
+document.getElementById('quality-status').textContent=({observed:'已观测',partial:'数据不完整',degraded:'存在采集缺口'})[q.status]||q.status;
+for(const [label,value,ev] of [['BPF 丢事件',q.lost_events,q.evidence],['packet 事件 / skb',q.packet_events+' / '+q.observed_skbs,q.packet_evidence],['应用调用 / 排除',q.calls+' / '+q.excluded_calls,q.call_evidence],['未关联事件',q.unassociated_events,q.unassociated_evidence]]){
+  const card=el('div');card.className='card';card.append(el('div',label));const number=el('div',text(value));number.className='value';card.append(number,actions(ev));document.getElementById('quality-cards').append(card);
+}
+for(const issue of q.issues)document.getElementById('issues').append(el('li',issue));
+for(const meta of q.metadata){const d=el('details');d.append(el('summary',meta.name),el('pre',JSON.stringify(meta.fields,null,2)),actions(meta.evidence));document.getElementById('metadata').append(d);}
+if(q.parser_stats.length){const d=el('details');d.append(el('summary','Trace Processor stats'),el('pre',JSON.stringify(q.parser_stats,null,2)),actions(q.stats_evidence));document.getElementById('metadata').append(d);}
+for(const c of report.connections)row('connection-rows',[c.key+'\n'+c.socket_ids.join(', ')+'\n'+(c.lifecycle_observed?'已观测生命周期':'局部观测'),c.endpoints.join('\n')||'未知',c.calls,c.tx_events+' / '+c.rx_events+' / '+c.observed_skbs,'TX '+c.application_tx_bytes+' / RX '+c.application_rx_bytes+' bytes; '+c.completed_messages+' messages',actions(c.evidence)]);
+document.getElementById('call-summary').textContent='完整调用 '+report.calls.ranked_total+'；显示前 '+report.slow_calls.length+'；排除 '+report.calls.excluded_total+'。未完成明细同样最多显示 '+report.calls.limit+' 条，完整数据可通过定位 SQL 查询。';
+for(const c of report.slow_calls){
+  row('call-rows',[c.name+'\nTID '+text(c.tid)+' / PID '+text(c.tgid),ms(c.dur_ns),text(c.result)+' '+text(c.result_unit),'call '+text(c.call_id)+'\nflow '+text(c.flow_id)+'\nsocket '+text(c.socket_id),actions(c.evidence)]);
+  const s=c.schedule,bar=el('div');bar.className='bar';bar.setAttribute('aria-label','调度状态分布');
+  for(const key of ['running','runnable','other','uncovered']){const segment=el('span');segment.className=key;segment.style.width=(Number(c.dur_ns)?Number(s[key+'_ns'])/Number(c.dur_ns)*100:0)+'%';bar.append(segment);}
+  const distribution=el('div');distribution.append(bar,el('span',s.status));
+  const links=actions(c.evidence);
+  if(s.evidence){const states=el('button','查看原始线程状态');states.type='button';states.onclick=()=>openEvidence(s.evidence);links.append(states);}
+  row('schedule-rows',[c.name+' · '+text(c.call_id),distribution,ms(s.running_ns),ms(s.runnable_ns),ms(s.other_ns),ms(s.uncovered_ns),links]);
+}
+for(const c of report.excluded_calls){const d=el('details');d.append(el('summary',c.name+' · '+text(c.call_id)),el('pre',JSON.stringify({incomplete:c.incomplete,start_clipped:c.start_clipped,result:c.result},null,2)),actions(c.evidence));document.getElementById('excluded').append(d);}
+</script>
+</html>

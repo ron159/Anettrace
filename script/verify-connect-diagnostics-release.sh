@@ -56,9 +56,11 @@ host_prefix="anettrace-${version}-host-tools"
 host_members="$(tar -tjf "$asset_dir/$host_archive")"
 for member in \
 	VERSION SOURCE_COMMIT README.md LICENSE docs/connect-diagnostics.md \
+	docs/network-performance-report.md schemas/network-performance-v1.schema.json \
 	schemas/connect-diagnostics-v1.schema.json \
 	tools/anettrace_to_perfetto.py tools/capture_android_trace.py \
 	tools/connect_diagnostics.py tools/diagnose_android_connect.py \
+	tools/network_report.py tools/network_report.html \
 	tools/validate_android_connect.py tools/soak_android_connect.py \
 	tools/merge_trace_with_anettrace.py tools/requirements-perfetto.txt \
 	tools/perfetto_sql/anettrace_integrity.sql \
