@@ -63,9 +63,19 @@ jobs:
               make -C bpftool/src -j2
               bpftool/src/bpftool version
 
-              wget -q \
+              # GitHub Raw can return 429. The official kernel mirror contains
+              # the identical v6.12 blob; verify either source before installing.
+              header=/tmp/anettrace-bpf-v6.12.h
+              if ! wget --timeout=30 --tries=2 \
                 https://raw.githubusercontent.com/torvalds/linux/v6.12/tools/include/uapi/linux/bpf.h \
-                -O /work/shared/bpf/linux/bpf.h
+                -O "$header"; then
+                wget --timeout=30 --tries=2 \
+                  "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.12/tools/include/uapi/linux/bpf.h?format=TEXT" \
+                  -O /tmp/anettrace-bpf-v6.12.base64
+                base64 --decode /tmp/anettrace-bpf-v6.12.base64 > "$header"
+              fi
+              echo "7d67e542c00f833a99b4c4e465aa3bc6bc785bc490d4969e879e931907af4807  $header" | sha256sum --check
+              install -m 0644 "$header" /work/shared/bpf/linux/bpf.h
 
               cd /work
               make clean
