@@ -116,7 +116,10 @@ def capture_quality(tp, events, packets, calls, excluded):
         lost = end_losses[0]
     elif end_losses:
         issues.append('存在多个 trace_end，无法确认计数是否来自同一次采集；请查看各段元数据')
-    observed_loss = any(value for value in end_losses if value is not None)
+    notifications = sum(m['fields'].get('count', 0) for m in metadata if m['name']=='lost_events')
+    observed_loss = notifications or any(value for value in end_losses if value is not None)
+    if notifications:
+        issues.append(f'lost_events 通知合计 {notifications} 个采集事件；不与 trace_end 累计值重复相加')
     stats_sql = "SELECT name,idx,severity,value FROM stats WHERE value>0 AND severity IN ('error','data_loss')"
     stats = rows(tp, stats_sql)
     if lost:
@@ -137,7 +140,7 @@ def capture_quality(tp, events, packets, calls, excluded):
     if not calls:
         issues.append('未观测到应用系统调用，无法生成应用慢调用排行')
     status = 'degraded' if observed_loss or stats or pressure else 'partial' if lost is None or not state_count or not calls else 'observed'
-    return dict(status=status, lost_events=lost, packet_events=len(packets),
+    return dict(status=status, lost_events=lost, observed_loss_notifications=notifications, packet_events=len(packets),
                 observed_skbs=len({p['packet_id'] for p in packets if p['packet_id']}),
                 calls=len(calls), excluded_calls=len(excluded), parser_stats=stats,
                 capture_end_observed=any(m['name']=='trace_end' for m in metadata),

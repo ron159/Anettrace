@@ -236,3 +236,19 @@ class NetworkReportTest(unittest.TestCase):
         quality = report.analyze(self.path)['quality']
         self.assertIsNone(quality['lost_events'])
         self.assertEqual(quality['status'], 'degraded')
+
+    def test_interrupted_capture_preserves_observed_loss(self):
+        fixture(self.path, ended=False)
+        trace = Trace.FromString(self.path.read_bytes())
+        packet = trace.packet.add(timestamp=BASE+300*MS, timestamp_clock_id=6,
+                                  trusted_packet_sequence_id=1)
+        packet.track_event.track_uuid = 1
+        packet.track_event.type = TrackEvent.TYPE_INSTANT
+        packet.track_event.name = 'lost_events'
+        packet.track_event.categories.append('anettrace.metadata')
+        packet.track_event.debug_annotations.add(name='count', string_value='7')
+        self.path.write_bytes(trace.SerializeToString())
+        quality = report.analyze(self.path)['quality']
+        self.assertIsNone(quality['lost_events'])
+        self.assertEqual(quality['observed_loss_notifications'], 7)
+        self.assertEqual(quality['status'], 'degraded')
