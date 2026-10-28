@@ -80,6 +80,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise SystemExit("This integration test requires root and kernel BTF.")
+    print(f"wakeup-chain kernel: {os.uname().release}", flush=True)
     with tempfile.TemporaryDirectory() as tmp:
         workload = Path(tmp) / "wakeup-workload"
         subprocess.run(["cc", "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-pthread",
