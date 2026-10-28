@@ -12,6 +12,42 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def validate_wakeup_calls(calls, identity, enabled, kernel_major):
+    assert len(calls) >= 24, len(calls)
+    if not enabled:
+        assert all('wakeup_status' not in call for call in calls), calls
+        return
+    observed_wakes = [call for call in calls if call.get('wakeup_status') == 'observed']
+    assert observed_wakes, 'No real wake/run observations'
+    for call in observed_wakes:
+        assert (0 < call['waking_ts_ns'] <= call['wakeup_ts_ns']
+                <= call['run_start_ts_ns'] <= call['start_ts_ns']), call
+        assert 'waking_flags' not in call, call
+    if kernel_major >= 7:
+        # network_wakeup_context deliberately rejects the unverified 7.x count
+        # layout. Exercise that contract while still requiring real wake/run data.
+        assert all(call['waking_context'] == 'unknown' for call in observed_wakes)
+        for call in calls:
+            for field in ('waker_tid', 'waker_tgid', 'waker_start_time_ns',
+                          'waker_task', 'waking_preempt_count'):
+                assert field not in call, (field, call)
+    else:
+        observed = [call for call in observed_wakes
+                    if call.get('waker_tid') == identity['waker_tid']]
+        assert observed, 'No task-context waker matched the workload'
+        for call in observed:
+            assert call['waking_context'] == 'task', call
+            count = call['waking_preempt_count']
+            assert isinstance(count, int) and 0 <= count <= 0xffffffff, call
+            assert count & 0x00ff0100 == 0, call
+            assert call['waker_tgid'] == identity['tgid'], call
+            assert call['waker_start_time_ns'] > 0, call
+    # No fabricated predecessor is allowed on a newly seen task/run.
+    for call in calls:
+        if call.get('wakeup_status') in ('unknown', 'run_without_observed_wake'):
+            assert 'waker_tid' not in call and 'waking_ts_ns' not in call, call
+
+
 def exercise(binary, workload, enabled):
     with tempfile.TemporaryDirectory() as tmp:
         events, log = Path(tmp) / "events.jsonl", Path(tmp) / "capture.log"
@@ -45,27 +81,8 @@ def exercise(binary, workload, enabled):
                      and r.get("tid") == identity["sender_tid"]
                      and r.get("syscall") == "sendto"
                      and r.get("fd") == identity["sender_fd"] and r.get("result") == 13]
-            assert len(calls) >= 24, (len(calls), log.read_text())
-            if not enabled:
-                assert all("wakeup_status" not in call for call in calls), calls
-            else:
-                observed = [r for r in calls if r.get("wakeup_status") == "observed"
-                            and r.get("waker_tid") == identity["waker_tid"]]
-                assert observed, (calls, log.read_text())
-                for call in observed:
-                    assert call["waking_context"] == "task", call
-                    count = call["waking_preempt_count"]
-                    assert isinstance(count, int) and 0 <= count <= 0xffffffff, call
-                    assert count & 0x00ff0100 == 0, call
-                    assert "waking_flags" not in call, call
-                    assert call["waker_tgid"] == identity["tgid"], call
-                    assert call["waker_start_time_ns"] > 0, call
-                    assert (0 < call["waking_ts_ns"] <= call["wakeup_ts_ns"]
-                            <= call["run_start_ts_ns"] <= call["start_ts_ns"]), call
-                # No fabricated predecessor is allowed on a newly seen task/run.
-                for call in calls:
-                    if call.get("wakeup_status") in ("unknown", "run_without_observed_wake"):
-                        assert "waker_tid" not in call and "waking_ts_ns" not in call, call
+            kernel_major = int(os.uname().release.split('.', 1)[0])
+            validate_wakeup_calls(calls, identity, enabled, kernel_major)
             print(f"wakeup-chain enabled={enabled}: {len(calls)} real UDP sends PASS")
         finally:
             for process in (tracer, worker):

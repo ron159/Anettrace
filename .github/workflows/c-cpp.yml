@@ -142,7 +142,9 @@ jobs:
           sudo python3 tests/udp_trace_integration.py ./src/anettrace --trace-tags
 
       - name: Verify observed wake-to-run context on the running kernel
-        run: sudo python3 tests/wakeup_trace_integration.py ./src/anettrace
+        run: |
+          python3 -m unittest tests/test_wakeup_integration_validation.py
+          sudo python3 tests/wakeup_trace_integration.py ./src/anettrace
 
       - name: Verify early RX context and target isolation on the running kernel
         run: sudo python3 tests/rx_context_integration.py ./src/anettrace
