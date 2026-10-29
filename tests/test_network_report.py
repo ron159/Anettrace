@@ -1,11 +1,14 @@
 """Report contracts exercised against real protobuf traces and Trace Processor."""
 import json
+import shutil
+import subprocess
 from pathlib import Path
 import tempfile
 import threading
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from urllib.parse import parse_qs, urlsplit
 
 from perfetto.protos.perfetto.trace.perfetto_trace_pb2 import Trace, TrackEvent
 from perfetto.trace_processor import TraceProcessor
@@ -123,7 +126,7 @@ class NetworkReportTest(unittest.TestCase):
             self.assertTrue(list(tp.query(result['slow_calls'][0]['schedule']['evidence']['sql'])))
         evidence = result['slow_calls'][0]['evidence']
         self.assertEqual(evidence['ts_ns'], str(BASE + 100 * MS))
-        self.assertIn('query=', evidence['perfetto_url'])
+        self.assertIn('ts=', evidence['perfetto_url'])
 
     def test_schedule_uses_clipped_states(self):
         fixture(self.path)
@@ -132,6 +135,83 @@ class NetworkReportTest(unittest.TestCase):
         self.assertEqual(schedule['runnable_ns'], str(50 * MS))
         self.assertEqual(schedule['other_ns'], str(30 * MS))
         self.assertEqual(schedule['uncovered_ns'], '0')
+
+    def test_socket_timeline_retains_all_observations_and_ids(self):
+        fixture(self.path)
+        trace = Trace.FromString(self.path.read_bytes())
+        def point(ts, category, name, **args):
+            packet = trace.packet.add(timestamp=BASE+ts*MS, timestamp_clock_id=6,
+                                      trusted_packet_sequence_id=1)
+            event = packet.track_event
+            event.track_uuid = 1
+            event.type = TrackEvent.TYPE_INSTANT
+            event.name = name
+            event.categories.append(category)
+            for key, value in args.items():
+                event.debug_annotations.add(name=key, string_value=str(value))
+        point(80, 'anettrace.socket', 'socket allocation', socket_id='s1')
+        for ts, flags, direction, packet_id in [(85, 2, 'tx', 'syn1'),
+                (86, 2, 'tx', 'syn1'), (87, 18, 'rx', 'syn2'),
+                (290, 17, 'tx', 'fin1'), (291, 17, 'rx', 'fin2')]:
+            point(ts, 'anettrace.packet', 'TCP packet', socket_id='s1',
+                  flow_id='f1', tcp_flags=flags, proto_l4=6, direction=direction,
+                  packet_id=packet_id, ip_id=4660, tcp_seq=123, tcp_ack=456)
+        point(85, 'anettrace.socket.packet', 'mirror', socket_id='s1', tcp_flags=2)
+        point(292, 'anettrace.packet.drop', 'TCP drop', owner_socket_id='s2', tcp_flags=4)
+        point(293, 'anettrace.packet', 'UDP packet', socket_id='s2', proto_l4=17, tcp_flags=2)
+        self.path.write_bytes(trace.SerializeToString())
+        result = report.analyze(self.path, limit=1)
+        schema = json.loads((Path(__file__).resolve().parents[1] /
+                             'schemas/network-performance-v1.schema.json').read_text())
+        Draft202012Validator(schema).validate(result)
+        sockets = {s['socket_id']: s for s in result['sockets']}
+        self.assertEqual(set(sockets), {'s1', 's2'})
+        s1 = sockets['s1']
+        self.assertEqual(len(s1['events']), 6)  # Preserve repeat probe observations.
+        self.assertEqual(s1['first_syn_ns'], str(BASE+85*MS))
+        self.assertEqual(s1['first_fin_ns'], str(BASE+290*MS))
+        self.assertEqual(s1['created_ns'], str(BASE+80*MS))
+        self.assertEqual(s1['events'][1]['packet_id'], 'syn1')
+        self.assertEqual(s1['events'][1]['ip_id'], 4660)
+        self.assertEqual(s1['events'][1]['tcp_seq'], 123)
+        self.assertEqual(s1['events'][3]['kinds'], ['syn_ack'])
+        self.assertIsNone(sockets['s2']['created_ns'])
+        self.assertIsNone(sockets['s2']['first_syn_ns'])
+        self.assertEqual(sockets['s2']['events'][0]['kinds'], ['rst'])
+        with TraceProcessor(trace=str(self.path)) as tp:
+            for socket in sockets.values():
+                for event in socket['events']:
+                    found = list(tp.query(event['evidence']['sql']))
+                    self.assertEqual(len(found), 1)
+                    self.assertEqual(found[0].ts, int(event['ts_ns']))
+
+    def test_direct_selection_only_when_timestamp_and_duration_are_unique(self):
+        fixture(self.path)
+        result = report.analyze(self.path)
+        ev = result['slow_calls'][0]['evidence']
+        params = parse_qs(urlsplit(ev['perfetto_url']).fragment.split('?', 1)[1])
+        self.assertEqual(params['ts'], [str(BASE+100*MS)])
+        self.assertEqual(params['dur'], [str(140*MS)])
+        self.assertNotIn('query', params)  # Open the selection details directly.
+        self.assertEqual(ev['selection'], 'slice')
+        trace = Trace.FromString(self.path.read_bytes())
+        original = next(p for p in trace.packet if p.track_event.name == 'trace_end')
+        extra = trace.packet.add()
+        extra.CopyFrom(original)
+        extra.track_event.categories[0] = 'other.tool'
+        # Two instant tags at the same timestamp must not select the wrong one.
+        self.path.write_bytes(trace.SerializeToString())
+        result = report.analyze(self.path)
+        meta = result['quality']['metadata'][0]['evidence']
+        self.assertEqual(meta['selection'], 'ambiguous')
+        params = parse_qs(urlsplit(meta['perfetto_url']).fragment.split('?', 1)[1])
+        self.assertNotIn('ts', params)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for navigation regression')
+    def test_perfetto_reuses_popup_and_reloads_selection(self):
+        root = Path(__file__).resolve().parents[1]
+        subprocess.run(['node', str(root/'tests/network_report_navigation.js'),
+                        str(root/'tools/network_report.html')], check=True)
 
     def test_tags_and_missing_capture_state_remain_unknown(self):
         fixture(self.path, states=False, ended=False, lifecycle=False)

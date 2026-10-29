@@ -5,28 +5,44 @@
 <title>Anettrace 收发性能报告</title>
 <style>
 :root{font:15px/1.6 system-ui,sans-serif;color:#18283c;background:#f3f6fa;color-scheme:light}
-body{max-width:1360px;margin:auto;padding:28px}h1{margin:0;font-size:28px}h2{font-size:21px;margin-top:0}
-header{margin-bottom:24px}header p{color:#53647a;margin:8px 0;overflow-wrap:anywhere}.muted{color:#53647a;font-size:13px}
-section{background:white;border:1px solid #dbe3ed;border-radius:10px;padding:22px;margin:20px 0}
-nav{display:flex;gap:20px;flex-wrap:wrap;margin-top:16px}a{color:#145aad}button{font:inherit;cursor:pointer;background:#edf4ff;color:#144e94;border:1px solid #b9cfee;border-radius:5px;padding:4px 10px;white-space:nowrap}
+body{box-sizing:border-box;height:100dvh;max-width:1600px;margin:auto;padding:20px;display:flex;flex-direction:column;overflow:hidden}h1{margin:0;font-size:28px}h2{font-size:21px;margin-top:0}
+header{flex:none;margin-bottom:12px}header p{color:#53647a;margin:8px 0;overflow-wrap:anywhere}.muted{color:#53647a;font-size:13px}
+main{flex:1;min-height:0;display:flex}section{box-sizing:border-box;width:100%;min-height:0;background:white;border:1px solid #dbe3ed;border-radius:10px;padding:20px;display:flex;flex-direction:column;overflow:auto}[hidden]{display:none!important}section>p{margin:0 0 12px}section h2{margin:0 0 12px}section>.scroll{flex:1;min-height:100px}footer{flex:none;margin-top:10px;font-size:12px!important}
+nav{display:flex;gap:8px;overflow-x:auto;margin-top:12px;align-items:center;flex:none}nav button{padding:8px 14px;border-color:transparent;background:transparent;color:#53647a}nav button[aria-selected="true"]{background:#145aad;color:white}nav a{margin-left:auto;white-space:nowrap}.pager,.filters{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0 0}.filters{margin:0 0 12px}input,select{font:inherit;padding:6px 10px;border:1px solid #b9cfee;border-radius:5px;max-width:100%;box-sizing:border-box}button:disabled{cursor:default;opacity:.45}#socket-summary-rows td:not(:first-child),#socket-rows td:nth-child(2){white-space:pre;font-variant-numeric:tabular-nums}.views{display:flex;gap:6px}.views button[aria-pressed="true"]{background:#145aad;color:white}th{position:sticky;top:0;z-index:1}a{color:#145aad}button{font:inherit;cursor:pointer;background:#edf4ff;color:#144e94;border:1px solid #b9cfee;border-radius:5px;padding:4px 10px;white-space:nowrap}
 button:hover{background:#dceaff}button:focus-visible,a:focus-visible{outline:3px solid #e58c19;outline-offset:3px}
-.scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid #e4eaf2}th{background:#f5f8fc;white-space:nowrap}td{max-width:380px;overflow-wrap:anywhere}
+.scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid #e4eaf2}th{background:#f5f8fc;white-space:nowrap}td{max-width:380px;overflow-wrap:anywhere;white-space:pre-line}
 .cards{display:flex;flex-wrap:wrap;gap:14px}.card{background:#f5f8fc;border:1px solid #e0e7f0;border-radius:7px;padding:12px;min-width:155px}.value{font-weight:650;font-size:22px}
 .actions{display:flex;gap:6px;flex-wrap:wrap}.badge{border-radius:4px;background:#fff0d2;padding:2px 8px}.bar{display:flex;min-width:180px;height:9px;border-radius:3px;overflow:hidden;background:#dfe4eb}.running{background:#16866d}.runnable{background:#e8ad32}.other{background:#6892ce}.uncovered{background:#dfe4eb}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:230px;overflow:auto}details{margin-top:6px}summary{cursor:pointer;color:#52657e}
-#status{position:sticky;bottom:12px;padding:12px;background:#18283c;color:white;border-radius:6px;display:none}#status a{color:#b6d6ff}
-@media(max-width:640px){body{padding:14px}section{padding:14px}.card{min-width:130px}h1{font-size:24px}}
+#status{position:fixed;z-index:5;bottom:14px;right:14px;max-width:min(600px,85vw);padding:12px;background:#18283c;color:white;border-radius:6px;display:none}#status a{color:#b6d6ff}
+@media(max-width:640px){body{padding:10px}section{padding:12px}header p{margin:4px 0}header h1{font-size:22px}nav{gap:2px}nav button{padding:7px 10px}.card{min-width:130px}h1{font-size:24px}}
 </style>
 <header>
 <div class="muted">ANETTRACE · 离线诊断</div><h1>收发性能报告</h1>
 <p id="source"></p><p class="muted" id="fingerprint"></p>
-<nav aria-label="报告导航"><a href="#quality">采集质量</a><a href="#connections">连接概览</a><a href="#calls">慢调用排行</a><a href="#schedule">调度时间</a><a href="report.json" download>下载 JSON</a></nav>
+<nav role="tablist" aria-label="报告页面">
+<button role="tab" id="tab-quality" aria-controls="quality" aria-selected="true" tabindex="0">采集质量</button>
+<button role="tab" id="tab-connections" aria-controls="connections" aria-selected="false" tabindex="-1">连接概览</button>
+<button role="tab" id="tab-sockets" aria-controls="sockets" aria-selected="false" tabindex="-1">Socket 时间线</button>
+<button role="tab" id="tab-calls" aria-controls="calls" aria-selected="false" tabindex="-1">慢调用排行</button>
+<button role="tab" id="tab-schedule" aria-controls="schedule" aria-selected="false" tabindex="-1">调度时间</button>
+<a href="report.json" download>下载 JSON</a></nav>
 </header>
-<section id="quality"><h2>采集质量 <span class="badge" id="quality-status"></span></h2><div class="cards" id="quality-cards"></div><ul id="issues"></ul><div id="metadata"></div></section>
-<section id="connections"><h2>连接概览</h2><p class="muted">按显式 flow_id 汇总；没有 flow_id 时按 socket_id 展示局部观测。共享 socket 的不同 flow 保持独立。skb 数不是线上包数，事件数包含同一 skb 的多个探针观测。</p><div class="scroll"><table><thead><tr><th>连接 / Socket</th><th>端点地址</th><th>调用</th><th>观测 TX / RX / skb</th><th>应用返回量</th><th>原始证据</th></tr></thead><tbody id="connection-rows"></tbody></table></div></section>
-<section id="calls"><h2>慢调用排行</h2><p id="call-summary" class="muted"></p><p class="muted">按完整、未裁剪应用系统调用的耗时降序排列。接收调用可能正常阻塞，耗时不直接代表异常或网络延迟。</p><div class="scroll"><table><thead><tr><th>调用 / 线程</th><th>耗时 ms</th><th>返回值</th><th>关联 ID</th><th>原始证据</th></tr></thead><tbody id="call-rows"></tbody></table></div><details><summary>未计入排行的调用</summary><div id="excluded"></div></details></section>
-<section id="schedule"><h2>调度时间</h2><p class="muted">以下为排行中每个调用窗口的状态交集：绿色 Running、黄色 Runnable（R / R+）、蓝色其他已观测状态、灰色未覆盖。其他状态不能等同于网络等待；仅按真实线程轨道关联，未按 socket 所有者或时间相近推断。</p><div class="scroll"><table><thead><tr><th>调用</th><th>状态分布</th><th>运行 ms</th><th>可运行等待 ms</th><th>其他 ms</th><th>未覆盖 ms</th><th>原始证据</th></tr></thead><tbody id="schedule-rows"></tbody></table></div></section>
-<footer class="muted">“在 Perfetto 定位”会打开官方 UI，通过浏览器 postMessage 载入本地 trace 并运行定位 SQL；点击查询结果可回到原始事件。trace 不上传到报告服务以外的服务器。直接打开 HTML 时可阅读及复制 SQL；完整入口请使用 network_report.py serve。</footer>
+<main>
+<section id="quality" role="tabpanel" aria-labelledby="tab-quality"><h2>采集质量 <span class="badge" id="quality-status"></span></h2><div class="cards" id="quality-cards"></div><ul id="issues"></ul><div id="metadata"></div></section>
+<section id="connections" role="tabpanel" aria-labelledby="tab-connections" hidden><h2>连接概览</h2><p class="muted">按显式 flow_id 汇总；没有 flow_id 时按 socket_id 展示局部观测。共享 socket 的不同 flow 保持独立。skb 数不是线上包数，事件数包含同一 skb 的多个探针观测。</p><div class="scroll"><table><thead><tr><th>连接 / Socket</th><th>端点地址</th><th>调用</th><th>观测 TX / RX / skb</th><th>应用返回量</th><th>原始证据</th></tr></thead><tbody id="connection-rows"></tbody></table></div></section>
+<section id="sockets" role="tabpanel" aria-labelledby="tab-sockets" hidden>
+<h2>Socket 创建与 TCP 时序</h2>
+<p class="muted">创建记录显示 allocation 开始 / 完成；SYN、SYN-ACK、FIN、RST 保留每次探针观测（含重传）。未观测不等于未发生，首个 FIN 不代表连接已关闭。</p>
+<div class="filters"><label>Socket <input id="socket-filter" type="search" placeholder="全部 / 输入 Socket ID" list="socket-ids"></label><datalist id="socket-ids"></datalist><button id="clear-socket" type="button">查看全部</button><label>事件 <select id="socket-kind"><option value="">全部</option><option value="create">创建</option><option value="syn">SYN</option><option value="syn_ack">SYN-ACK</option><option value="fin">FIN</option><option value="rst">RST</option></select></label></div>
+<div class="filters views" role="group" aria-label="Socket 展示方式"><button id="socket-overview" type="button" aria-pressed="true">时间点概览</button><button id="socket-events" type="button" aria-pressed="false">事件明细</button><span id="socket-count" class="muted"></span></div>
+<div class="scroll" id="socket-summary-table"><table><thead><tr><th>Socket / 端点</th><th>创建开始 ns</th><th>首个 SYN ns</th><th>首个 SYN-ACK ns</th><th>首个 FIN ns</th><th>首个 RST ns</th></tr></thead><tbody id="socket-summary-rows"></tbody></table></div><div id="socket-summary-pager"></div>
+<div class="scroll" id="socket-event-table" hidden><table><thead><tr><th>Socket / 事件</th><th>时刻 ns / 创建完成</th><th>方向 / 端点</th><th>Packet / Flow / IP ID</th><th>TCP 信息</th><th>原始 tag</th></tr></thead><tbody id="socket-rows"></tbody></table></div><div id="socket-pager" hidden></div>
+</section>
+<section id="calls" role="tabpanel" aria-labelledby="tab-calls" hidden><h2>慢调用排行</h2><p id="call-summary" class="muted"></p><p class="muted">按完整、未裁剪应用系统调用的耗时降序排列。接收调用可能正常阻塞，耗时不直接代表异常或网络延迟。</p><div class="scroll"><table><thead><tr><th>调用 / 线程</th><th>耗时 ms</th><th>返回值</th><th>关联 ID</th><th>原始证据</th></tr></thead><tbody id="call-rows"></tbody></table></div><details><summary>未计入排行的调用</summary><div id="excluded"></div></details></section>
+<section id="schedule" role="tabpanel" aria-labelledby="tab-schedule" hidden><h2>调度时间</h2><p class="muted">以下为排行中每个调用窗口的状态交集：绿色 Running、黄色 Runnable（R / R+）、蓝色其他已观测状态、灰色未覆盖。其他状态不能等同于网络等待；仅按真实线程轨道关联，未按 socket 所有者或时间相近推断。</p><div class="scroll"><table><thead><tr><th>调用</th><th>状态分布</th><th>运行 ms</th><th>可运行等待 ms</th><th>其他 ms</th><th>未覆盖 ms</th><th>原始证据</th></tr></thead><tbody id="schedule-rows"></tbody></table></div></section>
+</main>
+<footer class="muted">Perfetto 定位复用同一标签页，每次重新载入并选中 tag。同一时刻重叠 tag 或汇总项请点击精确 SQL 结果的 ID 箭头。HTML 可离线阅读；定位需 network_report.py serve。</footer>
 <div id="status" role="status" aria-live="polite"></div>
 <script id="report-data" type="application/json">/*REPORT_DATA*/null</script>
 <script>
@@ -36,21 +52,34 @@ const el=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.
 const show=text=>{const s=document.getElementById('status');s.textContent=text;s.style.display='block';};
 const ms=ns=>(Number(ns)/1e6).toFixed(3);
 const text=value=>value===null||value===undefined?'未知':String(value);
-let traceBuffer;
+let traceBuffer, perfettoWindow, opening=false, navigation=0;
 async function openEvidence(ev){
   if(location.protocol!=='http:'||!['127.0.0.1','localhost'].includes(location.hostname)){
     show('请运行 python3 tools/network_report.py serve <报告目录> --open，再点击定位。也可复制 SQL，在手动打开原始 trace 后执行。');return;
   }
+  if(opening){show('正在载入 Perfetto，请稍后再定位下一个 tag。');return;}
   const origin='https://ui.perfetto.dev';
-  const target=window.open(ev.perfetto_url,'_blank');
+  // A fresh document is required: Perfetto consumes selection/query args only on its first trace.
+  // A changing search parameter forces a document navigation even for the same event.
+  const url=new URL(ev.perfetto_url);
+  if(url.origin!==origin){show('无效的 Perfetto 地址');return;}
+  url.searchParams.set('anettrace_jump',String(++navigation));
+  try{
+    if(!perfettoWindow||perfettoWindow.closed)perfettoWindow=window.open(url.href,'_blank');
+    else perfettoWindow.location=url.href;
+  }catch{show('无法复用 Perfetto 页面，请关闭原标签页后重试。');return;}
+  const target=perfettoWindow;
   if(!target){show('浏览器阻止了新窗口，请允许此本地报告打开 Perfetto。');return;}
-  show('正在载入原始 trace，等待 Perfetto 就绪…');
+  target.focus();opening=true;
+  let cancelReady=()=>{};
+  show('正在载入原始 trace，等待 Perfetto 定位…');
   try{
     const ready=new Promise((resolve,reject)=>{
       const receive=event=>{
         if(event.source===target&&event.origin===origin&&event.data==='PONG'){cleanup();resolve();}
       };
       const cleanup=()=>{clearInterval(ping);clearTimeout(timeout);window.removeEventListener('message',receive);};
+      cancelReady=cleanup;
       window.addEventListener('message',receive);
       const ping=setInterval(()=>{if(target.closed){cleanup();reject(new Error('Perfetto 窗口已关闭'));}else target.postMessage('PING',origin);},200);
       const timeout=setTimeout(()=>{cleanup();reject(new Error('Perfetto 连接超时，请检查网络后重试'));},45000);
@@ -66,9 +95,10 @@ async function openEvidence(ev){
       }
     };
     await Promise.all([ready,load()]);
-    target.postMessage({perfetto:{buffer:traceBuffer,title:report.trace.name,keepApiOpen:true}},origin);
-    show(ev.kind==='thread_state'?'原始线程状态已交给 Perfetto。在查询结果的 Interpret id as 中选择 thread_state.id，再点击 ID 箭头定位状态。':'已交给 Perfetto：查询结果保留精确事件条件。点击结果行可查看原始事件；SQL 可随时复制。');
-  }catch(error){show(error.message);}
+    // Do not keep the old document's listener open: it must not acknowledge the next navigation.
+    target.postMessage({perfetto:{buffer:traceBuffer,title:report.trace.name}},origin);
+    show(ev.selection==='slice'?'已交给 Perfetto 自动选中原始 tag。':ev.kind==='thread_state'?'已打开原始线程状态查询。Interpret id as 选择 thread_state.id，再点击 ID 箭头。':ev.selection==='ambiguous'?'目标时刻有多个重叠 tag，已运行精确 SQL；点击结果的 ID 箭头定位。':'已打开汇总证据查询；点击结果的 ID 箭头定位具体 tag。');
+  }catch(error){show(error.message);}finally{cancelReady();opening=false;}
 }
 function actions(ev){
   const box=el('div');box.className='actions';
@@ -78,6 +108,32 @@ function actions(ev){
   return box;
 }
 function row(parent,values){const tr=el('tr');for(const v of values){const td=el('td');if(v instanceof Node)td.append(v);else td.textContent=text(v);tr.append(td);}document.getElementById(parent).append(tr);}
+const tabs=Array.from(document.querySelectorAll('[role="tab"]'));
+function selectTab(id,focus=false){
+  if(!tabs.some(t=>t.getAttribute('aria-controls')===id))id='quality';
+  for(const tab of tabs){const active=tab.getAttribute('aria-controls')===id;tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;document.getElementById(tab.getAttribute('aria-controls')).hidden=!active;if(active&&focus)tab.focus();}
+  history.replaceState(null,'','#'+id);
+}
+for(const [index,tab] of tabs.entries()){
+  tab.onclick=()=>selectTab(tab.getAttribute('aria-controls'));
+  tab.onkeydown=event=>{let next;if(event.key==='ArrowRight')next=(index+1)%tabs.length;else if(event.key==='ArrowLeft')next=(index+tabs.length-1)%tabs.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=tabs.length-1;else return;event.preventDefault();selectTab(tabs[next].getAttribute('aria-controls'),true);};
+}
+selectTab(location.hash.slice(1));
+window.addEventListener('hashchange',()=>selectTab(location.hash.slice(1)));
+function paginate(id,items,render,pageSize=25,pagerId){
+  const body=document.getElementById(id),pager=pagerId?document.getElementById(pagerId):el('div');
+  if(!pagerId)body.closest('.scroll').after(pager);
+  pager.className='pager';let page=0;
+  const draw=()=>{
+    body.replaceChildren();pager.replaceChildren();
+    const pages=Math.max(1,Math.ceil(items.length/pageSize));
+    for(const item of items.slice(page*pageSize,(page+1)*pageSize))render(item);
+    const prev=el('button','上一页'),next=el('button','下一页');prev.disabled=page===0;next.disabled=page>=pages-1;
+    prev.onclick=()=>{page--;draw();};next.onclick=()=>{page++;draw();};
+    pager.append(prev,el('span',items.length+' 条 · '+(page+1)+' / '+pages+' 页'),next);
+    body.closest('.scroll').scrollTop=0;
+  };draw();
+}
 document.getElementById('source').textContent=report.trace.name+' · '+(report.trace.size/1048576).toFixed(2)+' MiB';
 document.getElementById('fingerprint').textContent='SHA-256 '+report.trace.sha256;
 const q=report.quality;
@@ -88,17 +144,53 @@ for(const [label,value,ev] of [['BPF 丢事件',q.lost_events,q.evidence],['pack
 for(const issue of q.issues)document.getElementById('issues').append(el('li',issue));
 for(const meta of q.metadata){const d=el('details');d.append(el('summary',meta.name),el('pre',JSON.stringify(meta.fields,null,2)),actions(meta.evidence));document.getElementById('metadata').append(d);}
 if(q.parser_stats.length){const d=el('details');d.append(el('summary','Trace Processor stats'),el('pre',JSON.stringify(q.parser_stats,null,2)),actions(q.stats_evidence));document.getElementById('metadata').append(d);}
-for(const c of report.connections)row('connection-rows',[c.key+'\n'+c.socket_ids.join(', ')+'\n'+(c.lifecycle_observed?'已观测生命周期':'局部观测'),c.endpoints.join('\n')||'未知',c.calls,c.tx_events+' / '+c.rx_events+' / '+c.observed_skbs,'TX '+c.application_tx_bytes+' / RX '+c.application_rx_bytes+' bytes; '+c.completed_messages+' messages',actions(c.evidence)]);
+paginate('connection-rows',report.connections,c=>row('connection-rows',[c.key+'\n'+c.socket_ids.join(', ')+'\n'+(c.lifecycle_observed?'已观测生命周期':'局部观测'),c.endpoints.join('\n')||'未知',c.calls,c.tx_events+' / '+c.rx_events+' / '+c.observed_skbs,'TX '+c.application_tx_bytes+' / RX '+c.application_rx_bytes+' bytes; '+c.completed_messages+' messages',actions(c.evidence)]));
 document.getElementById('call-summary').textContent='完整调用 '+report.calls.ranked_total+'；显示前 '+report.slow_calls.length+'；排除 '+report.calls.excluded_total+'。未完成明细同样最多显示 '+report.calls.limit+' 条，完整数据可通过定位 SQL 查询。';
-for(const c of report.slow_calls){
-  row('call-rows',[c.name+'\nTID '+text(c.tid)+' / PID '+text(c.tgid),ms(c.dur_ns),text(c.result)+' '+text(c.result_unit),'call '+text(c.call_id)+'\nflow '+text(c.flow_id)+'\nsocket '+text(c.socket_id),actions(c.evidence)]);
+paginate('call-rows',report.slow_calls,c=>row('call-rows',[c.name+'\nTID '+text(c.tid)+' / PID '+text(c.tgid),ms(c.dur_ns),text(c.result)+' '+text(c.result_unit),'call '+text(c.call_id)+'\nflow '+text(c.flow_id)+'\nsocket '+text(c.socket_id),actions(c.evidence)]));
+paginate('schedule-rows',report.slow_calls,c=>{
   const s=c.schedule,bar=el('div');bar.className='bar';bar.setAttribute('aria-label','调度状态分布');
   for(const key of ['running','runnable','other','uncovered']){const segment=el('span');segment.className=key;segment.style.width=(Number(c.dur_ns)?Number(s[key+'_ns'])/Number(c.dur_ns)*100:0)+'%';bar.append(segment);}
   const distribution=el('div');distribution.append(bar,el('span',s.status));
   const links=actions(c.evidence);
   if(s.evidence){const states=el('button','查看原始线程状态');states.type='button';states.onclick=()=>openEvidence(s.evidence);links.append(states);}
   row('schedule-rows',[c.name+' · '+text(c.call_id),distribution,ms(s.running_ns),ms(s.runnable_ns),ms(s.other_ns),ms(s.uncovered_ns),links]);
+});
+const sockets=report.sockets||[];
+for(const socket of sockets){const option=el('option');option.value=socket.socket_id;document.getElementById('socket-ids').append(option);}
+const kindLabel={create:'创建',syn:'SYN',syn_ack:'SYN-ACK',fin:'FIN',rst:'RST'};
+const observed=value=>value===null?'未观测':value;
+let socketView='overview';
+function showSocketView(view){
+  socketView=view;
+  for(const [button,table,pager,mode] of [['socket-overview','socket-summary-table','socket-summary-pager','overview'],['socket-events','socket-event-table','socket-pager','events']]){
+    const active=view===mode;document.getElementById(button).setAttribute('aria-pressed',String(active));document.getElementById(table).hidden=!active;document.getElementById(pager).hidden=!active;
+  }
 }
+document.getElementById('socket-overview').onclick=()=>showSocketView('overview');
+document.getElementById('socket-events').onclick=()=>showSocketView('events');
+function renderSockets(){
+  const filter=document.getElementById('socket-filter').value.trim().toLowerCase(),kind=document.getElementById('socket-kind').value;
+  const selected=sockets.filter(s=>s.socket_id.toLowerCase().includes(filter));
+  const points=selected.flatMap(s=>s.events.map(e=>({...e,socket_id:s.socket_id}))).filter(e=>!kind||e.kinds.includes(kind));
+  points.sort((a,b)=>BigInt(a.ts_ns)<BigInt(b.ts_ns)?-1:BigInt(a.ts_ns)>BigInt(b.ts_ns)?1:0);
+  document.getElementById('socket-count').textContent=selected.length+' / '+sockets.length+' 个 Socket · '+points.length+' 条事件观测。时间使用原始绝对纳秒。';
+  paginate('socket-summary-rows',selected,s=>{
+    const pick=el('button',s.socket_id);pick.title='查看该 Socket 的事件明细';pick.onclick=()=>{document.getElementById('socket-filter').value=s.socket_id;socketView='events';renderSockets();};
+    const socket=el('div');socket.append(pick,el('div',s.endpoints.join(' / ')));
+    row('socket-summary-rows',[socket,...['created_ns','first_syn_ns','first_syn_ack_ns','first_fin_ns','first_rst_ns'].map(k=>observed(s[k]))]);
+  },10,'socket-summary-pager');
+  paginate('socket-rows',points,e=>row('socket-rows',[
+    e.socket_id+'\n'+e.kinds.map(k=>kindLabel[k]).join(' / ')+' · '+e.name,
+    e.ts_ns+(e.kinds.includes('create')?'\n完成 '+(BigInt(e.dur_ns)<0n?'未观测':String(BigInt(e.ts_ns)+BigInt(e.dur_ns))):''),
+    text(e.direction)+'\n'+e.endpoints,
+    'packet '+text(e.packet_id)+'\nflow '+text(e.flow_id)+'\nipid '+text(e.ip_id),
+    e.tcp_flags===null?'—':'flags '+e.tcp_flags+' / seq '+text(e.tcp_seq)+' / ack '+text(e.tcp_ack),actions(e.evidence)]),25,'socket-pager');
+  showSocketView(socketView);
+}
+document.getElementById('socket-filter').oninput=renderSockets;
+document.getElementById('socket-kind').onchange=()=>{socketView='events';renderSockets();};
+document.getElementById('clear-socket').onclick=()=>{document.getElementById('socket-filter').value='';renderSockets();};
+renderSockets();
 for(const c of report.excluded_calls){const d=el('details');d.append(el('summary',c.name+' · '+text(c.call_id)),el('pre',JSON.stringify({incomplete:c.incomplete,start_clipped:c.start_clipped,result:c.result},null,2)),actions(c.evidence));document.getElementById('excluded').append(d);}
 </script>
 </html>

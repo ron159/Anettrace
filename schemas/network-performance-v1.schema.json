@@ -38,10 +38,30 @@
       "properties": {"key": {"type": "string"}, "evidence": {"$ref": "#/$defs/evidence"}}
     }},
     "slow_calls": {"type": "array", "items": {"$ref": "#/$defs/call"}},
-    "excluded_calls": {"type": "array", "items": {"$ref": "#/$defs/call"}}
+    "excluded_calls": {"type": "array", "items": {"$ref": "#/$defs/call"}},
+    "sockets": {"type": "array", "items": {
+      "type": "object", "required": ["socket_id", "created_ns", "first_syn_ns", "first_syn_ack_ns", "first_fin_ns", "first_rst_ns", "events"],
+      "properties": {
+        "socket_id": {"type": "string"},
+        "created_ns": {"$ref": "#/$defs/optionalTime"},
+        "first_syn_ns": {"$ref": "#/$defs/optionalTime"},
+        "first_syn_ack_ns": {"$ref": "#/$defs/optionalTime"},
+        "first_fin_ns": {"$ref": "#/$defs/optionalTime"},
+        "first_rst_ns": {"$ref": "#/$defs/optionalTime"},
+        "events": {"type": "array", "items": {
+          "type": "object", "required": ["kinds", "ts_ns", "dur_ns", "evidence"],
+          "properties": {
+            "kinds": {"type": "array", "minItems": 1, "items": {"enum": ["create", "syn", "syn_ack", "fin", "rst"]}},
+            "ts_ns": {"$ref": "#/$defs/nanoseconds"}, "dur_ns": {"$ref": "#/$defs/nanoseconds"},
+            "evidence": {"$ref": "#/$defs/evidence"}
+          }
+        }}
+      }
+    }}
   },
   "$defs": {
     "nanoseconds": {"type": "string", "pattern": "^-?[0-9]+$"},
+    "optionalTime": {"anyOf": [{"$ref": "#/$defs/nanoseconds"}, {"type": "null"}]},
     "evidence": {
       "type": "object", "required": ["sql", "ts_ns", "dur_ns", "perfetto_url"],
       "properties": {
