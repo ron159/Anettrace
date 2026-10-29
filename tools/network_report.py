@@ -212,6 +212,27 @@ def schedule(tp, call):
     return result
 
 
+def report_time(tp, items):
+    start = rows(tp, 'SELECT start_ts FROM trace_bounds')[0]['start_ts']
+    timestamps = {start}
+    for item in items:
+        ev = item['evidence']
+        if ev['ts_ns'] is not None:
+            ts = int(ev['ts_ns'])
+            timestamps.add(ts)
+            if ev['dur_ns'] is not None and int(ev['dur_ns']) >= 0:
+                timestamps.add(ts + int(ev['dur_ns']))
+    ordered = sorted(timestamps)
+    converted = {}
+    # Query exact timestamps in batches; no assumed fixed realtime/boot offset.
+    for offset in range(0, len(ordered), 500):
+        values = ','.join(f'({ts})' for ts in ordered[offset:offset+500])
+        for row in rows(tp, f'WITH times(ts) AS (VALUES {values}) '
+                           'SELECT ts,TO_REALTIME(ts) AS realtime FROM times'):
+            converted[str(row['ts'])] = str(row['realtime']) if row['realtime'] is not None else None
+    return dict(timezone='UTC+8', trace_start_ns=str(start), realtime_by_ts=converted)
+
+
 def analyze(path, *, limit=50, trace_processor=None):
     from perfetto.trace_processor import TraceProcessor, TraceProcessorConfig
     path = Path(path).resolve(strict=True)
@@ -256,16 +277,20 @@ def analyze(path, *, limit=50, trace_processor=None):
             "SELECT s.* FROM slice s WHERE s.category IN ('anettrace.syscall','anettrace.packet','anettrace.packet.drop') AND "
             + ' AND '.join(missing_id(f) for f in ('flow_id','socket_id','owner_socket_id')))
         connections = connection_overview(events)
+        sockets = socket_timelines(events)
+        selected_excluded = [{**c, 'evidence': slice_evidence(c)} for c in excluded[:limit]]
+        time = report_time(tp, connections + ranked + selected_excluded + quality['metadata']
+                           + [point for socket in sockets for point in socket['events']])
         def public(event):
             return {**{k: v for k, v in event.items() if k not in ('ts', 'dur', 'arg_set_id')},
                     'ts_ns': str(event['ts']), 'dur_ns': str(event['dur'])}
         return dict(schema=SCHEMA, trace=dict(name=path.name, path=str(path), size=path.stat().st_size,
                                              sha256=digest(path)), quality=quality,
-                    connections=connections, sockets=socket_timelines(events),
+                    time=time, connections=connections, sockets=sockets,
                     calls=dict(ranked_total=len(complete),
                     excluded_total=len(excluded), truncated=len(complete)>limit, limit=limit),
                     slow_calls=[public(c) for c in ranked],
-                    excluded_calls=[public({**c, 'evidence': slice_evidence(c)}) for c in excluded[:limit]])
+                    excluded_calls=[public(c) for c in selected_excluded])
 
 
 def socket_timelines(events):

@@ -136,6 +136,38 @@ class NetworkReportTest(unittest.TestCase):
         self.assertEqual(schedule['other_ns'], str(30 * MS))
         self.assertEqual(schedule['uncovered_ns'], '0')
 
+    def test_report_time_uses_clock_mapping_and_keeps_exact_evidence(self):
+        fixture(self.path)
+        trace = Trace.FromString(self.path.read_bytes())
+        # UTC 16:00 rolls into the next UTC+8 calendar day.
+        realtime = 1793289600123456789
+        snapshot = Trace().packet.add().clock_snapshot
+        snapshot.primary_trace_clock = 6
+        snapshot.clocks.add(clock_id=6, timestamp=BASE)
+        snapshot.clocks.add(clock_id=1, timestamp=realtime)
+        packet = trace.packet.add()
+        packet.clock_snapshot.CopyFrom(snapshot)
+        self.path.write_bytes(trace.SerializeToString())
+        result = report.analyze(self.path)
+        time = result['time']
+        self.assertEqual(time['timezone'], 'UTC+8')
+        with TraceProcessor(trace=str(self.path)) as tp:
+            start = list(tp.query('SELECT start_ts FROM trace_bounds'))[0].start_ts
+            self.assertEqual(time['trace_start_ns'], str(start))
+            for ts, utc in time['realtime_by_ts'].items():
+                expected = list(tp.query(f'SELECT TO_REALTIME({ts}) AS t'))[0].t
+                self.assertEqual(utc, str(expected))
+        call = result['slow_calls'][0]
+        self.assertEqual(time['realtime_by_ts'][call['ts_ns']], str(realtime+100*MS))
+        self.assertIn(f"s.ts={BASE+100*MS}", call['evidence']['sql'])
+        self.assertIn('ts='+str(BASE+100*MS), call['evidence']['perfetto_url'])
+
+    def test_missing_wall_clock_stays_unknown(self):
+        fixture(self.path)
+        result = report.analyze(self.path)
+        self.assertTrue(result['time']['realtime_by_ts'])
+        self.assertTrue(all(t is None for t in result['time']['realtime_by_ts'].values()))
+
     def test_socket_timeline_retains_all_observations_and_ids(self):
         fixture(self.path)
         trace = Trace.FromString(self.path.read_bytes())
@@ -211,6 +243,12 @@ class NetworkReportTest(unittest.TestCase):
     def test_perfetto_reuses_popup_and_reloads_selection(self):
         root = Path(__file__).resolve().parents[1]
         subprocess.run(['node', str(root/'tests/network_report_navigation.js'),
+                        str(root/'tools/network_report.html')], check=True)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for time formatting regression')
+    def test_time_formatting_preserves_microseconds_and_missing_clocks(self):
+        root = Path(__file__).resolve().parents[1]
+        subprocess.run(['node', str(root/'tests/network_report_time.js'),
                         str(root/'tools/network_report.html')], check=True)
 
     def test_tags_and_missing_capture_state_remain_unknown(self):

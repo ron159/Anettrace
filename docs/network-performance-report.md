@@ -23,6 +23,10 @@ python3 -m venv .venv
 
 页面按“采集质量 / 连接概览 / Socket 时间线 / 慢调用排行 / 调度时间”五个 Tab 切换。表格分页，切换 Tab 不重新分析；可用左右方向键、Home / End 切换，URL 的页面片段可保存当前 Tab。
 
+时间默认按 UTC+8 显示时分秒（微秒精度），下方同时显示距 trace 起点的 `+123.456 ms` / `+1.234567 s`；也可在顶部切换为纯相对时间。顶部给出起点的完整日期，跨日事件另外显示日期。相对时间以整个 trace 的起点为零点，不受筛选或时区影响；耗时本身不加时区。
+
+UTC+8 使用 Trace Processor 的 `TO_REALTIME` 对各个显示时刻分别转换，不把开机时间、文件修改时间当作 UTC；缺少墙钟映射时明确回退相对时间。原始纳秒字符串仍保存在 JSON 和定位 SQL 中，Perfetto 跳转精度不变。
+
 稍后继续排障，不必重新分析：
 
 ```sh
@@ -45,7 +49,7 @@ python3 tools/network_report.py serve report --trace /new/path/capture.pftrace -
 
 连接概览不把共享 socket 的多个 flow 合并为一个连接，也不靠端点相同或时间接近补关联。没有生命周期记录时，连接开始、结束和总生命周期保持未知；这适用于极简 tag 模式和中途开始的采集。
 
-Socket 时间线的概览列出每个 socket 的创建开始、首个 SYN、SYN-ACK、FIN 和 RST 的绝对纳秒时间。输入完整或部分 Socket ID 可筛选，点击概览中的 ID 可查看该 socket；清空输入或点击“查看全部”恢复全部 socket。事件类型可进一步筛选。
+Socket 时间线的概览列出每个 socket 的创建开始、首个 SYN、SYN-ACK、FIN 和 RST 的时刻，遵循顶部选择的时间显示方式。输入完整或部分 Socket ID 可筛选，点击概览中的 ID 可查看该 socket；清空输入或点击“查看全部”恢复全部 socket。事件类型可进一步筛选。
 
 明细不受 `--limit` 限制，保留每次探针观测和重传，包括创建 allocation 的开始 / 完成时间、方向、端点、flow_id、packet_id、ip_id、TCP flags / seq / ack。创建只来自 `anettrace.socket` 的 `socket allocation`，TCP 阶段只来自规范 packet/drop 的 `tcp_flags`（SYN=2、ACK=16、FIN=1、RST=4）；排除 socket packet 镜像。未捕获创建、SYN 或 FIN 时显示“未观测”，不拿首包时间代替创建时间。首个 FIN 只是一个关闭方向的观测，不代表四次挥手完成；不据此推断 RTT、完整建连或 socket 销毁时间。
 
