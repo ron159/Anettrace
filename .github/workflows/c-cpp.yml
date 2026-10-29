@@ -26,7 +26,6 @@ on:
       - 'schemas/network-performance-v1.schema.json'
       - 'docs/network-performance-report.md'
       - 'docs/analysis-skill.md'
-      - 'README.md'
       - 'tasks/**'
       - '.github/workflows/analysis-skill.yml'
   workflow_dispatch:
