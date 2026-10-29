@@ -69,6 +69,8 @@ def normalize_filters(filters):
     for lower, upper in (('min_call_ms', 'max_call_ms'), ('start_ms', 'end_ms')):
         if lower in result and upper in result and Decimal(result[lower]) > Decimal(result[upper]):
             raise ValueError(f'{lower} must not exceed {upper}')
+    if 'start_ms' in result and 'end_ms' in result and Decimal(result['start_ms']) == Decimal(result['end_ms']):
+        raise ValueError('start_ms must precede end_ms for a nonempty time window')
     return result
 
 

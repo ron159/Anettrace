@@ -236,7 +236,8 @@ class NetworkReportTest(unittest.TestCase):
     def test_invalid_filters_are_rejected(self):
         fixture(self.path)
         for filters in ({'uids': [-1]}, {'ports': [65536]}, {'min_call_ms': 'NaN'},
-                        {'start_ms': 10, 'end_ms': 2}, {'surprise': 'x'}):
+                        {'start_ms': 10, 'end_ms': 2}, {'start_ms': 2, 'end_ms': 2},
+                        [], False, {'surprise': 'x'}):
             with self.subTest(filters=filters), self.assertRaises(ValueError):
                 report.normalize_filters(filters)
 
