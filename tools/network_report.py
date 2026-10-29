@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 import argparse
+from decimal import Decimal, InvalidOperation
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import ipaddress
+import math
 from pathlib import Path
 import shutil
 import sys
@@ -19,7 +22,154 @@ FIELDS = ('syscall', 'call_id', 'socket_id', 'owner_socket_id', 'flow_id', 'flow
           'packet_id', 'tid', 'tgid', 'fd', 'direction', 'result', 'result_unit',
           'incomplete', 'start_clipped', 'local_addr', 'remote_addr',
           'local_port', 'remote_port', 'saddr', 'daddr', 'sport', 'dport',
-          'ip_id', 'ip_id_valid', 'error', 'proto_l4', 'tcp_flags', 'tcp_seq', 'tcp_ack')
+          'ip_id', 'ip_id_valid', 'error', 'proto_l4', 'tcp_flags', 'tcp_seq', 'tcp_ack',
+          'uid', 'owner_uid', 'owner_tid', 'owner_tgid', 'owner_valid', 'protocol')
+APP_CATEGORIES = {'anettrace.syscall', 'anettrace.socket', 'anettrace.flow',
+                  'anettrace.packet', 'anettrace.packet.drop'}
+LIST_FILTERS = ('uids', 'pids', 'tids', 'flows', 'sockets', 'protocols',
+                'addresses', 'ports', 'syscalls')
+TIME_FILTERS = ('min_call_ms', 'max_call_ms', 'start_ms', 'end_ms')
+
+
+def normalize_filters(filters):
+    filters = filters or {}
+    if not isinstance(filters, dict) or set(filters) - set(LIST_FILTERS + TIME_FILTERS):
+        raise ValueError('Unknown filter field')
+    result = {}
+    for key, values in filters.items():
+        if key in LIST_FILTERS:
+            if not isinstance(values, list) or len(values) > 100:
+                raise ValueError(f'{key} must be a list of at most 100 values')
+            parsed = []
+            for value in values:
+                value = str(value).strip()
+                if not value: continue
+                if key in ('uids', 'pids', 'tids', 'ports') and value != 'unknown':
+                    value = int(value)
+                    if not 0 <= value <= (65535 if key == 'ports' else 4294967295):
+                        raise ValueError(f'{key} out of range')
+                elif key == 'addresses':
+                    value = str(ipaddress.ip_address(value.strip('[]')))
+                elif len(value) > 128:
+                    raise ValueError(f'{key} value too long')
+                else:
+                    value = value.lower()
+                if value not in parsed: parsed.append(value)
+            if parsed: result[key] = parsed
+        elif values is not None and str(values).strip() != '':
+            try: value = Decimal(str(values))
+            except InvalidOperation as error: raise ValueError(f'Invalid {key}') from error
+            if not value.is_finite() or value < 0 or value*1000000 != (value*1000000).to_integral_value():
+                raise ValueError(f'{key} must be nonnegative milliseconds with up to nanosecond precision')
+            result[key] = format(value, 'f')
+    for lower, upper in (('min_call_ms', 'max_call_ms'), ('start_ms', 'end_ms')):
+        if lower in result and upper in result and Decimal(result[lower]) > Decimal(result[upper]):
+            raise ValueError(f'{lower} must not exceed {upper}')
+    return result
+
+
+def application_identity(event):
+    owner = event['category'] in ('anettrace.packet', 'anettrace.packet.drop', 'anettrace.flow')
+    if owner:
+        known = event['owner_valid'] is not False and (event['owner_tgid'] or 0) > 0
+        fields = (event['owner_uid'], event['owner_tgid'], event['owner_tid']) if known else (None, None, None)
+        source = 'socket_owner' if known else 'unknown'
+    else:
+        uid = event['uid'] if event['uid'] is not None else event.get('process_uid')
+        fields = uid, event['tgid'] or event.get('track_pid'), event['tid'] or event.get('track_tid')
+        source = 'event' if event['uid'] is not None else 'thread_process' if uid is not None else 'unknown'
+    event.update(zip(('app_uid', 'app_pid', 'app_tid'), fields))
+    event['identity_source'] = source
+
+
+def enrich_events(events):
+    contexts = defaultdict(lambda: defaultdict(set))
+    socket_protocols = defaultdict(set)
+    for e in events:
+        application_identity(e)
+        protocol = {6: 'tcp', 17: 'udp', 1: 'icmp', 58: 'icmpv6'}.get(e['proto_l4'])
+        protocol = protocol or (str(e['protocol']).lower().replace('udp-dns', 'udp') if e['protocol'] else None)
+        e['protocols'] = [protocol] if protocol else []
+        e['flows'] = sorted({str(v).lower() for v in (e['flow_id'], e['flow_tag']) if v})
+        e['sockets'] = sorted({str(v).lower() for v in (e['socket_id'], e['owner_socket_id']) if v})
+        addresses = set()
+        for field in ('local_addr', 'remote_addr', 'saddr', 'daddr'):
+            if not e[field]: continue
+            try: addresses.add(str(ipaddress.ip_address(str(e[field]).strip('[]'))))
+            except ValueError: pass
+        e['addresses'] = sorted(addresses)
+        e['ports'] = sorted({e[f] for f in ('local_port', 'remote_port', 'sport', 'dport') if e[f] is not None})
+        e['syscalls'] = [e['syscall'] or e['name'].split(' ', 1)[0]] if e['category'] == 'anettrace.syscall' else []
+        if e['flow_id']:
+            for field in ('protocols', 'flows', 'addresses', 'ports'):
+                contexts[e['flow_id']][field].update(e[field])
+        for socket_id in e['sockets']:
+            socket_protocols[socket_id].update(e['protocols'])
+    for e in events:
+        if e['flow_id']:
+            for field in ('protocols', 'flows', 'addresses', 'ports'):
+                e[field] = sorted(set(e[field]) | contexts[e['flow_id']][field])
+        elif not e['protocols']:
+            known = set().union(*(socket_protocols[s] for s in e['sockets']))
+            if len(known) == 1: e['protocols'] = sorted(known)
+
+
+def select_events(events, filters, start):
+    def matches(event):
+        fields = {'uids': 'app_uid', 'pids': 'app_pid', 'tids': 'app_tid'}
+        for key in LIST_FILTERS:
+            if key == 'syscalls' or key not in filters: continue
+            values = event.get(fields.get(key, key))
+            values = values if isinstance(values, list) else [values]
+            if not set(filters[key]) & {v if v is not None else 'unknown' for v in values or [None]}:
+                return False
+        if 'start_ms' in filters and event['dur'] >= 0:
+            lower = start + int(Decimal(filters['start_ms'])*1000000)
+            if (event['ts']+event['dur'] <= lower if event['dur'] else event['ts'] < lower): return False
+        if 'end_ms' in filters and event['ts'] >= start + int(Decimal(filters['end_ms'])*1000000):
+            return False
+        return True
+    selected = [e for e in events if e['category'] in APP_CATEGORIES and matches(e)]
+    call_filters = any(k in filters for k in ('syscalls', 'min_call_ms', 'max_call_ms'))
+    def call_matches(e):
+        if 'syscalls' in filters and not set(e['syscalls']) & set(filters['syscalls']): return False
+        if any(k in filters for k in ('min_call_ms', 'max_call_ms')) and not eligible(e): return False
+        if 'min_call_ms' in filters and e['dur'] < int(Decimal(filters['min_call_ms'])*1000000): return False
+        if 'max_call_ms' in filters and e['dur'] > int(Decimal(filters['max_call_ms'])*1000000): return False
+        return True
+    calls = [e for e in selected if e['category'] == 'anettrace.syscall' and call_matches(e)]
+    if call_filters:
+        call_ids = {e['id'] for e in calls}
+        flows = {e['flow_id'] for e in calls if e['flow_id']}
+        sockets = {s for e in calls if not e['flow_id'] for s in e['sockets']}
+        selected = [e for e in selected if e['id'] in call_ids or (e['category'] != 'anettrace.syscall' and
+                    (e['flow_id'] in flows or (not e['flow_id'] and set(e['sockets']) & sockets)))]
+    # Keep creation evidence through explicit socket IDs, even before a selected time window.
+    sockets = {s for e in selected for s in e['sockets']}
+    present = {e['id'] for e in selected}
+    for e in events:
+        if (e['category'] == 'anettrace.socket' and e['name'] == 'socket allocation'
+                and e['id'] not in present and set(e['sockets']) & sockets):
+            selected.append({**e, 'context_only': True})
+    return sorted(selected, key=lambda e: (e['ts'], e['id']))
+
+
+def inventory(events):
+    result = {}
+    for label, field in (('uids', 'app_uid'), ('pids', 'app_pid'), ('tids', 'app_tid'),
+                         ('flows', 'flows'), ('sockets', 'sockets'), ('protocols', 'protocols'),
+                         ('addresses', 'addresses'), ('ports', 'ports'), ('syscalls', 'syscalls')):
+        counts = {}
+        for event in events:
+            if event['category'] not in APP_CATEGORIES: continue
+            values = event.get(field)
+            values = values if isinstance(values, list) else [values]
+            for value in values or [None]:
+                item = counts.setdefault(value, dict(value=value, events=0, calls=0))
+                item['events'] += 1
+                item['calls'] += event['category'] == 'anettrace.syscall'
+        result[label] = sorted(counts.values(), key=lambda c: (c['value'] is None, str(c['value'])))
+    return result
 
 
 def rows(tp, sql):
@@ -233,16 +383,29 @@ def report_time(tp, items):
     return dict(timezone='UTC+8', trace_start_ns=str(start), realtime_by_ts=converted)
 
 
-def analyze(path, *, limit=50, trace_processor=None):
+def analyze(path, *, limit=50, trace_processor=None, filters=None):
     from perfetto.trace_processor import TraceProcessor, TraceProcessorConfig
     path = Path(path).resolve(strict=True)
     if limit < 1 or limit > 1000:
         raise ValueError('limit must be between 1 and 1000')
+    filters = normalize_filters(filters)
     config = TraceProcessorConfig(bin_path=trace_processor) if trace_processor else TraceProcessorConfig()
     with TraceProcessor(trace=str(path), config=config) as tp:
         columns = ','.join(f"EXTRACT_ARG(s.arg_set_id,'debug.{f}') AS {f}" for f in FIELDS)
-        events = rows(tp, f"SELECT s.id,s.ts,s.dur,s.name,s.category,s.track_id,s.arg_set_id,{columns} "
-                         f"FROM slice s WHERE {CANONICAL} ORDER BY s.ts,s.id")
+        events = rows(tp, f"""SELECT s.id,s.ts,s.dur,s.name,s.category,s.track_id,s.arg_set_id,{columns},
+            t.tid AS track_tid,p.pid AS track_pid,p.uid AS process_uid
+            FROM slice s LEFT JOIN track tr ON tr.id=s.track_id
+            LEFT JOIN thread_track tt ON tt.id=tr.id
+            LEFT JOIN thread_track parent ON parent.id=tr.parent_id
+            LEFT JOIN thread t ON t.utid=COALESCE(tt.utid,parent.utid)
+              AND (t.start_ts IS NULL OR t.start_ts<=s.ts)
+              AND (t.end_ts IS NULL OR t.end_ts>=s.ts+MAX(0,s.dur))
+              AND (EXTRACT_ARG(s.arg_set_id,'debug.tid') IS NULL OR CAST(EXTRACT_ARG(s.arg_set_id,'debug.tid') AS INT)=t.tid)
+            LEFT JOIN process p ON p.upid=t.upid
+              AND (p.start_ts IS NULL OR p.start_ts<=s.ts)
+              AND (p.end_ts IS NULL OR p.end_ts>=s.ts+MAX(0,s.dur))
+              AND (EXTRACT_ARG(s.arg_set_id,'debug.tgid') IS NULL OR CAST(EXTRACT_ARG(s.arg_set_id,'debug.tgid') AS INT)=p.pid)
+            WHERE {CANONICAL} ORDER BY s.ts,s.id""")
         if not events:
             raise ValueError('No Anettrace events found in trace')
         # Perfetto's public deep link selects by ts/dur alone, across all tracks.
@@ -253,11 +416,19 @@ def analyze(path, *, limit=50, trace_processor=None):
         for e in events:
             e['ambiguous'] = (e['ts'], e['dur']) in ambiguous
             for f in ('tid','tgid','fd','result','error','incomplete','start_clipped',
-                      'ip_id','proto_l4','tcp_flags','tcp_seq','tcp_ack'):
+                      'ip_id','proto_l4','tcp_flags','tcp_seq','tcp_ack','uid','owner_uid',
+                      'owner_tid','owner_tgid','owner_valid','sport','dport','local_port','remote_port'):
                 e[f] = scalar(e[f])
             for f in ('flow_id', 'socket_id', 'owner_socket_id', 'packet_id'):
                 if str(e[f] or '').strip('0') == '':
                     e[f] = None
+        enrich_events(events)
+        available = inventory(events)
+        all_calls = [e for e in events if e['category'] == 'anettrace.syscall']
+        all_packets = [e for e in events if e['category'] in ('anettrace.packet', 'anettrace.packet.drop')]
+        quality = capture_quality(tp, events, all_packets, all_calls, [c for c in all_calls if not eligible(c)])
+        start = rows(tp, 'SELECT start_ts FROM trace_bounds')[0]['start_ts']
+        events = select_events(events, filters, start)
         calls = [e for e in events if e['category'] == 'anettrace.syscall']
         complete = [c for c in calls if eligible(c)]
         excluded = [c for c in calls if not eligible(c)]
@@ -266,7 +437,6 @@ def analyze(path, *, limit=50, trace_processor=None):
             call['evidence'] = slice_evidence(call)
             call['schedule'] = schedule(tp, call)
         packets = [e for e in events if e['category'] in ('anettrace.packet', 'anettrace.packet.drop')]
-        quality = capture_quality(tp, events, packets, calls, excluded)
         quality['schedule_assessed_calls'] = len(ranked)
         quality['schedule_covered_calls'] = sum(c['schedule']['status']=='complete' for c in ranked)
         if quality['schedule_covered_calls'] < len(ranked):
@@ -286,7 +456,9 @@ def analyze(path, *, limit=50, trace_processor=None):
                     'ts_ns': str(event['ts']), 'dur_ns': str(event['dur'])}
         return dict(schema=SCHEMA, trace=dict(name=path.name, path=str(path), size=path.stat().st_size,
                                              sha256=digest(path)), quality=quality,
-                    time=time, connections=connections, sockets=sockets,
+                    time=time, connections=connections, sockets=sockets, inventory=available,
+                    scope=dict(filters=filters, matched_events=sum(not e.get('context_only') for e in events), calls=len(calls),
+                               packet_events=len(packets), context_events=sum(bool(e.get('context_only')) for e in events)),
                     calls=dict(ranked_total=len(complete),
                     excluded_total=len(excluded), truncated=len(complete)>limit, limit=limit),
                     slow_calls=[public(c) for c in ranked],
@@ -320,6 +492,7 @@ def socket_timelines(events):
             if kinds:
                 points.append(dict(kinds=kinds, name=event['name'], category=event['category'],
                     ts_ns=str(event['ts']), dur_ns=str(event['dur']),
+                    context_only=bool(event.get('context_only')),
                     **{k: event[k] for k in ('direction','flow_id','packet_id','ip_id',
                                             'tcp_flags','tcp_seq','tcp_ack','tid','tgid')},
                     endpoints=endpoints(event), evidence=slice_evidence(event)))
@@ -337,7 +510,7 @@ def connection_overview(events):
     relevant = {'anettrace.syscall', 'anettrace.packet', 'anettrace.packet.drop',
                 'anettrace.flow', 'anettrace.socket'}
     for e in events:
-        if e['category'] not in relevant:
+        if e['category'] not in relevant or e.get('context_only'):
             continue
         key = 'flow:' + str(e['flow_id']) if e['flow_id'] else (
             'socket:' + str(e['socket_id'] or e['owner_socket_id'])
@@ -361,7 +534,8 @@ def connection_overview(events):
                           for e in group if e['socket_id'] or e['owner_socket_id']}),
                           flow_tags=sorted({e['flow_tag'] for e in group if e['flow_tag']}),
                           lifecycle_observed=any(e['category']=='anettrace.flow' for e in group),
-                          calls=len(calls), packet_events=len(packets),
+                          uids=sorted({e['app_uid'] for e in group if e['app_uid'] is not None}),
+                          call_time=call_time(completed), calls=len(calls), packet_events=len(packets),
                           tx_events=sum(e['direction']=='tx' for e in packets),
                           rx_events=sum(e['direction']=='rx' for e in packets),
                           endpoints=sorted({endpoints(e) for e in group if endpoints(e)}),
@@ -372,8 +546,17 @@ def connection_overview(events):
                           application_rx_bytes=sum(max(0,e['result'] or 0) for e in completed
                                                    if e['result_unit']=='bytes' and call_direction(e)=='rx'),
                           completed_messages=sum(max(0,e['result'] or 0) for e in completed if e['result_unit']=='messages'),
-                          evidence=evidence(sql,start,end-start)))
+                          evidence={**evidence(sql,start,end-start), 'connection_context': True}))
     return result
+
+
+def call_time(calls):
+    durations = sorted(c['dur'] for c in calls)
+    return dict(count=len(durations), total_ns=str(sum(durations)),
+                min_ns=str(durations[0]) if durations else None,
+                max_ns=str(durations[-1]) if durations else None,
+                p50_ns=str(durations[math.ceil(len(durations)*.5)-1]) if durations else None,
+                p95_ns=str(durations[math.ceil(len(durations)*.95)-1]) if durations else None)
 
 
 def write_report(result, output):
