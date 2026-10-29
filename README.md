@@ -1,10 +1,10 @@
 # Anettrace
 
-Anettrace 是面向 Linux 与已 root Android 设备的 eBPF 网络诊断工具，可追踪报文在内核协议栈中的路径、定位丢包和延迟、统计线程流量，并生成包含网络与系统调度信息的 Perfetto 时间线。
+Anettrace 是面向 Linux 与 Android 的 eBPF 网络诊断工具，可追踪报文在内核协议栈中的路径、定位丢包和延迟、统计线程流量，并生成包含网络与系统调度信息的 Perfetto 时间线。网络追踪需要 root；Android 也支持通过有 Perfetto 访问权限的 `adb shell` 用户仅采集系统 trace。
 
-> 当前正式版：**v0.8.5**。完整安装说明、参数解释、模式组合、Android 抓取和排障指南已经移至 [GitHub Wiki](https://github.com/ron159/Anettrace/wiki)。
+> 当前正式版：**v0.8.13**。完整安装说明、参数解释、模式组合、Android 抓取和排障指南见 [GitHub Wiki](https://github.com/ron159/Anettrace/wiki)；离线报告与近期采集能力见下方仓库文档。
 
-[下载 v0.8.5](https://github.com/ron159/Anettrace/releases/tag/v0.8.5) · [使用手册](https://github.com/ron159/Anettrace/wiki) · [CLI 完整参考](https://github.com/ron159/Anettrace/wiki/CLI-Reference) · [问题反馈](https://github.com/ron159/Anettrace/issues)
+[下载 v0.8.13](https://github.com/ron159/Anettrace/releases/tag/v0.8.13) · [使用手册](https://github.com/ron159/Anettrace/wiki) · [CLI 完整参考](https://github.com/ron159/Anettrace/wiki/CLI-Reference) · [问题反馈](https://github.com/ron159/Anettrace/issues)
 
 ## 主要功能
 
@@ -14,26 +14,28 @@ Anettrace 是面向 Linux 与已 root Android 设备的 eBPF 网络诊断工具�
 - TCP RTT、协议栈延迟、Socket 生命周期和 monitor 模式；
 - `--traffic` 保留逐周期追加的线程流量表；`--traffic-ui` 启用当前速率、累计量、进程汇总及历史回看的交互界面；
 - `--capture-trace` 生成系统 Perfetto 与网络事件联合时间线；
+- `--system-trace-only` 在有系统 Perfetto 访问权限的 Android shell 中采集系统 trace，无需 root；
 - `--ring-buffer` 持续抓取并在停止时保存最近 N 秒；
 - Android TCP 主动建连根因诊断与隐私受控报告；
 - [独立分析 Skill](docs/analysis-skill.md)：AI 分析已有 pftrace，按 UID、流、socket、协议、端点和耗时组合筛选；单独更新分析能力，无需重新编译采集器。
-- [通用收发性能报告与 Perfetto 入口](docs/network-performance-report.md)：通过 Tab 查看采集质量、连接、Socket 创建与 SYN/FIN 时序、慢调用及调度时间，复用 Perfetto 标签页定位原始 tag。
+- [通用收发性能报告与 Perfetto 入口](docs/network-performance-report.md)：离线生成 HTML/JSON，通过五个 Tab 查看采集质量、连接、Socket 创建与 SYN/FIN 时序、慢调用及调度时间；支持 UTC+8 / 相对时间显示，并复用 Perfetto 标签页定位原始 tag。
 
 ## 快速开始
 
 ### Android arm64 正式版
 
 ```shell
-curl -LO https://github.com/ron159/Anettrace/releases/download/v0.8.5/anettrace-0.8.5-android-arm64-dual
-curl -LO https://github.com/ron159/Anettrace/releases/download/v0.8.5/SHA256SUMS
-grep 'anettrace-0.8.5-android-arm64-dual$' SHA256SUMS | shasum -a 256 -c -
+version=0.8.13
+curl -fLO "https://github.com/ron159/Anettrace/releases/download/v${version}/anettrace-${version}-android-arm64-dual"
+curl -fLO "https://github.com/ron159/Anettrace/releases/download/v${version}/SHA256SUMS"
+grep " anettrace-${version}-android-arm64-dual$" SHA256SUMS | shasum -a 256 -c -
 
-adb push anettrace-0.8.5-android-arm64-dual /data/local/tmp/anettrace
+adb push "anettrace-${version}-android-arm64-dual" /data/local/tmp/anettrace
 adb shell chmod 0755 /data/local/tmp/anettrace
 adb shell /data/local/tmp/anettrace --version
 ```
 
-运行追踪需要 root。若 `adbd` 不是 root，请使用你已经信任并验证过的设备端提权方式；工具不会自动尝试 `adb root`、`su` 或 Magisk。
+运行 eBPF 网络追踪需要 root。若 `adbd` 不是 root，请使用你已经信任并验证过的设备端提权方式；工具不会自动尝试 `adb root`、`su` 或 Magisk。仅系统采集见下方 `--system-trace-only` 示例。
 
 ### Linux 源码构建
 
@@ -45,6 +47,27 @@ sudo ./src/anettrace --proto icmp --detail
 ```
 
 依赖安装、无 BTF 兼容构建和 Android 静态打包见 [编译与设备要求](https://github.com/ron159/Anettrace/wiki/Build-and-Device-Requirements)。
+
+### 在主机生成离线报告
+
+推荐使用可独立更新的 [分析 Skill](docs/analysis-skill.md)，不必等待采集器或 host-tools 发版。旧版报告可继续下载同版本的 `host-tools`，校验后解压；在解压目录运行以下命令。源码仓库可直接从创建虚拟环境开始：
+
+```shell
+version=0.8.13
+curl -fLO "https://github.com/ron159/Anettrace/releases/download/v${version}/anettrace-${version}-host-tools.tar.bz2"
+curl -fLO "https://github.com/ron159/Anettrace/releases/download/v${version}/SHA256SUMS"
+grep " anettrace-${version}-host-tools.tar.bz2$" SHA256SUMS | shasum -a 256 -c -
+tar -xjf "anettrace-${version}-host-tools.tar.bz2"
+cd "anettrace-${version}-host-tools"
+python3 -m venv .venv
+.venv/bin/pip install -r tools/requirements-perfetto.txt
+.venv/bin/python tools/network_report.py analyze /path/to/capture.pftrace --out report --serve --open
+```
+
+报告读取已有 Anettrace `.pftrace`，无需设备或重新采集，生成 `report/report.html` 和
+`report/report.json`。服务仅监听 `127.0.0.1`，按 Ctrl+C 停止。首次分析可能下载
+Trace Processor；离线使用、恢复服务与统计边界见[报告说明](docs/network-performance-report.md)。
+仅系统 trace 不包含 Anettrace 网络事件，不能单独用于生成该报告。
 
 ## 常用命令
 
@@ -158,14 +181,21 @@ trace，避免 SELinux 拒绝访问输出目录或继承的文件描述符。采
 | [线程流量统计](https://github.com/ron159/Anettrace/wiki/Traffic-Statistics) | 统计口径、过滤范围和组合抓取 |
 | [Perfetto 与环形缓冲](https://github.com/ron159/Anettrace/wiki/Perfetto-Trace-Capture) | 固定时长、环形抓取、JSONL 转换和合并 |
 | [TCP 建连诊断](https://github.com/ron159/Anettrace/wiki/TCP-Connect-Diagnostics) | 自动结论、报告、隐私边界和中断恢复 |
+| [离线收发性能报告](docs/network-performance-report.md) | HTML/JSON、Socket 时间线、时间显示与 Perfetto 定位 |
+| [应用收发链路采集](docs/packet-flow-foundations.md) | 应用过滤、直接唤醒上下文、早期 RX 与证据边界 |
+| [Perfetto 收发链路分析](docs/perfetto-chain.md) | socket / flow / packet / call 关联和 SQL |
+| [交互式流量概览](docs/traffic-overview-experiment.md) | 当前速率、累计流量、历史回看和统计限制 |
 | [常见问题](https://github.com/ron159/Anettrace/wiki/Troubleshooting) | 参数冲突、BTF、probe、ADB 和输出排障 |
 
 ## 运行要求
 
-- root 权限和允许 BPF program load/attach 的安全策略；
+- eBPF 网络追踪需要 root 权限和允许 BPF program load/attach 的安全策略；
+- tracefs 可挂载于 `/sys/kernel/tracing`，也兼容 `/sys/kernel/debug/tracing`；
 - 默认 CO-RE 构建需要可读的 `/sys/kernel/btf/vmlinux`；
 - KPROBE、BPF TRACING、tracepoint 和 Perfetto 能力由具体模式决定；
 - 构建成功不代表目标 Android vendor 内核支持全部跟踪点。
+
+仅系统采集依赖设备 Perfetto 的权限和数据源；主机离线报告需要 Python 环境，均无需加载 BPF。
 
 请先执行 `anettrace --version`、`anettrace -h` 和 `anettrace -t '?'`，再根据目标设备能力选择模式。
 

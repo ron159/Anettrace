@@ -23,6 +23,7 @@ bool	fsearch(FILE *f, char *target);
 int	kernel_version();
 char	*kernel_version_str();
 bool	debugfs_mounted();
+const char *get_tracing_path(void);
 bool	kernel_has_config(char *name);
 int	kernel_hz();
 u32	file_inode(char *path);
