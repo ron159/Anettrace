@@ -19,7 +19,7 @@ FIELDS = ('syscall', 'call_id', 'socket_id', 'owner_socket_id', 'flow_id', 'flow
           'packet_id', 'tid', 'tgid', 'fd', 'direction', 'result', 'result_unit',
           'incomplete', 'start_clipped', 'local_addr', 'remote_addr',
           'local_port', 'remote_port', 'saddr', 'daddr', 'sport', 'dport',
-          'ip_id', 'ip_id_valid', 'error')
+          'ip_id', 'ip_id_valid', 'error', 'proto_l4', 'tcp_flags', 'tcp_seq', 'tcp_ack')
 
 
 def rows(tp, sql):
@@ -34,14 +34,18 @@ def missing_id(field):
     return f"LTRIM(COALESCE(CAST(EXTRACT_ARG(s.arg_set_id,'debug.{field}') AS TEXT),'0'),'0')=''"
 
 
-def evidence(sql, ts=None, dur=None):
+def evidence(sql, ts=None, dur=None, *, selection=None):
     params = {'query': sql}
     if ts is not None:
         span = max(dur or 0, 1_000_000)
         params.update(visStart=max(0, ts - span), visEnd=ts + span * 2)
+    if selection == 'slice':
+        params.pop('query')  # Keep the selected tag's details in front, not a query tab.
+        params.update(ts=ts, dur=dur)
     return {'sql': sql, 'ts_ns': str(ts) if ts is not None else None,
             'dur_ns': str(dur) if dur is not None else None,
-            'perfetto_url': 'https://ui.perfetto.dev/#!/?' + urlencode(params)}
+            'perfetto_url': 'https://ui.perfetto.dev/#!/?' + urlencode(params),
+            'selection': selection}
 
 
 def slice_evidence(event):
@@ -51,7 +55,8 @@ def slice_evidence(event):
     for field in ('call_id', 'packet_id', 'flow_id', 'socket_id'):
         if event.get(field):
             where += f" AND CAST(EXTRACT_ARG(s.arg_set_id,'debug.{field}') AS TEXT)={quote(event[field])}"
-    return evidence('SELECT s.* FROM slice s WHERE ' + where, event['ts'], event['dur'])
+    return evidence('SELECT s.* FROM slice s WHERE ' + where, event['ts'], event['dur'],
+                    selection='ambiguous' if event.get('ambiguous') else 'slice')
 
 
 def digest(path):
@@ -219,8 +224,15 @@ def analyze(path, *, limit=50, trace_processor=None):
                          f"FROM slice s WHERE {CANONICAL} ORDER BY s.ts,s.id")
         if not events:
             raise ValueError('No Anettrace events found in trace')
+        # Perfetto's public deep link selects by ts/dur alone, across all tracks.
+        ambiguous = {(e['ts'], e['dur']) for e in rows(tp,
+            f"SELECT ts,dur FROM slice WHERE (ts,dur) IN "
+            f"(SELECT ts,dur FROM slice s WHERE {CANONICAL}) "
+            "GROUP BY ts,dur HAVING COUNT(*)>1")}
         for e in events:
-            for f in ('tid','tgid','fd','result','error','incomplete','start_clipped'):
+            e['ambiguous'] = (e['ts'], e['dur']) in ambiguous
+            for f in ('tid','tgid','fd','result','error','incomplete','start_clipped',
+                      'ip_id','proto_l4','tcp_flags','tcp_seq','tcp_ack'):
                 e[f] = scalar(e[f])
             for f in ('flow_id', 'socket_id', 'owner_socket_id', 'packet_id'):
                 if str(e[f] or '').strip('0') == '':
@@ -249,10 +261,50 @@ def analyze(path, *, limit=50, trace_processor=None):
                     'ts_ns': str(event['ts']), 'dur_ns': str(event['dur'])}
         return dict(schema=SCHEMA, trace=dict(name=path.name, path=str(path), size=path.stat().st_size,
                                              sha256=digest(path)), quality=quality,
-                    connections=connections, calls=dict(ranked_total=len(complete),
+                    connections=connections, sockets=socket_timelines(events),
+                    calls=dict(ranked_total=len(complete),
                     excluded_total=len(excluded), truncated=len(complete)>limit, limit=limit),
                     slow_calls=[public(c) for c in ranked],
                     excluded_calls=[public({**c, 'evidence': slice_evidence(c)}) for c in excluded[:limit]])
+
+
+def socket_timelines(events):
+    groups = defaultdict(list)
+    for event in events:
+        socket_id = event['socket_id'] or event['owner_socket_id']
+        if socket_id:
+            groups[str(socket_id)].append(event)
+    result = []
+    for socket_id, group in sorted(groups.items()):
+        points = []
+        for event in group:
+            kinds = []
+            if event['category'] == 'anettrace.socket' and event['name'] == 'socket allocation':
+                kinds.append('create')
+            elif event['category'] in ('anettrace.packet', 'anettrace.packet.drop'):
+                flags = event['tcp_flags']
+                if (event['proto_l4'] not in (None, 6) or not isinstance(flags, int)
+                        or not 0 <= flags <= 255):
+                    continue
+                if flags & 2:
+                    kinds.append('syn_ack' if flags & 16 else 'syn')
+                if flags & 1:
+                    kinds.append('fin')
+                if flags & 4:
+                    kinds.append('rst')
+            if kinds:
+                points.append(dict(kinds=kinds, name=event['name'], category=event['category'],
+                    ts_ns=str(event['ts']), dur_ns=str(event['dur']),
+                    **{k: event[k] for k in ('direction','flow_id','packet_id','ip_id',
+                                            'tcp_flags','tcp_seq','tcp_ack','tid','tgid')},
+                    endpoints=endpoints(event), evidence=slice_evidence(event)))
+        def first(kind):
+            return next((p['ts_ns'] for p in points if kind in p['kinds']), None)
+        result.append(dict(socket_id=socket_id, created_ns=first('create'),
+            first_syn_ns=first('syn'), first_syn_ack_ns=first('syn_ack'),
+            first_fin_ns=first('fin'), first_rst_ns=first('rst'), events=points,
+            endpoints=sorted({endpoints(e) for e in group if endpoints(e)})))
+    return result
 
 
 def connection_overview(events):

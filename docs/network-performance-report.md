@@ -21,6 +21,8 @@ python3 -m venv .venv
 
 默认显示最慢的 50 个完整调用、最多 50 个排除调用，`--limit` 范围为 1–1000；总数和连接统计始终覆盖全部观测。报告中的定位 SQL 可查询未列出的原始事件。没有 Anettrace 事件或输入解析失败时返回非零状态。
 
+页面按“采集质量 / 连接概览 / Socket 时间线 / 慢调用排行 / 调度时间”五个 Tab 切换。表格分页，切换 Tab 不重新分析；可用左右方向键、Home / End 切换，URL 的页面片段可保存当前 Tab。
+
 稍后继续排障，不必重新分析：
 
 ```sh
@@ -37,10 +39,15 @@ python3 tools/network_report.py serve report --trace /new/path/capture.pftrace -
 | --- | --- | --- |
 | 采集质量 | trace_end 中的 BPF 丢事件、解析/时钟 stats、缓冲压力元数据、未关联事件和调度覆盖提示 | 先确认哪些观测存在缺口；缺失计数显示“未知”，不当作零 |
 | 连接概览 | 显式 flow_id；无 flow 时退回显式 socket_id，保留局部观测标记 | 从端点、flow、socket 筛选目标，查询关联的原始记录，包括 socket allocation |
+| Socket 时间线 | 显式 socket_id（缺失时使用 owner_socket_id）的 allocation 和 TCP 标志观测 | 查看全部或按 Socket ID 筛选创建、SYN、SYN-ACK、FIN、RST，定位每条原始 tag |
 | 慢调用 | `anettrace.syscall`，完整且起点未裁剪，按持续时间降序 | 查看应用调用、返回值、线程、call/socket/flow ID；失败调用也保留 |
 | 调度时间 | 每个排行调用窗口与真实执行线程 `thread_state` 的交集 | 区分 Running、R/R+ 可运行等待、其他已观测状态和未覆盖区间 |
 
 连接概览不把共享 socket 的多个 flow 合并为一个连接，也不靠端点相同或时间接近补关联。没有生命周期记录时，连接开始、结束和总生命周期保持未知；这适用于极简 tag 模式和中途开始的采集。
+
+Socket 时间线的概览列出每个 socket 的创建开始、首个 SYN、SYN-ACK、FIN 和 RST 的绝对纳秒时间。输入完整或部分 Socket ID 可筛选，点击概览中的 ID 可查看该 socket；清空输入或点击“查看全部”恢复全部 socket。事件类型可进一步筛选。
+
+明细不受 `--limit` 限制，保留每次探针观测和重传，包括创建 allocation 的开始 / 完成时间、方向、端点、flow_id、packet_id、ip_id、TCP flags / seq / ack。创建只来自 `anettrace.socket` 的 `socket allocation`，TCP 阶段只来自规范 packet/drop 的 `tcp_flags`（SYN=2、ACK=16、FIN=1、RST=4）；排除 socket packet 镜像。未捕获创建、SYN 或 FIN 时显示“未观测”，不拿首包时间代替创建时间。首个 FIN 只是一个关闭方向的观测，不代表四次挥手完成；不据此推断 RTT、完整建连或 socket 销毁时间。
 
 packet 统计只使用 `anettrace.packet` / `anettrace.packet.drop`，排除 socket overview 镜像。事件数包含同一 skb 在多个探针的观测，skb 数按有效 packet_id 去重，均不等同于线上包数。`PERF_RECORD_LOST` / BPF lost_events 是采集事件丢失，不是网络丢包。
 
@@ -50,7 +57,11 @@ packet 统计只使用 `anettrace.packet` / `anettrace.packet.drop`，排除 soc
 
 ## 从结果回到原始事件
 
-每个结果旁有“在 Perfetto 定位”“复制 SQL”和可展开的 SQL / 纳秒时间。点击定位会打开官方 Perfetto UI，在浏览器中载入本地原始 trace，执行该结果的查询；点击查询结果的 ID 箭头可定位原始事件。调度行默认定位原始调用，“查看原始线程状态”另外查询对应的 thread_state；Perfetto 当前需要在结果的 `Interpret id as` 中选择 `thread_state.id`，再点击 ID 箭头定位状态。连接行查询该 ID 的关联事件，质量项查询元数据或 stats。
+每个结果旁有“在 Perfetto 定位”“复制 SQL”和可展开的 SQL / 纳秒时间。单条事件使用官方 `ts` / `dur` 深链接自动选中原始 tag，展示选中事件的详情。同一报告页面中首次打开 Perfetto 后，后续点击复用同一浏览器标签页；关闭该标签页后可重新打开。
+
+按当前官方接口限制，深链接选择只在页面首次载入 trace 时生效，因此每次跳转都会在同一标签页重新载入 trace，原有缩放、固定轨道等 UI 状态会重置。报告缓存已经校验的 trace 字节，后续点击不重复从本地服务读取。单纯更新 URL 片段或 postMessage 时间范围不能保证重新选中 tag，所以没有使用该方式冒充精确定位。参见 [Perfetto 深链接](https://perfetto.dev/docs/visualization/deep-linking-to-perfetto-ui) 和 [事件选择实现](https://github.com/google/perfetto/blob/main/ui/src/plugins/dev.perfetto.DeeplinkQuerystring/index.ts)。报告页面刷新后需重新建立定位会话。
+
+如果原 trace 中同一 `ts` / `dur` 有多个事件（包括不同轨道的重叠 tag），官方选择参数不能唯一确定目标，报告会改为运行精确 SQL；点击查询结果的 ID 箭头定位，避免自动选错。汇总项本身包含多条事件，同样使用 SQL 查询。调度行默认定位原始调用，“查看原始线程状态”另外查询对应的 thread_state；Perfetto 当前需要在结果的 `Interpret id as` 中选择 `thread_state.id`，再点击 ID 箭头定位状态。
 
 SQL 使用精确时间、类别及显式关联 ID，避免依赖不同 Trace Processor 版本之间可能变化的 slice ID。JSON 的 `ts_ns` / `dur_ns` 用十进制字符串保存，避免浏览器丢失 64 位时间精度；显示的毫秒值只用于阅读。
 
