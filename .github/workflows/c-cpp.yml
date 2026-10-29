@@ -3,8 +3,32 @@ name: Build CI
 on:
   push:
     branches: [ master ]
+    paths-ignore:
+      - 'skills/anettrace-analysis/**'
+      - 'tools/network_report.py'
+      - 'tests/test_network_report.py'
+      - 'tests/test_analysis_skill.py'
+      - 'tests/network_report_*.js'
+      - 'schemas/network-performance-v1.schema.json'
+      - 'docs/network-performance-report.md'
+      - 'docs/analysis-skill.md'
+      - 'README.md'
+      - 'tasks/**'
+      - '.github/workflows/analysis-skill.yml'
   pull_request:
     branches: [ master ]
+    paths-ignore:
+      - 'skills/anettrace-analysis/**'
+      - 'tools/network_report.py'
+      - 'tests/test_network_report.py'
+      - 'tests/test_analysis_skill.py'
+      - 'tests/network_report_*.js'
+      - 'schemas/network-performance-v1.schema.json'
+      - 'docs/network-performance-report.md'
+      - 'docs/analysis-skill.md'
+      - 'README.md'
+      - 'tasks/**'
+      - '.github/workflows/analysis-skill.yml'
   workflow_dispatch:
   workflow_call:
 

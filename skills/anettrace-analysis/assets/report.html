@@ -10,17 +10,22 @@ header{flex:none;margin-bottom:12px}header p{color:#53647a;margin:8px 0;overflow
 main{flex:1;min-height:0;display:flex}section{box-sizing:border-box;width:100%;min-height:0;background:white;border:1px solid #dbe3ed;border-radius:10px;padding:20px;display:flex;flex-direction:column;overflow:auto}[hidden]{display:none!important}section>p{margin:0 0 12px}section h2{margin:0 0 12px}section>.scroll{flex:1;min-height:100px}footer{flex:none;margin-top:10px;font-size:12px!important}
 nav{display:flex;gap:8px;overflow-x:auto;margin-top:12px;align-items:center;flex:none}nav button{padding:8px 14px;border-color:transparent;background:transparent;color:#53647a}nav button[aria-selected="true"]{background:#145aad;color:white}nav a{margin-left:auto;white-space:nowrap}.pager,.filters{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0 0}.filters{margin:0 0 12px}input,select{font:inherit;padding:6px 10px;border:1px solid #b9cfee;border-radius:5px;max-width:100%;box-sizing:border-box}button:disabled{cursor:default;opacity:.45}#socket-summary-rows td:not(:first-child),#socket-rows td:nth-child(2){white-space:pre;font-variant-numeric:tabular-nums}.views{display:flex;gap:6px}.views button[aria-pressed="true"]{background:#145aad;color:white}th{position:sticky;top:0;z-index:1}a{color:#145aad}button{font:inherit;cursor:pointer;background:#edf4ff;color:#144e94;border:1px solid #b9cfee;border-radius:5px;padding:4px 10px;white-space:nowrap}
 button:hover{background:#dceaff}button:focus-visible,a:focus-visible{outline:3px solid #e58c19;outline-offset:3px}
-.scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid #e4eaf2}th{background:#f5f8fc;white-space:nowrap}td{max-width:380px;overflow-wrap:anywhere;white-space:pre-line}
+.filter-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:10px 0}.filter-grid label{display:flex;flex-direction:column;font-size:13px}.filter-grid input{width:100%}#report-filter-panel{margin:8px 0}#filter-limit{width:80px}.scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid #e4eaf2}th{background:#f5f8fc;white-space:nowrap}td{max-width:380px;overflow-wrap:anywhere;white-space:pre-line}
 .cards{display:flex;flex-wrap:wrap;gap:14px}.card{background:#f5f8fc;border:1px solid #e0e7f0;border-radius:7px;padding:12px;min-width:155px}.value{font-weight:650;font-size:22px}
 .actions{display:flex;gap:6px;flex-wrap:wrap}.badge{border-radius:4px;background:#fff0d2;padding:2px 8px}.bar{display:flex;min-width:180px;height:9px;border-radius:3px;overflow:hidden;background:#dfe4eb}.running{background:#16866d}.runnable{background:#e8ad32}.other{background:#6892ce}.uncovered{background:#dfe4eb}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:230px;overflow:auto}details{margin-top:6px}summary{cursor:pointer;color:#52657e}
-#status{position:fixed;z-index:5;bottom:14px;right:14px;max-width:min(600px,85vw);padding:12px;background:#18283c;color:white;border-radius:6px;display:none}#status a{color:#b6d6ff}
+#report-filter-panel[open]{max-height:36vh;overflow:auto}#status{position:fixed;z-index:5;bottom:14px;right:14px;max-width:min(600px,85vw);padding:12px;background:#18283c;color:white;border-radius:6px;display:none}#status a{color:#b6d6ff}
 @media(max-width:640px){body{padding:10px}section{padding:12px}header p{margin:4px 0}header h1{font-size:22px}nav{gap:2px}nav button{padding:7px 10px}.card{min-width:130px}h1{font-size:24px}}
 </style>
 <header>
 <div class="muted">ANETTRACE · 离线诊断</div><h1>收发性能报告</h1>
 <p id="source"></p><p class="muted" id="fingerprint"></p>
 <div class="filters"><label>时间显示 <select id="time-mode"><option value="utc8">UTC+8 + 相对时间</option><option value="relative">相对 trace 起点</option></select></label><span class="muted" id="time-origin"></span></div>
+<details id="report-filter-panel"><summary>筛选 UID / Flow / Socket / 调用</summary>
+<form id="report-filter-form"><div id="primary-filters" class="filter-grid"></div>
+<details><summary>更多条件：进程、协议、端点、调用名及时间窗口</summary><div id="advanced-filters" class="filter-grid"></div></details>
+<div class="filters"><button type="submit" id="apply-filters">应用筛选</button><button type="button" id="reset-filters">清除全部条件</button><label>排行上限 <input id="filter-limit" type="number" min="1" max="1000" value="50"></label></div></form></details>
+<p class="muted" id="scope-summary"></p>
 <nav role="tablist" aria-label="报告页面">
 <button role="tab" id="tab-quality" aria-controls="quality" aria-selected="true" tabindex="0">采集质量</button>
 <button role="tab" id="tab-connections" aria-controls="connections" aria-selected="false" tabindex="-1">连接概览</button>
@@ -30,8 +35,8 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:230px;
 <a href="report.json" download>下载 JSON</a></nav>
 </header>
 <main>
-<section id="quality" role="tabpanel" aria-labelledby="tab-quality"><h2>采集质量 <span class="badge" id="quality-status"></span></h2><div class="cards" id="quality-cards"></div><ul id="issues"></ul><div id="metadata"></div></section>
-<section id="connections" role="tabpanel" aria-labelledby="tab-connections" hidden><h2>连接概览</h2><p class="muted">按显式 flow_id 汇总；没有 flow_id 时按 socket_id 展示局部观测。共享 socket 的不同 flow 保持独立。skb 数不是线上包数，事件数包含同一 skb 的多个探针观测。</p><div class="scroll"><table><thead><tr><th>连接 / Socket</th><th>端点地址</th><th>调用</th><th>观测 TX / RX / skb</th><th>应用返回量</th><th>原始证据</th></tr></thead><tbody id="connection-rows"></tbody></table></div></section>
+<section id="quality" role="tabpanel" aria-labelledby="tab-quality"><h2>采集质量 <span class="badge" id="quality-status"></span></h2><p class="muted">本页采集质量和候选项覆盖整个原始 trace；其余页面及命中计数按筛选条件统计。</p><div class="cards" id="quality-cards"></div><ul id="issues"></ul><div id="metadata"></div></section>
+<section id="connections" role="tabpanel" aria-labelledby="tab-connections" hidden><h2>连接概览</h2><p class="muted">按显式 flow_id 汇总；没有 flow_id 时按 socket_id 展示局部观测。共享 socket 的不同 flow 保持独立。skb 数不是线上包数，事件数包含同一 skb 的多个探针观测。</p><div class="scroll"><table><thead><tr><th>连接 / Socket</th><th>端点地址</th><th>调用 / 耗时</th><th>观测 TX / RX / skb</th><th>应用返回量</th><th>原始证据</th></tr></thead><tbody id="connection-rows"></tbody></table></div></section>
 <section id="sockets" role="tabpanel" aria-labelledby="tab-sockets" hidden>
 <h2>Socket 创建与 TCP 时序</h2>
 <p class="muted">创建记录显示 allocation 开始 / 完成；SYN、SYN-ACK、FIN、RST 保留每次探针观测（含重传）。未观测不等于未发生，首个 FIN 不代表连接已关闭。</p>
@@ -48,7 +53,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:230px;
 <script id="report-data" type="application/json">/*REPORT_DATA*/null</script>
 <script>
 'use strict';
-const report=JSON.parse(document.getElementById('report-data').textContent);
+let report=JSON.parse(document.getElementById('report-data').textContent);
 const el=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
 const show=text=>{const s=document.getElementById('status');s.textContent=text;s.style.display='block';};
 const ms=ns=>(Number(ns)/1e6).toFixed(3);
@@ -90,7 +95,7 @@ function timestamp(value){
 let traceBuffer, perfettoWindow, opening=false, navigation=0;
 async function openEvidence(ev){
   if(location.protocol!=='http:'||!['127.0.0.1','localhost'].includes(location.hostname)){
-    show('请运行 python3 tools/network_report.py serve <报告目录> --open，再点击定位。也可复制 SQL，在手动打开原始 trace 后执行。');return;
+    show('请运行 Skill 的 scripts/network_report.py serve <报告目录> --open，再点击定位。也可复制 SQL，在手动打开原始 trace 后执行。');return;
   }
   if(opening){show('正在载入 Perfetto，请稍后再定位下一个 tag。');return;}
   const origin='https://ui.perfetto.dev';
@@ -139,6 +144,7 @@ function actions(ev){
   const box=el('div');box.className='actions';
   const open=el('button','在 Perfetto 定位');open.type='button';open.onclick=()=>openEvidence(ev);box.append(open);
   const copy=el('button','复制 SQL');copy.type='button';copy.onclick=async()=>{try{await navigator.clipboard.writeText(ev.sql);show('定位 SQL 已复制');}catch{show('无法访问剪贴板，请展开 SQL 手动复制');}};box.append(copy);
+  if(ev.connection_context){const note=el('span','入口包含该连接的原始上下文，可能超出筛选范围');note.className='muted';box.append(note);}
   const details=el('details'),sql=el('pre',ev.sql+'\n\n时间：');
   sql.append(timestamp(ev.ts_ns),document.createTextNode('\n耗时：'+formatDuration(ev.dur_ns)));
   details.append(el('summary','SQL / 时间'),sql);box.append(details);
@@ -171,6 +177,61 @@ function paginate(id,items,render,pageSize=25,pagerId){
     body.closest('.scroll').scrollTop=0;
   };draw();
 }
+const kindLabel={create:'创建',syn:'SYN',syn_ack:'SYN-ACK',fin:'FIN',rst:'RST'};
+let socketView='overview';
+function showSocketView(view){
+  socketView=view;
+  for(const [button,table,pager,mode] of [['socket-overview','socket-summary-table','socket-summary-pager','overview'],['socket-events','socket-event-table','socket-pager','events']]){
+    const active=view===mode;document.getElementById(button).setAttribute('aria-pressed',String(active));document.getElementById(table).hidden=!active;document.getElementById(pager).hidden=!active;
+  }
+}
+document.getElementById('socket-overview').onclick=()=>showSocketView('overview');
+document.getElementById('socket-events').onclick=()=>showSocketView('events');
+function renderSockets(){
+  const sockets=report.sockets||[];
+  const filter=document.getElementById('socket-filter').value.trim().toLowerCase(),kind=document.getElementById('socket-kind').value;
+  const selected=sockets.filter(s=>s.socket_id.toLowerCase().includes(filter));
+  const points=selected.flatMap(s=>s.events.map(e=>({...e,socket_id:s.socket_id}))).filter(e=>!kind||e.kinds.includes(kind));
+  points.sort((a,b)=>BigInt(a.ts_ns)<BigInt(b.ts_ns)?-1:BigInt(a.ts_ns)>BigInt(b.ts_ns)?1:0);
+  document.getElementById('socket-count').textContent=selected.length+' / '+sockets.length+' 个 Socket · '+points.length+' 条事件观测。';
+  paginate('socket-summary-rows',selected,s=>{
+    const pick=el('button',s.socket_id);pick.title='查看该 Socket 的事件明细';pick.onclick=()=>{document.getElementById('socket-filter').value=s.socket_id;socketView='events';renderSockets();};
+    const socket=el('div');socket.append(pick,el('div',s.endpoints.join(' / ')));
+    row('socket-summary-rows',[socket,...['created_ns','first_syn_ns','first_syn_ack_ns','first_fin_ns','first_rst_ns'].map(k=>timestamp(s[k]))]);
+  },10,'socket-summary-pager');
+  paginate('socket-rows',points,e=>{
+    const at=el('div');at.append(timestamp(e.ts_ns));
+    if(e.kinds.includes('create'))at.append(document.createTextNode('\n完成 '),BigInt(e.dur_ns)<0n?el('span','未观测'):timestamp(String(BigInt(e.ts_ns)+BigInt(e.dur_ns))));
+    row('socket-rows',[
+    e.socket_id+' · UID '+text(e.app_uid)+(e.context_only?'（创建上下文）':'')+'\n'+e.kinds.map(k=>kindLabel[k]).join(' / ')+' · '+e.name,
+    at,
+    text(e.direction)+'\n'+e.endpoints,
+    'packet '+text(e.packet_id)+'\nflow '+text(e.flow_id)+'\nipid '+text(e.ip_id),
+    e.tcp_flags===null?'—':'flags '+e.tcp_flags+' / seq '+text(e.tcp_seq)+' / ack '+text(e.tcp_ack),actions(e.evidence)]);
+  },25,'socket-pager');
+  showSocketView(socketView);
+}
+document.getElementById('socket-filter').oninput=renderSockets;
+document.getElementById('socket-kind').onchange=()=>{socketView='events';renderSockets();};
+document.getElementById('clear-socket').onclick=()=>{document.getElementById('socket-filter').value='';renderSockets();};
+const filterFields=[
+  ['uids','UID','10187,10188'],['flows','Flow ID / 标签','tcp-1 或完整 flow_id'],
+  ['sockets','Socket ID','完整 socket_id'],['min_call_ms','调用至少 ms','5'],
+  ['pids','PID','进程 ID'],['tids','TID','线程 ID'],['protocols','协议','tcp,udp'],
+  ['addresses','任一端 IP','198.51.100.2'],['ports','任一端端口','443,53'],
+  ['syscalls','调用名','recvmsg,sendto'],['max_call_ms','调用至多 ms','100'],
+  ['start_ms','窗口开始 ms','距 trace 起点'],['end_ms','窗口结束 ms','距 trace 起点']
+];
+const listFilters=new Set(['uids','pids','tids','flows','sockets','protocols','addresses','ports','syscalls']);
+for(const [index,[key,label,placeholder]] of filterFields.entries()){
+  const wrap=el('label',label),input=el('input');input.id='filter-'+key;input.placeholder=placeholder;
+  if(listFilters.has(key)){input.setAttribute('list','values-'+key);const values=el('datalist');values.id='values-'+key;wrap.append(input,values);}
+  else{input.type='number';input.min='0';input.step='any';wrap.append(input);}
+  document.getElementById(index<4?'primary-filters':'advanced-filters').append(wrap);
+}
+function renderReport(){
+  for(const id of ['quality-cards','issues','metadata','connection-rows','call-rows','schedule-rows','excluded','socket-ids'])document.getElementById(id).replaceChildren();
+  document.querySelectorAll('.pager:not([id])').forEach(p=>p.remove());
 document.getElementById('source').textContent=report.trace.name+' · '+(report.trace.size/1048576).toFixed(2)+' MiB';
 document.getElementById('fingerprint').textContent='SHA-256 '+report.trace.sha256;
 const originClock=report.time&&utc8(report.time.realtime_by_ts[report.time.trace_start_ns]);
@@ -188,9 +249,9 @@ for(const [label,value,ev] of [['BPF 丢事件',q.lost_events,q.evidence],['pack
 for(const issue of q.issues)document.getElementById('issues').append(el('li',issue));
 for(const meta of q.metadata){const d=el('details');d.append(el('summary',meta.name),el('pre',JSON.stringify(meta.fields,null,2)),actions(meta.evidence));document.getElementById('metadata').append(d);}
 if(q.parser_stats.length){const d=el('details');d.append(el('summary','Trace Processor stats'),el('pre',JSON.stringify(q.parser_stats,null,2)),actions(q.stats_evidence));document.getElementById('metadata').append(d);}
-paginate('connection-rows',report.connections,c=>row('connection-rows',[c.key+'\n'+c.socket_ids.join(', ')+'\n'+(c.lifecycle_observed?'已观测生命周期':'局部观测'),c.endpoints.join('\n')||'未知',c.calls,c.tx_events+' / '+c.rx_events+' / '+c.observed_skbs,'TX '+c.application_tx_bytes+' / RX '+c.application_rx_bytes+' bytes; '+c.completed_messages+' messages',actions(c.evidence)]));
+paginate('connection-rows',report.connections,c=>row('connection-rows',[c.key+' · UID '+((c.uids||[]).join(',')||'未知')+'\n'+c.socket_ids.join(', ')+'\n'+(c.lifecycle_observed?'已观测生命周期':'局部观测'),c.endpoints.join('\n')||'未知',c.calls+' / 完整 '+(c.call_time?.count??0)+'\n最大 '+formatDuration(c.call_time?.max_ns)+' / P95 '+formatDuration(c.call_time?.p95_ns),c.tx_events+' / '+c.rx_events+' / '+c.observed_skbs,'TX '+c.application_tx_bytes+' / RX '+c.application_rx_bytes+' bytes; '+c.completed_messages+' messages',actions(c.evidence)]));
 document.getElementById('call-summary').textContent='完整调用 '+report.calls.ranked_total+'；显示前 '+report.slow_calls.length+'；排除 '+report.calls.excluded_total+'。未完成明细同样最多显示 '+report.calls.limit+' 条，完整数据可通过定位 SQL 查询。';
-paginate('call-rows',report.slow_calls,c=>row('call-rows',[c.name+'\nTID '+text(c.tid)+' / PID '+text(c.tgid),ms(c.dur_ns),text(c.result)+' '+text(c.result_unit),'call '+text(c.call_id)+'\nflow '+text(c.flow_id)+'\nsocket '+text(c.socket_id),actions(c.evidence)]));
+paginate('call-rows',report.slow_calls,c=>row('call-rows',[c.name+'\nUID '+text(c.app_uid)+' / PID '+text(c.app_pid)+' / TID '+text(c.app_tid)+'\n'+(c.protocols||[]).join(', '),ms(c.dur_ns),text(c.result)+' '+text(c.result_unit),'call '+text(c.call_id)+'\nflow '+text(c.flow_id)+'\nsocket '+text(c.socket_id),actions(c.evidence)]));
 paginate('schedule-rows',report.slow_calls,c=>{
   const s=c.schedule,bar=el('div');bar.className='bar';bar.setAttribute('aria-label','调度状态分布');
   for(const key of ['running','runnable','other','uncovered']){const segment=el('span');segment.className=key;segment.style.width=(Number(c.dur_ns)?Number(s[key+'_ns'])/Number(c.dur_ns)*100:0)+'%';bar.append(segment);}
@@ -199,45 +260,41 @@ paginate('schedule-rows',report.slow_calls,c=>{
   if(s.evidence){const states=el('button','查看原始线程状态');states.type='button';states.onclick=()=>openEvidence(s.evidence);links.append(states);}
   row('schedule-rows',[c.name+' · '+text(c.call_id),distribution,ms(s.running_ns),ms(s.runnable_ns),ms(s.other_ns),ms(s.uncovered_ns),links]);
 });
-const sockets=report.sockets||[];
-for(const socket of sockets){const option=el('option');option.value=socket.socket_id;document.getElementById('socket-ids').append(option);}
-const kindLabel={create:'创建',syn:'SYN',syn_ack:'SYN-ACK',fin:'FIN',rst:'RST'};
-let socketView='overview';
-function showSocketView(view){
-  socketView=view;
-  for(const [button,table,pager,mode] of [['socket-overview','socket-summary-table','socket-summary-pager','overview'],['socket-events','socket-event-table','socket-pager','events']]){
-    const active=view===mode;document.getElementById(button).setAttribute('aria-pressed',String(active));document.getElementById(table).hidden=!active;document.getElementById(pager).hidden=!active;
+
+  for(const socket of report.sockets||[]){const option=el('option');option.value=socket.socket_id;document.getElementById('socket-ids').append(option);}
+  const filters=report.scope?.filters||{};
+  for(const [key] of filterFields){
+    document.getElementById('filter-'+key).value=Array.isArray(filters[key])?filters[key].join(','):filters[key]||'';
+    if(listFilters.has(key)){
+      const choices=document.getElementById('values-'+key);choices.replaceChildren();
+      for(const item of (report.inventory?.[key]||[]).slice(0,200)){const option=el('option');option.value=item.value===null?'unknown':String(item.value);option.label=item.calls+' 调用 / '+item.events+' 事件';choices.append(option);}
+    }
   }
-}
-document.getElementById('socket-overview').onclick=()=>showSocketView('overview');
-document.getElementById('socket-events').onclick=()=>showSocketView('events');
-function renderSockets(){
-  const filter=document.getElementById('socket-filter').value.trim().toLowerCase(),kind=document.getElementById('socket-kind').value;
-  const selected=sockets.filter(s=>s.socket_id.toLowerCase().includes(filter));
-  const points=selected.flatMap(s=>s.events.map(e=>({...e,socket_id:s.socket_id}))).filter(e=>!kind||e.kinds.includes(kind));
-  points.sort((a,b)=>BigInt(a.ts_ns)<BigInt(b.ts_ns)?-1:BigInt(a.ts_ns)>BigInt(b.ts_ns)?1:0);
-  document.getElementById('socket-count').textContent=selected.length+' / '+sockets.length+' 个 Socket · '+points.length+' 条事件观测。';
-  paginate('socket-summary-rows',selected,s=>{
-    const pick=el('button',s.socket_id);pick.title='查看该 Socket 的事件明细';pick.onclick=()=>{document.getElementById('socket-filter').value=s.socket_id;socketView='events';renderSockets();};
-    const socket=el('div');socket.append(pick,el('div',s.endpoints.join(' / ')));
-    row('socket-summary-rows',[socket,...['created_ns','first_syn_ns','first_syn_ack_ns','first_fin_ns','first_rst_ns'].map(k=>timestamp(s[k]))]);
-  },10,'socket-summary-pager');
-  paginate('socket-rows',points,e=>{
-    const at=el('div');at.append(timestamp(e.ts_ns));
-    if(e.kinds.includes('create'))at.append(document.createTextNode('\n完成 '),BigInt(e.dur_ns)<0n?el('span','未观测'):timestamp(String(BigInt(e.ts_ns)+BigInt(e.dur_ns))));
-    row('socket-rows',[
-    e.socket_id+'\n'+e.kinds.map(k=>kindLabel[k]).join(' / ')+' · '+e.name,
-    at,
-    text(e.direction)+'\n'+e.endpoints,
-    'packet '+text(e.packet_id)+'\nflow '+text(e.flow_id)+'\nipid '+text(e.ip_id),
-    e.tcp_flags===null?'—':'flags '+e.tcp_flags+' / seq '+text(e.tcp_seq)+' / ack '+text(e.tcp_ack),actions(e.evidence)]);
-  },25,'socket-pager');
-  showSocketView(socketView);
-}
-document.getElementById('socket-filter').oninput=renderSockets;
-document.getElementById('socket-kind').onchange=()=>{socketView='events';renderSockets();};
-document.getElementById('clear-socket').onclick=()=>{document.getElementById('socket-filter').value='';renderSockets();};
-renderSockets();
+  document.getElementById('filter-limit').value=report.calls.limit;
+  const descriptions=filterFields.filter(([key])=>filters[key]!==undefined).map(([key,label])=>label+'='+text(filters[key]));
+  const scope=report.scope;
+  document.getElementById('scope-summary').textContent=(descriptions.join('；')||'全轨迹')+(scope?' · 命中 '+scope.calls+' 个调用 / '+scope.packet_events+' 个 packet 观测；创建上下文 '+scope.context_events+' 条':' · 旧报告，请重新生成以使用完整筛选');
+  document.getElementById('socket-filter').value='';document.getElementById('socket-kind').value='';
+  renderSockets();
 for(const c of report.excluded_calls){const d=el('details');d.append(el('summary',c.name+' · '+text(c.call_id)),el('pre',JSON.stringify({incomplete:c.incomplete,start_clipped:c.start_clipped,result:c.result},null,2)),actions(c.evidence));document.getElementById('excluded').append(d);}
+}
+async function applyFilters(filters){
+  if(location.protocol!=='http:'||!['127.0.0.1','localhost'].includes(location.hostname)){show('交互筛选需要运行 Skill 的 network_report.py serve <报告目录> --open；也可用 analyze 命令指定筛选条件。');return;}
+  const button=document.getElementById('apply-filters');if(button.disabled)return;
+  button.disabled=true;document.getElementById('reset-filters').disabled=true;button.textContent='正在筛选…';show('正在按条件重新计算完整候选和调度时间…');
+  try{
+    const response=await fetch('/api/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filters,limit:Number(document.getElementById('filter-limit').value)})});
+    if(!response.ok)throw new Error('筛选失败（HTTP '+response.status+'），请检查条件和本地服务。');
+    const selected=await response.json();if(selected.trace.sha256!==report.trace.sha256)throw new Error('原始 trace 身份改变，请重新生成报告');
+    report=selected;renderReport();show('筛选完成：统计已更新，JSON / HTML 已保存。');
+  }catch(error){show(error.message);}finally{button.disabled=false;document.getElementById('reset-filters').disabled=false;button.textContent='应用筛选';}
+}
+document.getElementById('report-filter-form').onsubmit=event=>{
+  event.preventDefault();const filters={};
+  for(const [key] of filterFields){const value=document.getElementById('filter-'+key).value.trim();if(value)filters[key]=listFilters.has(key)?value.split(',').map(v=>v.trim()).filter(Boolean):value;}
+  applyFilters(filters);
+};
+document.getElementById('reset-filters').onclick=()=>applyFilters({});
+renderReport();
 </script>
 </html>

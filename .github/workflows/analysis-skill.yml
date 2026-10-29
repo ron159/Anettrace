@@ -1,0 +1,53 @@
+name: Analysis Skill
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'skills/anettrace-analysis/**'
+      - 'tools/network_report.py'
+      - 'tools/anettrace_to_perfetto.py'
+      - 'tools/merge_trace_with_anettrace.py'
+      - 'tests/test_network_report.py'
+      - 'tests/test_analysis_skill.py'
+      - 'tests/test_release_assets.py'
+      - 'tests/network_report_*.js'
+      - 'schemas/network-performance-v1.schema.json'
+      - 'script/*connect-diagnostics-release.sh'
+      - 'docs/network-performance-report.md'
+      - 'docs/analysis-skill.md'
+      - '.github/workflows/analysis-skill.yml'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'skills/anettrace-analysis/**'
+      - 'tools/network_report.py'
+      - 'tools/anettrace_to_perfetto.py'
+      - 'tools/merge_trace_with_anettrace.py'
+      - 'tests/test_network_report.py'
+      - 'tests/test_analysis_skill.py'
+      - 'tests/test_release_assets.py'
+      - 'tests/network_report_*.js'
+      - 'schemas/network-performance-v1.schema.json'
+      - 'script/*connect-diagnostics-release.sh'
+      - 'docs/network-performance-report.md'
+      - 'docs/analysis-skill.md'
+      - '.github/workflows/analysis-skill.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install analysis dependencies
+        run: |
+          python3 -m venv /tmp/analysis-venv
+          /tmp/analysis-venv/bin/pip install -r skills/anettrace-analysis/requirements.txt
+      - name: Test report, isolated Skill and host compatibility
+        run: |
+          /tmp/analysis-venv/bin/python -m unittest \
+            tests/test_network_report.py tests/test_analysis_skill.py tests/test_release_assets.py

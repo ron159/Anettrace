@@ -57,6 +57,12 @@ host_members="$(tar -tjf "$asset_dir/$host_archive")"
 for member in \
 	VERSION SOURCE_COMMIT README.md LICENSE docs/connect-diagnostics.md \
 	docs/network-performance-report.md schemas/network-performance-v1.schema.json \
+	docs/analysis-skill.md skills/anettrace-analysis/SKILL.md \
+	skills/anettrace-analysis/agents/openai.yaml skills/anettrace-analysis/requirements.txt \
+	skills/anettrace-analysis/scripts/network_report.py \
+	skills/anettrace-analysis/assets/report.html \
+	skills/anettrace-analysis/assets/report.schema.json \
+	skills/anettrace-analysis/references/analysis-workflow.md \
 	schemas/connect-diagnostics-v1.schema.json \
 	tools/anettrace_to_perfetto.py tools/capture_android_trace.py \
 	tools/connect_diagnostics.py tools/diagnose_android_connect.py \

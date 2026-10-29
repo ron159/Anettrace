@@ -102,6 +102,14 @@ class ReleaseAssetTest(unittest.TestCase):
                 f"{prefix}/schemas/network-performance-v1.schema.json",
                 f"{prefix}/tools/network_report.py",
                 f"{prefix}/tools/network_report.html",
+                f"{prefix}/docs/analysis-skill.md",
+                f"{prefix}/skills/anettrace-analysis/SKILL.md",
+                f"{prefix}/skills/anettrace-analysis/requirements.txt",
+                f"{prefix}/skills/anettrace-analysis/agents/openai.yaml",
+                f"{prefix}/skills/anettrace-analysis/scripts/network_report.py",
+                f"{prefix}/skills/anettrace-analysis/assets/report.html",
+                f"{prefix}/skills/anettrace-analysis/assets/report.schema.json",
+                f"{prefix}/skills/anettrace-analysis/references/analysis-workflow.md",
                 f"{prefix}/schemas/connect-diagnostics-v1.schema.json",
                 f"{prefix}/tools/diagnose_android_connect.py",
                 f"{prefix}/tools/validate_android_connect.py",
@@ -117,6 +125,13 @@ class ReleaseAssetTest(unittest.TestCase):
                 f"{prefix}/tools/perfetto_sql/network_chain.sql",
             }
             self.assertTrue(required.issubset(names), required - names)
+            with tarfile.open(archive, "r:bz2") as package:
+                package.extractall(root / 'unpacked', filter='data')
+            help_result = subprocess.run(
+                [sys.executable, str(root/'unpacked'/prefix/'tools/network_report.py'), '--help'],
+                cwd=root, check=True, capture_output=True, text=True)
+            self.assertIn('inspect', help_result.stdout)
+            self.assertIn('validate', help_result.stdout)
             android = root / "assets" / f"anettrace-{version}-android-arm64-dual"
             self.assertEqual(android.read_bytes(), b"fixture")
             self.assertEqual(android.stat().st_mode & 0o777, 0o755)

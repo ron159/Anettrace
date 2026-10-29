@@ -219,6 +219,7 @@ class NetworkReportTest(unittest.TestCase):
         birth = result['sockets'][0]['events'][0]
         self.assertTrue(birth['context_only'])
         self.assertEqual(birth['kinds'], ['create'])
+        self.assertEqual(birth['app_uid'], 1001)
         result = report.analyze(self.path, filters={'uids': [1001]})
         self.assertEqual(result['scope']['packet_events'], 0)
 
@@ -238,6 +239,22 @@ class NetworkReportTest(unittest.TestCase):
                         {'start_ms': 10, 'end_ms': 2}, {'surprise': 'x'}):
             with self.subTest(filters=filters), self.assertRaises(ValueError):
                 report.normalize_filters(filters)
+
+    def test_process_uid_fallback_requires_consistent_event_identity(self):
+        fixture(self.path)
+        trace = Trace.FromString(self.path.read_bytes())
+        trace.packet[0].process_tree.processes[0].uid = 0
+        # A conflicting explicit PID must not borrow the track's process UID.
+        for packet in trace.packet:
+            if packet.track_event.name == 'sendmmsg':
+                packet.track_event.debug_annotations.add(name='tgid', int_value=999)
+        self.path.write_bytes(trace.SerializeToString())
+        result = report.analyze(self.path, filters={'uids': [0]})
+        self.assertEqual([c['call_id'] for c in result['slow_calls']], ['call-a'])
+        self.assertEqual(result['slow_calls'][0]['identity_source'], 'thread_process')
+        unknown = report.analyze(self.path, filters={'uids': ['unknown']})
+        self.assertEqual([c['call_id'] for c in unknown['slow_calls']], ['call-b'])
+        self.assertEqual(report.normalize_filters({'addresses': ['unknown']}), {'addresses': ['unknown']})
 
     def test_report_time_uses_clock_mapping_and_keeps_exact_evidence(self):
         fixture(self.path)
@@ -346,13 +363,13 @@ class NetworkReportTest(unittest.TestCase):
     def test_perfetto_reuses_popup_and_reloads_selection(self):
         root = Path(__file__).resolve().parents[1]
         subprocess.run(['node', str(root/'tests/network_report_navigation.js'),
-                        str(root/'tools/network_report.html')], check=True)
+                        str(root/'skills/anettrace-analysis/assets/report.html')], check=True)
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for time formatting regression')
     def test_time_formatting_preserves_microseconds_and_missing_clocks(self):
         root = Path(__file__).resolve().parents[1]
         subprocess.run(['node', str(root/'tests/network_report_time.js'),
-                        str(root/'tools/network_report.html')], check=True)
+                        str(root/'skills/anettrace-analysis/assets/report.html')], check=True)
 
     def test_tags_and_missing_capture_state_remain_unknown(self):
         fixture(self.path, states=False, ended=False, lifecycle=False)
@@ -428,6 +445,30 @@ class NetworkReportTest(unittest.TestCase):
         moved.write_bytes(b'wrong')
         with self.assertRaisesRegex(ValueError, 'SHA-256'):
             report.make_server(out, trace=moved)
+
+    def test_local_filter_api_recomputes_and_persists_full_selection(self):
+        filter_fixture(self.path)
+        out = Path(self.tmp.name)/'report'
+        report.write_report(report.analyze(self.path, limit=1),out)
+        server = report.make_server(out,port=0)
+        self.addCleanup(server.server_close)
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        self.addCleanup(server.shutdown)
+        url = f'http://127.0.0.1:{server.server_port}'
+        body = json.dumps({'filters':{'uids':[1002]},'limit':1}).encode()
+        with urlopen(Request(url+'/api/report',data=body,
+                     headers={'Content-Type':'application/json','Origin':url})) as response:
+            selected = json.load(response)
+        self.assertEqual(selected['slow_calls'][0]['call_id'],'call-b')
+        self.assertEqual(selected['calls']['ranked_total'],1)
+        self.assertEqual(selected['quality']['calls'],4)
+        self.assertEqual(json.loads((out/'report.json').read_text()), selected)
+        report.validate_report(out)
+        request = Request(url+'/api/report',data=body,
+                          headers={'Content-Type':'application/json','Origin':'https://attacker.example'})
+        with self.assertRaises(HTTPError) as error: urlopen(request)
+        self.assertEqual(error.exception.code,403)
+        error.exception.close()
 
     def test_native_string_annotations_match_typed_annotations(self):
         fixture(self.path)

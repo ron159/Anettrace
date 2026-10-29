@@ -42,6 +42,7 @@ cp "$root/VERSION" "$root/README.md" "$root/LICENSE" "$host_root/"
 printf '%s\n' "$source_commit" > "$host_root/SOURCE_COMMIT"
 cp "$root/docs/connect-diagnostics.md" "$host_root/docs/"
 cp "$root/docs/network-performance-report.md" "$host_root/docs/"
+cp "$root/docs/analysis-skill.md" "$host_root/docs/"
 cp "$root/docs/perfetto-chain.md" "$root/docs/packet-flow-foundations.md" "$host_root/docs/"
 cp "$root/schemas/connect-diagnostics-v1.schema.json" "$host_root/schemas/"
 cp "$root/schemas/network-performance-v1.schema.json" "$host_root/schemas/"
@@ -49,12 +50,17 @@ cp "$root/tools/anettrace_to_perfetto.py" \
 	"$root/tools/capture_android_trace.py" \
 	"$root/tools/connect_diagnostics.py" \
 	"$root/tools/network_report.py" \
-	"$root/tools/network_report.html" \
 	"$root/tools/diagnose_android_connect.py" \
 	"$root/tools/validate_android_connect.py" \
 	"$root/tools/soak_android_connect.py" \
 	"$root/tools/merge_trace_with_anettrace.py" \
 	"$root/tools/requirements-perfetto.txt" "$host_root/tools/"
+# The report implementation is independently installable; keep legacy entry points.
+while IFS= read -r -d '' member; do
+	mkdir -p "$host_root/$(dirname "$member")"
+	cp "$root/$member" "$host_root/$member"
+done < <(git -C "$root" ls-files -z skills/anettrace-analysis)
+cp "$root/skills/anettrace-analysis/assets/report.html" "$host_root/tools/network_report.html"
 cp "$root/tools/perfetto_sql/anettrace_integrity.sql" \
 	"$root/tools/perfetto_sql/connect_diagnostics.sql" \
 	"$root/tools/perfetto_sql/connect_diagnostics_metrics.sql" \
