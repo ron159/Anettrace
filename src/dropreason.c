@@ -17,19 +17,24 @@ static bool drop_reason_inited = false;
 /* check if drop reason on kfree_skb is supported */
 bool drop_reason_support()
 {
-	return simple_exec("cat /sys/kernel/debug/tracing/events/skb/"
-			   "kfree_skb/format 2>/dev/null | "
-			   "grep NOT_SPECIFIED") == 0;
+	const char *tracing_path = get_tracing_path();
+
+	return tracing_path && execf(NULL,
+		"cat %s/events/skb/kfree_skb/format 2>/dev/null | grep NOT_SPECIFIED",
+		tracing_path) == 0;
 }
 
 static int parse_reason_enum()
 {
-	char name[REASON_MAX_LEN];
+	const char *tracing_path = get_tracing_path();
+	char name[REASON_MAX_LEN], path[128];
 	int index = 0;
 	FILE *f;
 
-	f = fopen("/sys/kernel/debug/tracing/events/skb/kfree_skb/format",
-		 "r");
+	if (!tracing_path)
+		return -1;
+	snprintf(path, sizeof(path), "%s/events/skb/kfree_skb/format", tracing_path);
+	f = fopen(path, "r");
 
 	if (!f || !fsearch(f, "__print_symbolic")) {
 		if (f)

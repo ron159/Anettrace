@@ -825,9 +825,8 @@ static int trace_prepare_args()
 
 	trace_parse_traces(traces_stack, 2);
 	if (!debugfs_mounted()) {
-		pr_err("debugfs is not mounted! Please mount it with the "
-		       "command: mount -t debugfs debugfs "
-		       "/sys/kernel/debug\n");
+		pr_err("tracefs is unavailable; mount it at /sys/kernel/tracing "
+		       "or mount debugfs at /sys/kernel/debug\n");
 		goto err;
 	}
 
@@ -988,8 +987,12 @@ static void trace_prepare_status()
 
 static int trace_prepare_traces()
 {
-	char func[128], name[136];
+	const char *tracing_path = get_tracing_path();
+	char func[128], name[256];
 	trace_t *trace;
+
+	if (!tracing_path)
+		return -ENOENT;
 
 	if ((1 << trace_ctx.mode) & TRACE_MODE_BPF_CTX_MASK)
 		trace_group_enable("life", 1);
@@ -1006,8 +1009,8 @@ static int trace_prepare_traces()
 
 		if (!trace_is_func(trace)) {
 			/* For tracepoint, check the exist of the path */
-			sprintf(name, "/sys/kernel/debug/tracing/events/%s",
-				trace->tp);
+			snprintf(name, sizeof(name), "%s/events/%s",
+				 tracing_path, trace->tp);
 			if (!file_exist(name))
 				trace_set_invalid_reason(trace, "tp not found");
 			continue;

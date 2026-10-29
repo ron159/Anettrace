@@ -1235,7 +1235,8 @@ static int auto_inline handle_entry(context_info_t *info)
 			info->sk = sk = (void *)io->socket_key;
 	}
 	mode_ctx = mode_has_context(args) && skb;
-	filter = !info->matched;
+	/* fexit retval aliases matched outside skb context modes. */
+	filter = !(mode_ctx && info->matched);
 	direction = args->perfetto ? perfetto_status_direction(info->func_status) :
 				       PACKET_DIRECTION_UNKNOWN;
 	pkt_args = &args->pkt;

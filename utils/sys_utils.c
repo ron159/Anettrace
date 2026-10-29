@@ -93,9 +93,18 @@ char *kernel_version_str()
 	return version;
 }
 
+const char *get_tracing_path(void)
+{
+	if (file_exist("/sys/kernel/debug/tracing/events"))
+		return "/sys/kernel/debug/tracing";
+	if (file_exist("/sys/kernel/tracing/events"))
+		return "/sys/kernel/tracing";
+	return NULL;
+}
+
 bool debugfs_mounted()
 {
-	return simple_exec("mount | grep debugfs") == 0;
+	return get_tracing_path() != NULL;
 }
 
 int kernel_get_config(char *name, char *output)

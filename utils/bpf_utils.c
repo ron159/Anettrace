@@ -17,9 +17,15 @@
 
 int compat_bpf_attach_kprobe(int fd, char *name, bool ret)
 {
+	const char *tracing_path = get_tracing_path();
 	struct perf_event_attr attr = {};
 	char buf[1024], target[128];
 	int id, err, i = 0;
+
+	if (!tracing_path) {
+		pr_warn("tracefs is unavailable for kprobe %s\n", name);
+		return -1;
+	}
 
 	attr.type = PERF_TYPE_TRACEPOINT;
 	attr.sample_type = PERF_SAMPLE_RAW;
@@ -37,20 +43,20 @@ int compat_bpf_attach_kprobe(int fd, char *name, bool ret)
 		i++;
 	}
 
-	sprintf(buf, "/sys/kernel/debug/tracing/events/kprobes/%s/id",
-		target);
+	snprintf(buf, sizeof(buf), "%s/events/kprobes/%s/id",
+		 tracing_path, target);
 
 	if (file_exist(buf))
 		goto exist;
 
-	sprintf(buf, "(echo '%c:%s %s' >> /sys/kernel/debug/tracing/kprobe_events) 2>&1",
-		ret ? 'r' : 'p', target, name);
+	snprintf(buf, sizeof(buf), "(echo '%c:%s %s' >> %s/kprobe_events) 2>&1",
+		 ret ? 'r' : 'p', target, name, tracing_path);
 	if (simple_exec(buf)) {
 		pr_warn("failed to create kprobe: %s\n", target);
 		return -1;
 	}
-	sprintf(buf, "/sys/kernel/debug/tracing/events/kprobes/%s/id",
-		target);
+	snprintf(buf, sizeof(buf), "%s/events/kprobes/%s/id",
+		 tracing_path, target);
 exist:;
 	int efd = open(buf, O_RDONLY, 0);
 	if (efd < 0) {

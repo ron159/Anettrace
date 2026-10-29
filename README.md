@@ -189,6 +189,7 @@ trace，避免 SELinux 拒绝访问输出目录或继承的文件描述符。采
 ## 运行要求
 
 - eBPF 网络追踪需要 root 权限和允许 BPF program load/attach 的安全策略；
+- tracefs 可挂载于 `/sys/kernel/tracing`，也兼容 `/sys/kernel/debug/tracing`；
 - 默认 CO-RE 构建需要可读的 `/sys/kernel/btf/vmlinux`；
 - KPROBE、BPF TRACING、tracepoint 和 Perfetto 能力由具体模式决定；
 - 构建成功不代表目标 Android vendor 内核支持全部跟踪点。
@@ -203,9 +204,5 @@ trace，避免 SELinux 拒绝访问输出目录或继承的文件描述符。采
 - `android-tracing`：TRACING-only 实验分支，不在进程内回退到 KPROBE。
 
 Anettrace 源于 [OpenCloudOS/nettrace](https://github.com/OpenCloudOS/nettrace)，感谢原项目作者和贡献者建立 eBPF 报文追踪与诊断框架。
-
-上游同步采用按需移植：上游当前实现已移除 TRACING 后端和 monitor 模式，而本项目继续维护
-TRACING / KPROBE 双后端与 Android 静态发布。已覆盖的修复、值得移植的 tracefs 兼容改动
-以及待验证的模式修复见[上游合入评估](docs/upstream-sync.md)。
 
 项目采用 [Mulan PSL v2](LICENSE)。
