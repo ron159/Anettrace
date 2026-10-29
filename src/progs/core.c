@@ -1411,12 +1411,13 @@ DEFINE_ALL_PROBES(KPROBE_DEFAULT, TP_DEFAULT, FNC)
 /* The policy-check slow path excludes wrapper fast accepts and bypasses. */
 DEFINE_KPROBE_SKB(__xfrm_policy_check, 2, 4)
 {
+	struct sk_buff *skb = info->skb;
 	u16 family = (u64)info_get_arg(info, 3);
 	u16 protocol;
 
-	if (!info->skb)
+	if (!skb)
 		return -1;
-	protocol = _C(info->skb, protocol);
+	protocol = _C(skb, protocol);
 	if (family == AF_INET) {
 		if (protocol != bpf_htons(ETH_P_IP))
 			return -1;

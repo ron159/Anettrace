@@ -149,7 +149,7 @@ jobs:
       - name: Test tracing filesystem paths and monitor filter isolation
         run: python3 -m unittest tests/test_tracefs_paths.py tests/test_monitor_filters.py
       - name: Test symbol uniqueness and independent XFRM capture
-        run: python3 -m unittest tests/test_symbol_resolution.py tests/test_probe_selection.py tests/test_xfrm_policy_capture.py
+        run: python3 -m unittest tests/test_symbol_resolution.py tests/test_probe_selection.py tests/test_explicit_trace_presets.py tests/test_xfrm_policy_capture.py
       - name: Test traffic accounting and terminal presentation
         run: |
           python3 -m unittest \

@@ -792,6 +792,7 @@ static int trace_prepare_args()
 	bpf_args_t *bpf_args = &trace_ctx.bpf_args;
 	trace_args_t *args = &trace_ctx.args;
 	char *traces_stack = args->traces_stack;
+	bool explicit_traces = args->traces != NULL;
 	bool fix_trace;
 	char *traces;
 	int err;
@@ -834,6 +835,13 @@ static int trace_prepare_args()
 		trace_parse_traces(traces, 1);
 	}
 
+	if (!explicit_traces) {
+		trace_t *trace;
+
+		/* Built-in presets are optional; named user controls below are not. */
+		trace_for_each(trace)
+			trace->status &= ~TRACE_EXPLICIT;
+	}
 	trace_parse_traces(traces_stack, 2);
 	if (!debugfs_mounted()) {
 		pr_err("tracefs is unavailable; mount it at /sys/kernel/tracing "
