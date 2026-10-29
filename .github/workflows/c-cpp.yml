@@ -123,6 +123,8 @@ jobs:
         run: python3 tests/packet_flow_cli_contracts.py ./src/anettrace
       - name: Run source contract checks
         run: ./tests/source-contracts.sh
+      - name: Test tracing filesystem paths and monitor filter isolation
+        run: python3 -m unittest tests/test_tracefs_paths.py tests/test_monitor_filters.py
       - name: Test traffic accounting and terminal presentation
         run: |
           python3 -m unittest \
