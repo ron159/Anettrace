@@ -3,8 +3,9 @@
 # Supplement the ordinary BPF smoke with isolated IPv4/IPv6 XFRM slow paths.
 set -eu
 
-BIN="${1:?usage: xfrm-smoke.sh BINARY OUTPUT_DIRECTORY}"
-OUT="${2:?usage: xfrm-smoke.sh BINARY OUTPUT_DIRECTORY}"
+BIN="${1:?usage: xfrm-smoke.sh BINARY OUTPUT_DIRECTORY WORKLOAD}"
+OUT="${2:?usage: xfrm-smoke.sh BINARY OUTPUT_DIRECTORY WORKLOAD}"
+WORKLOAD="${3:?usage: xfrm-smoke.sh BINARY OUTPUT_DIRECTORY WORKLOAD}"
 TRACE_PID=""
 WATCHDOG_PID=""
 
@@ -33,8 +34,9 @@ trap 'exit 130' INT TERM
 
 [ "$(id -u)" = 0 ] || fail "run in a root shell"
 [ -x "$BIN" ] || fail "binary is not executable: $BIN"
+[ -x "$WORKLOAD" ] || fail "XFRM workload is not executable: $WORKLOAD"
 [ -r /sys/kernel/btf/vmlinux ] || fail "kernel BTF is required"
-for tool in awk grep ip nc readlink timeout unshare; do
+for tool in awk grep ip readlink timeout unshare; do
     command -v "$tool" >/dev/null 2>&1 || skip "required environment tool is unavailable: $tool"
 done
 [ ! -e "$OUT" ] || fail "output directory already exists: $OUT"
@@ -43,6 +45,10 @@ OUT="$(cd "$OUT" && pwd)"
 case "$BIN" in
     /*) ;;
     *) BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")" ;;
+esac
+case "$WORKLOAD" in
+    /*) ;;
+    *) WORKLOAD="$(cd "$(dirname "$WORKLOAD")" && pwd)/$(basename "$WORKLOAD")" ;;
 esac
 "$BIN" --version > "$OUT/version.txt" 2>&1
 uname -a > "$OUT/kernel.txt"
@@ -72,8 +78,8 @@ else
     echo "NOT RUN: /proc/kallsyms is unreadable for the duplicate-name subcheck"
 fi
 
-# Every policy operation is inside a new network namespace. Refuse to touch
-# policies if the namespace identity did not change; exiting reclaims it all.
+# The workload runs only in a new network namespace. Its socket policies
+# disappear on close; no global policies or sysctls are changed.
 # shellcheck disable=SC2016 # Expanded only by the isolated child shell.
 NS_SETUP='
 set -eu
@@ -85,14 +91,18 @@ current_netns=$(readlink /proc/self/ns/net)
 }
 printf "namespace=%s\n" "$current_netns"
 ip link set lo up
-ip xfrm policy add dir in src 127.0.0.1/32 dst 127.0.0.1/32 action allow
-ip -6 xfrm policy add dir in src ::1/128 dst ::1/128 action allow
 '
 
 namespace_failure() {
     log="$1"
-    if grep -Eiq 'operation not permitted|permission denied|not supported|not implemented' "$log"; then
-        reason="$(grep -Ei 'operation not permitted|permission denied|not supported|not implemented' "$log" | head -n 1)"
+    # A failed datagram/payload check is a real regression, even if its errno
+    # mentions a permission. Only namespace setup or policy capability can skip.
+    if grep -q '^FAIL: family=' "$log" && \
+        ! grep -Eq 'operation=(IP_XFRM_POLICY|IPV6_XFRM_POLICY) ' "$log"; then
+        fail "XFRM socket workload failed; inspect $log"
+    fi
+    if grep -Eiq 'operation not permitted|permission denied|not supported|not implemented|protocol not available' "$log"; then
+        reason="$(grep -Ei 'operation not permitted|permission denied|not supported|not implemented|protocol not available' "$log" | head -n 1)"
         skip "isolated XFRM environment rejected: $reason (see $log)"
     fi
     fail "isolated namespace setup/workload failed; inspect $log"
@@ -136,13 +146,9 @@ done
 
 # shellcheck disable=SC2016 # Expanded only by the isolated child shell.
 NS_WORKLOAD='
-port=$2
-# An unused destination still runs inbound UDP policy checks. nc may report
-# the subsequent port-unreachable response; only captured events prove success.
-printf "anettrace-xfrm-v4\n" | timeout -s KILL 2 nc -u -w 1 127.0.0.1 "$port" || true
-printf "anettrace-xfrm-v6\n" | timeout -s KILL 2 nc -6 -u -w 1 ::1 "$port" || true
+exec "$3" "$2"
 '
-if ! timeout -s KILL 8 unshare -n sh -c "$NS_SETUP$NS_WORKLOAD" sh "$HOST_NETNS" "$PORT" \
+if ! timeout -s KILL 8 unshare -n sh -c "$NS_SETUP$NS_WORKLOAD" sh "$HOST_NETNS" "$PORT" "$WORKLOAD" \
     > "$OUT/workload.log" 2>&1; then
     namespace_failure "$OUT/workload.log"
 fi

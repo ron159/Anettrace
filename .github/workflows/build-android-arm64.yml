@@ -115,6 +115,9 @@ jobs:
               gcc -O2 -Wall -Wextra -Werror -static \
                 tests/android/socket_chain_workload.c \
                 -o output/anettrace-socket-chain-workload
+              gcc -O2 -Wall -Wextra -Werror -static \
+                tests/android/xfrm_workload.c \
+                -o output/anettrace-xfrm-workload
               output/anettrace-socket-chain-workload \
                 --start-delay-ms 0 --rounds 2 --chunks 3 --bytes 128 \
                 --delay-ms 5 --interval-ms 0 | \
@@ -147,6 +150,9 @@ jobs:
                 grep -q "Machine:.*AArch64"
               ! readelf -l output/anettrace-socket-chain-workload | grep -q INTERP
               ! readelf -d output/anettrace-socket-chain-workload | grep -q NEEDED
+              file output/anettrace-xfrm-workload | grep -q "ARM aarch64"
+              ! readelf -l output/anettrace-xfrm-workload | grep -q INTERP
+              ! readelf -d output/anettrace-xfrm-workload | grep -q NEEDED
 
               grep -q "Machine:.*AArch64" output/anettrace.elf-header.txt
               ! grep -q INTERP output/anettrace.program-headers.txt
@@ -265,7 +271,8 @@ jobs:
               sha256sum "${archive}" > "${archive}.sha256"
               sha256sum src/anettrace "${archive}" \
                 output/anettrace-connect-workload \
-                output/anettrace-socket-chain-workload > output/SHA256SUMS
+                output/anettrace-socket-chain-workload \
+                output/anettrace-xfrm-workload > output/SHA256SUMS
               {
                 echo "source_commit=${GITHUB_SHA}"
                 echo "upstream_commit=a9f133477b02728e2430f7db9249d556b7162b84"
@@ -293,6 +300,7 @@ jobs:
             output/anettrace-socket-chain-workload
             output/anettrace-socket-chain-workload.file.txt
             output/anettrace-socket-chain-workload.self-test.txt
+            output/anettrace-xfrm-workload
 
       - name: Download uploaded artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -318,5 +326,8 @@ jobs:
           readelf -h output/anettrace-socket-chain-workload | grep -q 'Machine:.*AArch64'
           ! readelf -l output/anettrace-socket-chain-workload | grep -q INTERP
           ! readelf -d output/anettrace-socket-chain-workload | grep -q NEEDED
+          file output/anettrace-xfrm-workload | grep -q 'ARM aarch64'
+          ! readelf -l output/anettrace-xfrm-workload | grep -q INTERP
+          ! readelf -d output/anettrace-xfrm-workload | grep -q NEEDED
           tar -tjf "${archive}" | \
             grep -q "^anettrace-${version}-android-arm64-dual/anettrace$"
