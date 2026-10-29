@@ -764,7 +764,8 @@ def main(argv=None):
             server.server_close()
         return 0
     except ImportError:
-        print('Install report dependencies: python3 -m pip install -r tools/requirements-perfetto.txt', file=sys.stderr)
+        requirements = ASSETS.parent / 'requirements.txt'
+        print(f'Install report dependencies in a virtual environment: python3 -m pip install -r "{requirements}"', file=sys.stderr)
     except Exception as error:
         print(f'network_report: {error}', file=sys.stderr)
     return 2

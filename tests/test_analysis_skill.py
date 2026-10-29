@@ -41,6 +41,11 @@ class AnalysisSkillTest(unittest.TestCase):
             run('validate',out)
             trace.write_bytes(b'changed')
             run('validate',out,ok=False)
+            missing = subprocess.run([sys.executable,'-S',str(script),'inspect',str(trace)],
+                cwd=work, env=env, text=True, capture_output=True)
+            self.assertEqual(missing.returncode, 2)
+            self.assertIn(str(installed/'requirements.txt'), missing.stderr)
+            self.assertNotIn('tools/requirements-perfetto.txt', missing.stderr)
 
     def test_legacy_cli_uses_skill_implementation(self):
         with tempfile.TemporaryDirectory() as directory:

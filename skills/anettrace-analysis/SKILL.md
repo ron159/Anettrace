@@ -14,6 +14,8 @@ description: 分析已有 Anettrace .pftrace，按 UID、PID/TID、flow、socket
 下面的 `ANALYSIS_SKILL_DIR` 是本 SKILL.md 所在目录的绝对路径，`ANALYSIS_PYTHON` 是当前工作目录中兼容虚拟环境的 Python。已有环境可复用；否则在工作输出目录旁创建环境并安装本 Skill 的 requirements.txt，不修改全局 Python：
 
 ```sh
+ANALYSIS_SKILL_DIR=/path/to/installed/anettrace-analysis
+ANALYSIS_PYTHON=/path/to/work/.venv/bin/python
 python3 -m venv /path/to/work/.venv
 /path/to/work/.venv/bin/pip install -r "$ANALYSIS_SKILL_DIR/requirements.txt"
 ```
