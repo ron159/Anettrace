@@ -6,6 +6,14 @@
   "required": ["schema", "trace", "quality", "connections", "calls", "slow_calls", "excluded_calls"],
   "properties": {
     "schema": {"const": "anettrace.network-performance.v1"},
+    "time": {
+      "type": "object", "required": ["timezone", "trace_start_ns", "realtime_by_ts"],
+      "properties": {
+        "timezone": {"const": "UTC+8"},
+        "trace_start_ns": {"$ref": "#/$defs/nanoseconds"},
+        "realtime_by_ts": {"type": "object", "additionalProperties": {"$ref": "#/$defs/optionalTime"}}
+      }
+    },
     "trace": {
       "type": "object", "required": ["name", "path", "size", "sha256"],
       "properties": {
