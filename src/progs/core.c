@@ -926,7 +926,8 @@ static __attribute__((noinline)) int perfetto_handle_owner(
 			    (!owner->tid && owner->uid == flow_owner->owner.uid))
 				*owner = flow_owner->owner;
 			owner_valid = true;
-			if (!direction)
+			/* Shared policy checks do not establish TX/RX direction. */
+			if (!direction && info->func != INDEX___xfrm_policy_check)
 				direction = flow_owner->direction;
 		}
 	} else if (!perfetto_socket_supported(&event->ske) &&

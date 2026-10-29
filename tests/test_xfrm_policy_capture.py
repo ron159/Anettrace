@@ -103,6 +103,74 @@ for (unsigned p=0; p<2; p++) {
 ''')
         self.assertEqual(result, ["0", "1", "-1", "0", "-1", "0", "-1", "0"] * 2)
 
+    def test_tuple_owner_cache_cannot_assign_a_direction_to_the_shared_policy_path(self):
+        source = (ROOT / "src/progs/core.c").read_text()
+        code = monitor_helpers.MonitorFilterTests().capture_helpers()
+        code = code.replace("u32 skb_iif, len;", "u32 skb_iif, len; struct sock *sk;")
+        lookup = "static void *bpf_map_lookup_elem(void *map, const void *key) { return NULL; }"
+        self.assertEqual(code.count(lookup), 1)
+        code = code.replace(lookup, r'''
+#define INDEX___xfrm_policy_check 100
+typedef struct { u64 socket_key; u32 tid, tgid, uid, socket_generation; u8 dns; } perfetto_owner_t;
+typedef struct { perfetto_owner_t owner; u8 direction; } perfetto_flow_owner_t;
+typedef struct { perfetto_owner_t owner; int flow_key, flow_value; } perfetto_scratch_t;
+static int m_perfetto_scratch;
+static perfetto_scratch_t scratch;
+static perfetto_flow_owner_t cached = {
+    .owner={.socket_key=44,.tid=55,.tgid=55,.uid=2000,.socket_generation=1}};
+static void *bpf_map_lookup_elem(void *map, const void *key) {
+    return map==&m_perfetto_scratch ? &scratch : NULL;
+}
+''')
+        code = code.replace(
+            "static u8 perfetto_status_direction(u8 status) { return PACKET_DIRECTION_UNKNOWN; }",
+            helpers.function(source, "perfetto_status_direction"))
+        boundary = r'''
+static bool perfetto_socket_io(u16 func) { return false; }
+static u32 perfetto_socket_generation(struct sock *sk, bool create);
+static bool perfetto_resolve_socket_owner(struct sock *sk, bool trust_current,
+    perfetto_owner_t *owner, u32 tid, u32 tgid, u32 uid) { return false; }
+static void perfetto_store_socket_owner(struct sock *sk, perfetto_owner_t *owner) {}
+static perfetto_flow_owner_t *perfetto_lookup_flow(packet_t *pkt, int *key, u32 netns) {
+    return &cached;
+}
+static void perfetto_store_flow(packet_t *pkt, perfetto_owner_t *owner,
+    u8 direction, int *key, int *value, u32 netns) {}
+''' + "".join(helpers.function(source, name) for name in (
+            "perfetto_current_matches", "perfetto_owner_matches", "perfetto_packet_supported",
+            "perfetto_packet_is_dns", "perfetto_socket_supported", "perfetto_handle_owner"))
+        owner_stub = re.search(
+            r"static int perfetto_handle_owner\([^{}]+\{ return 0; \}", code)
+        self.assertIsNotNone(owner_stub)
+        code = code.replace(owner_stub.group(), boundary)
+        result = self.run_source(code, r'''
+struct sk_buff skb={0};
+detail_event_t event={0}, detail={0};
+event.pkt.proto_l4=IPPROTO_UDP;
+bpf_args_t args={.pid=55,.uid_enabled=true,.uid=2000};
+context_info_t info={.args=&args,.e=(void *)&event,.skb=&skb};
+for (unsigned direction=PACKET_DIRECTION_TX;direction<=PACKET_DIRECTION_RX;direction++) {
+    cached.direction=direction;
+    info.func=INDEX___xfrm_policy_check;
+    detail=(detail_event_t){0};
+    printf("%d ",perfetto_handle_owner(&info,NULL,&detail,true));
+    printf("%u %u ",detail.direction,detail.owner_tid);
+    /* Other existing stages keep their direction association semantics. */
+    info.func=INDEX_tcp_close;
+    detail=(detail_event_t){0};
+    printf("%d ",perfetto_handle_owner(&info,NULL,&detail,true));
+    printf("%u ",detail.direction);
+}
+/* Keeping unknown direction must not discard the owner filter boundary. */
+info.func=INDEX___xfrm_policy_check;
+args.uid=2001;
+printf("%d ",perfetto_handle_owner(&info,NULL,&detail,true));
+args.uid=2000;args.pid=56;
+printf("%d",perfetto_handle_owner(&info,NULL,&detail,true));
+''')
+        self.assertEqual(result, ["0", "0", "55", "0", "1",
+                                  "0", "0", "55", "0", "2", "-1", "-1"])
+
     def test_catalog_generates_an_independent_slow_path_stage(self):
         catalog = yaml.safe_load((ROOT / "src/trace.yaml").read_text())
 
