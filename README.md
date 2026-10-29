@@ -2,9 +2,9 @@
 
 Anettrace 是面向 Linux 与 Android 的 eBPF 网络诊断工具，可追踪报文在内核协议栈中的路径、定位丢包和延迟、统计线程流量，并生成包含网络与系统调度信息的 Perfetto 时间线。网络追踪需要 root；Android 也支持通过有 Perfetto 访问权限的 `adb shell` 用户仅采集系统 trace。
 
-> 当前正式版：**v0.8.13**。完整安装说明、参数解释、模式组合、Android 抓取和排障指南见 [GitHub Wiki](https://github.com/ron159/Anettrace/wiki)；离线报告与近期采集能力见下方仓库文档。
+> 当前正式版：**v0.8.14**。完整安装说明、参数解释、模式组合、Android 抓取和排障指南见 [GitHub Wiki](https://github.com/ron159/Anettrace/wiki)；离线报告与近期采集能力见下方仓库文档。
 
-[下载 v0.8.13](https://github.com/ron159/Anettrace/releases/tag/v0.8.13) · [使用手册](https://github.com/ron159/Anettrace/wiki) · [CLI 完整参考](https://github.com/ron159/Anettrace/wiki/CLI-Reference) · [问题反馈](https://github.com/ron159/Anettrace/issues)
+[下载 v0.8.14](https://github.com/ron159/Anettrace/releases/tag/v0.8.14) · [使用手册](https://github.com/ron159/Anettrace/wiki) · [CLI 完整参考](https://github.com/ron159/Anettrace/wiki/CLI-Reference) · [问题反馈](https://github.com/ron159/Anettrace/issues)
 
 ## 主要功能
 
@@ -25,7 +25,7 @@ Anettrace 是面向 Linux 与 Android 的 eBPF 网络诊断工具，可追踪报
 ### Android arm64 正式版
 
 ```shell
-version=0.8.13
+version=0.8.14
 curl -fLO "https://github.com/ron159/Anettrace/releases/download/v${version}/anettrace-${version}-android-arm64-dual"
 curl -fLO "https://github.com/ron159/Anettrace/releases/download/v${version}/SHA256SUMS"
 grep " anettrace-${version}-android-arm64-dual$" SHA256SUMS | shasum -a 256 -c -
@@ -53,7 +53,7 @@ sudo ./src/anettrace --proto icmp --detail
 推荐使用可独立更新的 [分析 Skill](docs/analysis-skill.md)，不必等待采集器或 host-tools 发版。旧版报告可继续下载同版本的 `host-tools`，校验后解压；在解压目录运行以下命令。源码仓库可直接从创建虚拟环境开始：
 
 ```shell
-version=0.8.13
+version=0.8.14
 curl -fLO "https://github.com/ron159/Anettrace/releases/download/v${version}/anettrace-${version}-host-tools.tar.bz2"
 curl -fLO "https://github.com/ron159/Anettrace/releases/download/v${version}/SHA256SUMS"
 grep " anettrace-${version}-host-tools.tar.bz2$" SHA256SUMS | shasum -a 256 -c -

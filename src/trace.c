@@ -211,7 +211,8 @@ static bool trace_group_valid(trace_group_t *group)
 
 	if (!list_empty(&group->traces)) {
 		list_for_each_entry(trace_list, &group->traces, list)
-			if (!trace_is_invalid(trace_list->trace))
+			if (!trace_is_invalid(trace_list->trace) ||
+			    (trace_list->trace->status & TRACE_SYMBOL_AMBIGUOUS))
 				return true;
 		return false;
 	}
@@ -256,6 +257,12 @@ print_trace:
 		trace = trace_list->trace;
 		status = trace->status;
 
+		if (status & TRACE_SYMBOL_AMBIGUOUS) {
+			pr_info("%s  - %s [unavailable: ambiguous symbol]\n",
+				prefix, trace->name);
+			continue;
+		}
+
 #if 1
 		if (trace_is_invalid(trace))
 			continue;
@@ -282,6 +289,8 @@ print_trace:
 		} else {
 			pr_info("%s  - %s\n",  prefix, name);
 		}
+		if (trace->desc && trace->desc[0])
+			pr_info("%s    %s\n", prefix, trace->desc);
 	}
 }
 
@@ -358,6 +367,8 @@ int trace_enable(char *name, int target)
 		if (strcmp(t->name, name))
 			continue;
 
+		if (target != 4)
+			t->status |= TRACE_EXPLICIT;
 		err = trace_set_target(t, target);
 		if (err)
 			return err;
@@ -985,11 +996,48 @@ static void trace_prepare_status()
 	}
 }
 
+static int trace_resolve_symbol(trace_t *trace)
+{
+	char resolved[sizeof(trace->name)], pattern[sizeof(trace->name) + 2];
+	int kind;
+
+	kind = sym_search_unique(trace->name, resolved, sizeof(resolved), false);
+	if (kind == SYM_NOT_EXIST) {
+		snprintf(pattern, sizeof(pattern), "%s.", trace->name);
+		kind = sym_search_unique(pattern, resolved, sizeof(resolved), true);
+		if (kind == SYM_KERNEL || kind == SYM_MODULE)
+			trace->status |= TRACE_ATTACH_MANUAL;
+	}
+	if (kind == SYM_AMBIGUOUS) {
+		trace->status |= TRACE_SYMBOL_AMBIGUOUS;
+		trace_set_invalid_reason(trace, "ambiguous symbol");
+		if (trace->status & TRACE_EXPLICIT) {
+			pr_err("requested probe %s unavailable: ambiguous symbol\n", trace->name);
+			return -EADDRNOTAVAIL;
+		}
+		pr_warn("probe coverage degraded: %s unavailable (ambiguous symbol)\n",
+			trace->name);
+		return 0;
+	}
+	if (kind == SYM_NOT_EXIST) {
+		trace_set_invalid_reason(trace, "not found");
+		if (trace->status & TRACE_EXPLICIT) {
+			pr_err("requested probe %s unavailable: symbol not found\n", trace->name);
+			return -ENOENT;
+		}
+		pr_verb("kernel function %s not found, skipped\n", trace->name);
+		return 0;
+	}
+	strcpy(trace->name, resolved);
+	return 0;
+}
+
 static int trace_prepare_traces()
 {
 	const char *tracing_path = get_tracing_path();
-	char func[128], name[256];
+	char name[256];
 	trace_t *trace;
+	int err;
 
 	if (!tracing_path)
 		return -ENOENT;
@@ -1016,24 +1064,9 @@ static int trace_prepare_traces()
 			continue;
 		}
 
-		if (sym_get_type(trace->name) != SYM_NOT_EXIST)
-			continue;
-
-		if (!trace_is_func(trace)) {
-			trace_set_invalid(trace);
-			continue;
-		}
-
-		sprintf(name, "%s.", trace->name);
-		if (sym_search_pattern(name, func, true) == SYM_NOT_EXIST) {
-			pr_verb("kernel function %s not founded, skipped\n",
-				trace->name);
-			trace_set_invalid_reason(trace, "not found");
-			continue;
-		}
-		trace->status |= TRACE_ATTACH_MANUAL;
-		strcpy(trace->name, func);
-		pr_debug("%s is made manual attach\n", trace->name);
+		err = trace_resolve_symbol(trace);
+		if (err)
+			return err;
 	}
 
 	pr_debug("finished to resolve kernel symbol\n");

@@ -262,6 +262,7 @@ def capture_quality(tp, events, packets, calls, excluded):
     issues = []
     lost = None
     end_losses = []
+    unavailable_probes = False
     for event in events:
         if event['category'] != 'anettrace.metadata':
             continue
@@ -271,6 +272,9 @@ def capture_quality(tp, events, packets, calls, excluded):
         metadata.append(dict(name=event['name'], fields=fields, evidence=slice_evidence(event)))
         if event['name'] == 'trace_end':
             end_losses.append(fields.get('lost_events'))
+        if event['name'] == 'probe_status' and fields.get('status') == 'unavailable':
+            unavailable_probes = True
+            issues.append(f"探针 {fields.get('probe', 'unknown')} 未覆盖：{fields.get('reason', 'unknown')}")
         for key in ('capacity_truncated', 'capacity_dropped_events', 'expired_events', 'unresolved_events'):
             if fields.get(key):
                 issues.append(f"{event['name']}.{key}={fields[key]}")
@@ -301,7 +305,12 @@ def capture_quality(tp, events, packets, calls, excluded):
                    for k in ('capacity_truncated','capacity_dropped_events','expired_events'))
     if not calls:
         issues.append('未观测到应用系统调用，无法生成应用慢调用排行')
-    status = 'degraded' if observed_loss or stats or pressure else 'partial' if lost is None or not state_count or not calls else 'observed'
+    if observed_loss or stats or pressure or unavailable_probes:
+        status = 'degraded'
+    elif lost is None or not state_count or not calls:
+        status = 'partial'
+    else:
+        status = 'observed'
     return dict(status=status, lost_events=lost, observed_loss_notifications=notifications, packet_events=len(packets),
                 observed_skbs=len({p['packet_id'] for p in packets if p['packet_id']}),
                 calls=len(calls), excluded_calls=len(excluded), parser_stats=stats,

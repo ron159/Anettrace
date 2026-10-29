@@ -181,7 +181,12 @@ static struct { void (*prepare_traces)(void); } ops = {record_prepared};
 static struct { int mode; typeof(ops) *ops; } trace_ctx = {.ops=&ops};
 #define TRACE_MODE_BPF_CTX_MASK 0
 #define TRACE_ATTACH_MANUAL 1
+#define TRACE_EXPLICIT (1U << 8)
+#define TRACE_SYMBOL_AMBIGUOUS (1U << 9)
 #define SYM_NOT_EXIST 0
+#define SYM_MODULE 1
+#define SYM_KERNEL 2
+#define SYM_AMBIGUOUS 3
 #define trace_for_each(trace) for (trace=traces; trace<traces+2; trace++)
 static bool trace_is_invalid(trace_t *trace) { return trace->invalid; }
 static bool trace_is_enable(trace_t *trace) { return trace->enabled; }
@@ -194,10 +199,14 @@ static void trace_group_enable(const char *group, int value) { (void)group; (voi
 static void trace_exec_cond(void) {}
 static void trace_prepare_status(void) {}
 static int sym_get_type(const char *name) { (void)name; return 1; }
+static int sym_search_unique(const char *name, char *result, size_t size, bool partial) {
+    (void)partial; snprintf(result, size, "%s", name); return SYM_KERNEL;
+}
 static int sym_search_pattern(const char *name, char *result, bool partial) {
     (void)name; (void)result; (void)partial; return SYM_NOT_EXIST;
 }
-''' + function((ROOT / 'src/trace.c').read_text(), 'trace_prepare_traces')
+''' + ''.join(function((ROOT / 'src/trace.c').read_text(), name)
+              for name in ('trace_resolve_symbol', 'trace_prepare_traces'))
         for roots in ([LEGACY], [MODERN], [LEGACY, MODERN], []):
             files = {f'{root}/events/skb/kfree_skb/format': 'fixture' for root in roots}
             with self.subTest(roots=roots):

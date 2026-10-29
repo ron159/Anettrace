@@ -6,6 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 sh -n "$ROOT/tests/android-bpf-load-smoke.sh"
+sh -n "$ROOT/tests/xfrm-smoke.sh"
 
 require_text() {
 	local text="$1"
