@@ -1,0 +1,412 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ron159/Anettrace/skills/anettrace-analysis/assets/report.schema.json",
+  "title": "Anettrace network performance report v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "trace",
+    "quality",
+    "connections",
+    "calls",
+    "slow_calls",
+    "excluded_calls"
+  ],
+  "properties": {
+    "schema": {
+      "const": "anettrace.network-performance.v1"
+    },
+    "time": {
+      "type": "object",
+      "required": [
+        "timezone",
+        "trace_start_ns",
+        "realtime_by_ts"
+      ],
+      "properties": {
+        "timezone": {
+          "const": "UTC+8"
+        },
+        "trace_start_ns": {
+          "$ref": "#/$defs/nanoseconds"
+        },
+        "realtime_by_ts": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/optionalTime"
+          }
+        }
+      }
+    },
+    "trace": {
+      "type": "object",
+      "required": [
+        "name",
+        "path",
+        "size",
+        "sha256"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "required": [
+        "status",
+        "lost_events",
+        "issues",
+        "evidence",
+        "packet_events",
+        "calls"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "observed",
+            "partial",
+            "degraded"
+          ]
+        },
+        "lost_events": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "packet_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "calls": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "calls": {
+      "type": "object",
+      "required": [
+        "ranked_total",
+        "excluded_total",
+        "truncated",
+        "limit"
+      ],
+      "properties": {
+        "ranked_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "excluded_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      }
+    },
+    "connections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "socket_ids",
+          "lifecycle_observed",
+          "evidence"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/$defs/evidence"
+          },
+          "call_time": {
+            "type": "object",
+            "required": [
+              "count",
+              "total_ns",
+              "min_ns",
+              "max_ns",
+              "p50_ns",
+              "p95_ns"
+            ],
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "total_ns": {
+                "$ref": "#/$defs/optionalTime"
+              },
+              "min_ns": {
+                "$ref": "#/$defs/optionalTime"
+              },
+              "max_ns": {
+                "$ref": "#/$defs/optionalTime"
+              },
+              "p50_ns": {
+                "$ref": "#/$defs/optionalTime"
+              },
+              "p95_ns": {
+                "$ref": "#/$defs/optionalTime"
+              }
+            }
+          }
+        }
+      }
+    },
+    "slow_calls": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/call"
+      }
+    },
+    "excluded_calls": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/call"
+      }
+    },
+    "sockets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "socket_id",
+          "created_ns",
+          "first_syn_ns",
+          "first_syn_ack_ns",
+          "first_fin_ns",
+          "first_rst_ns",
+          "events"
+        ],
+        "properties": {
+          "socket_id": {
+            "type": "string"
+          },
+          "created_ns": {
+            "$ref": "#/$defs/optionalTime"
+          },
+          "first_syn_ns": {
+            "$ref": "#/$defs/optionalTime"
+          },
+          "first_syn_ack_ns": {
+            "$ref": "#/$defs/optionalTime"
+          },
+          "first_fin_ns": {
+            "$ref": "#/$defs/optionalTime"
+          },
+          "first_rst_ns": {
+            "$ref": "#/$defs/optionalTime"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "kinds",
+                "ts_ns",
+                "dur_ns",
+                "evidence"
+              ],
+              "properties": {
+                "kinds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "enum": [
+                      "create",
+                      "syn",
+                      "syn_ack",
+                      "fin",
+                      "rst"
+                    ]
+                  }
+                },
+                "ts_ns": {
+                  "$ref": "#/$defs/nanoseconds"
+                },
+                "dur_ns": {
+                  "$ref": "#/$defs/nanoseconds"
+                },
+                "evidence": {
+                  "$ref": "#/$defs/evidence"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "required": [
+        "filters",
+        "matched_events",
+        "calls",
+        "packet_events",
+        "context_events"
+      ],
+      "properties": {
+        "filters": {
+          "type": "object"
+        },
+        "matched_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "packet_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "context_events": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "value",
+            "events",
+            "calls"
+          ],
+          "properties": {
+            "value": {
+              "type": [
+                "integer",
+                "string",
+                "null"
+              ]
+            },
+            "events": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "calls": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nanoseconds": {
+      "type": "string",
+      "pattern": "^-?[0-9]+$"
+    },
+    "optionalTime": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/nanoseconds"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "sql",
+        "ts_ns",
+        "dur_ns",
+        "perfetto_url"
+      ],
+      "properties": {
+        "sql": {
+          "type": "string"
+        },
+        "perfetto_url": {
+          "type": "string",
+          "pattern": "^https://ui\\.perfetto\\.dev/"
+        },
+        "ts_ns": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/nanoseconds"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dur_ns": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/nanoseconds"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "call": {
+      "type": "object",
+      "required": [
+        "name",
+        "ts_ns",
+        "dur_ns",
+        "evidence"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "ts_ns": {
+          "$ref": "#/$defs/nanoseconds"
+        },
+        "dur_ns": {
+          "$ref": "#/$defs/nanoseconds"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    }
+  }
+}

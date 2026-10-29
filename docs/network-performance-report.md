@@ -4,7 +4,7 @@
 
 ## 获取与运行
 
-下载 Release 的 `host-tools.tar.bz2` 并解压，在解压目录中运行；源码仓库的用法相同：
+推荐使用独立 [anettrace-analysis Skill](analysis-skill.md)，AI 可按流程生成、筛选和验证报告。整个 `skills/anettrace-analysis` 可单独安装，不依赖设备端 Release。源码仓库或后续 host-tools 包仍保留旧命令兼容入口：
 
 ```sh
 python3 -m venv .venv
@@ -19,7 +19,24 @@ python3 -m venv .venv
   --trace-processor /path/to/trace_processor_shell --limit 100
 ```
 
-默认显示最慢的 50 个完整调用、最多 50 个排除调用，`--limit` 范围为 1–1000；总数和连接统计始终覆盖全部观测。报告中的定位 SQL 可查询未列出的原始事件。没有 Anettrace 事件或输入解析失败时返回非零状态。
+默认显示最慢的 50 个完整调用、最多 50 个排除调用，`--limit` 范围为 1–1000；调用总数和连接统计覆盖所有匹配观测，筛选发生在排行截断前。报告中的定位 SQL 可查询未列出的原始事件。没有 Anettrace 事件或输入解析失败时返回非零状态。
+
+先列候选项，再组合筛选：
+
+```sh
+.venv/bin/python tools/network_report.py inspect capture.pftrace
+.venv/bin/python tools/network_report.py analyze capture.pftrace --out report \
+  --uid 10187 --uid 10188 --protocol tcp --endpoint-port 443 --min-call-ms 5
+.venv/bin/python tools/network_report.py analyze capture.pftrace --out report-flow \
+  --flow tcp-1 --syscall recvmsg --start-ms 100 --end-ms 3000
+.venv/bin/python tools/network_report.py validate report
+```
+
+支持 UID、PID、TID、完整 flow_id / flow_tag、socket_id、协议、任一端 IP / 端口、调用名、最小/最大调用耗时及相对时间窗口。同一字段多个值取 OR，不同字段取 AND；用 `unknown` 可选缺失字段。`--port` 是本地服务端口，端点筛选使用 `--endpoint-port`。时间窗口按调用相交选择，耗时和调度仍保留完整调用窗口。
+
+页面顶部展开筛选面板可交互调整条件，候选提示包含原 trace 中的事件数和调用数。应用后服务重新计算完整候选和调度，更新 JSON / HTML；清空条件可恢复全轨迹。采集丢事件、packet 和调用质量计数始终按原轨迹统计，调度覆盖提示针对当前排行。每个流增加完整调用数、最大耗时和 P95；JSON 另含总耗时、最小耗时及 P50。
+
+应用 UID 优先使用调用者身份；packet / flow 仅使用有效的 socket owner 身份。packet 执行上下文 UID 不作为应用身份，缺失值不猜测。匹配 socket 的创建记录作为上下文保留，即使早于时间窗或创建者 UID 不同，也会标注 `context_only`。统计范围见 `scope`，候选项见 `inventory`；详细规则见 [分析流程](../skills/anettrace-analysis/references/analysis-workflow.md)。
 
 页面按“采集质量 / 连接概览 / Socket 时间线 / 慢调用排行 / 调度时间”五个 Tab 切换。表格分页，切换 Tab 不重新分析；可用左右方向键、Home / End 切换，URL 的页面片段可保存当前 Tab。
 
@@ -61,7 +78,7 @@ packet 统计只使用 `anettrace.packet` / `anettrace.packet.drop`，排除 soc
 
 ## 从结果回到原始事件
 
-每个结果旁有“在 Perfetto 定位”“复制 SQL”和可展开的 SQL / 纳秒时间。单条事件使用官方 `ts` / `dur` 深链接自动选中原始 tag，展示选中事件的详情。同一报告页面中首次打开 Perfetto 后，后续点击复用同一浏览器标签页；关闭该标签页后可重新打开。
+每个结果旁有“在 Perfetto 定位”“复制 SQL”和可展开的 SQL / 时间。单条事件使用官方 `ts` / `dur` 深链接自动选中原始 tag，展示选中事件的详情。同一报告页面中首次打开 Perfetto 后，后续点击复用同一浏览器标签页；关闭该标签页后可重新打开。
 
 按当前官方接口限制，深链接选择只在页面首次载入 trace 时生效，因此每次跳转都会在同一标签页重新载入 trace，原有缩放、固定轨道等 UI 状态会重置。报告缓存已经校验的 trace 字节，后续点击不重复从本地服务读取。单纯更新 URL 片段或 postMessage 时间范围不能保证重新选中 tag，所以没有使用该方式冒充精确定位。参见 [Perfetto 深链接](https://perfetto.dev/docs/visualization/deep-linking-to-perfetto-ui) 和 [事件选择实现](https://github.com/google/perfetto/blob/main/ui/src/plugins/dev.perfetto.DeeplinkQuerystring/index.ts)。报告页面刷新后需重新建立定位会话。
 
@@ -69,4 +86,4 @@ packet 统计只使用 `anettrace.packet` / `anettrace.packet.drop`，排除 soc
 
 SQL 使用精确时间、类别及显式关联 ID，避免依赖不同 Trace Processor 版本之间可能变化的 slice ID。JSON 的 `ts_ns` / `dur_ns` 用十进制字符串保存，避免浏览器丢失 64 位时间精度；显示的毫秒值只用于阅读。
 
-本地服务只暴露固定的报告和原 trace 路由，不开放目录，也不允许跨站读取。原 trace 通过 [Perfetto postMessage 接口](https://perfetto.dev/docs/visualization/embedding-api-reference) 传给浏览器中的 UI，不生成公开 trace URL。HTML/JSON 包含事件信息、本机输入路径和定位 SQL，应按原轨迹的敏感程度保存和分享。JSON 格式见 `schemas/network-performance-v1.schema.json`。
+本地服务只暴露固定的报告和原 trace 路由，不开放目录，也不允许跨站读取。原 trace 通过 [Perfetto postMessage 接口](https://perfetto.dev/docs/visualization/embedding-api-reference) 传给浏览器中的 UI，不生成公开 trace URL。HTML/JSON 包含事件信息、本机输入路径和定位 SQL，应按原轨迹的敏感程度保存和分享。JSON 格式见 Skill 的 `assets/report.schema.json`；原 `schemas/network-performance-v1.schema.json` 保留兼容约束。

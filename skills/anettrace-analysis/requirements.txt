@@ -1,0 +1,2 @@
+perfetto==0.57.2
+jsonschema==4.23.0

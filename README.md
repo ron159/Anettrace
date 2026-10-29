@@ -17,6 +17,7 @@ Anettrace 是面向 Linux 与 Android 的 eBPF 网络诊断工具，可追踪报
 - `--system-trace-only` 在有系统 Perfetto 访问权限的 Android shell 中采集系统 trace，无需 root；
 - `--ring-buffer` 持续抓取并在停止时保存最近 N 秒；
 - Android TCP 主动建连根因诊断与隐私受控报告；
+- [独立分析 Skill](docs/analysis-skill.md)：AI 分析已有 pftrace，按 UID、流、socket、协议、端点和耗时组合筛选；单独更新分析能力，无需重新编译采集器。
 - [通用收发性能报告与 Perfetto 入口](docs/network-performance-report.md)：离线生成 HTML/JSON，通过五个 Tab 查看采集质量、连接、Socket 创建与 SYN/FIN 时序、慢调用及调度时间；支持 UTC+8 / 相对时间显示，并复用 Perfetto 标签页定位原始 tag。
 
 ## 快速开始
@@ -49,7 +50,7 @@ sudo ./src/anettrace --proto icmp --detail
 
 ### 在主机生成离线报告
 
-下载同版本的 `host-tools`，校验后解压；在解压目录运行以下命令。源码仓库可直接从创建虚拟环境开始：
+推荐使用可独立更新的 [分析 Skill](docs/analysis-skill.md)，不必等待采集器或 host-tools 发版。旧版报告可继续下载同版本的 `host-tools`，校验后解压；在解压目录运行以下命令。源码仓库可直接从创建虚拟环境开始：
 
 ```shell
 version=0.8.13

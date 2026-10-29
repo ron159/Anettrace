@@ -92,6 +92,33 @@ def fixture(path, *, states=True, ended=True, lifecycle=True):
     path.write_bytes(trace.SerializeToString())
 
 
+def filter_fixture(path):
+    fixture(path)
+    trace = Trace.FromString(path.read_bytes())
+    for packet in trace.packet:
+        event = packet.track_event
+        category = event.categories[0] if event.categories else ''
+        args = {a.name: a.string_value for a in event.debug_annotations}
+        extra = {}
+        if category == 'anettrace.syscall':
+            extra['uid'] = 1002 if args.get('call_id') == 'call-b' else 1001
+            if args.get('call_id') == 'call-b':
+                extra.update(protocol='udp', remote_addr='203.0.113.2', remote_port=53)
+        if category.startswith('anettrace.packet'):
+            extra.update(uid=0, owner_uid=1001, owner_tid=45, owner_tgid=44,
+                         owner_valid=True, proto_l4=6, saddr='192.0.2.1',
+                         daddr='198.51.100.2', sport=12345, dport=443)
+        if category == 'anettrace.flow':
+            extra.update(protocol='tcp', owner_uid=1001, owner_tid=45, owner_tgid=44,
+                         flow_tag='tcp-1')
+        for name, value in extra.items():
+            arg = event.debug_annotations.add(name=name)
+            if isinstance(value, bool): arg.bool_value = value
+            elif isinstance(value, int): arg.int_value = value
+            else: arg.string_value = value
+    path.write_bytes(trace.SerializeToString())
+
+
 class NetworkReportTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -135,6 +162,100 @@ class NetworkReportTest(unittest.TestCase):
         self.assertEqual(schedule['runnable_ns'], str(50 * MS))
         self.assertEqual(schedule['other_ns'], str(30 * MS))
         self.assertEqual(schedule['uncovered_ns'], '0')
+
+    def test_uid_filters_before_ranking_limit_and_keeps_global_quality(self):
+        filter_fixture(self.path)
+        result = report.analyze(self.path, limit=1, filters={'uids': [1002]})
+        self.assertEqual(result['slow_calls'][0]['call_id'], 'call-b')
+        self.assertEqual(result['slow_calls'][0]['app_uid'], 1002)
+        self.assertEqual(result['calls']['ranked_total'], 1)
+        self.assertFalse(result['calls']['truncated'])
+        self.assertEqual(result['quality']['calls'], 4)
+        self.assertEqual(result['quality']['packet_events'], 2)
+        self.assertEqual(result['scope']['packet_events'], 0)
+        self.assertEqual({c['key'] for c in result['connections']}, {'flow:f2'})
+        self.assertEqual({u['value'] for u in result['inventory']['uids']}, {1001, 1002})
+
+    def test_protocol_and_endpoint_filters_follow_explicit_flow(self):
+        filter_fixture(self.path)
+        result = report.analyze(self.path, filters={'uids': [1001], 'protocols': ['tcp'],
+                               'addresses': ['198.51.100.2'], 'ports': [443]})
+        self.assertEqual([c['call_id'] for c in result['slow_calls']], ['call-a'])
+        self.assertEqual(result['scope']['packet_events'], 2)
+        self.assertEqual(result['connections'][0]['call_time']['max_ns'], str(140*MS))
+        self.assertEqual(result['slow_calls'][0]['protocols'], ['tcp'])
+
+    def test_packet_executor_uid_is_not_socket_owner_and_root_is_valid(self):
+        filter_fixture(self.path)
+        root = report.analyze(self.path, filters={'uids': [0]})
+        self.assertEqual(root['scope']['packet_events'], 0)
+        self.assertEqual(root['slow_calls'], [])
+        trace = Trace.FromString(self.path.read_bytes())
+        for packet in trace.packet:
+            if packet.track_event.name == 'sendmmsg':
+                next(a for a in packet.track_event.debug_annotations if a.name == 'uid').int_value = 0
+        self.path.write_bytes(trace.SerializeToString())
+        root = report.analyze(self.path, filters={'uids': [0]})
+        self.assertEqual([c['call_id'] for c in root['slow_calls']], ['call-b'])
+
+    def test_invalid_owner_and_context_creation_are_not_matching_statistics(self):
+        filter_fixture(self.path)
+        trace = Trace.FromString(self.path.read_bytes())
+        for packet in trace.packet:
+            if packet.track_event.name == 'TCP send' and packet.track_event.categories[0] == 'anettrace.packet':
+                next(a for a in packet.track_event.debug_annotations if a.name == 'owner_valid').bool_value = False
+        packet = trace.packet.add(timestamp=BASE+80*MS, timestamp_clock_id=6, trusted_packet_sequence_id=1)
+        event = packet.track_event
+        event.track_uuid = 1
+        event.type = TrackEvent.TYPE_INSTANT
+        event.name = 'socket allocation'
+        event.categories.append('anettrace.socket')
+        event.debug_annotations.add(name='socket_id', string_value='s1')
+        event.debug_annotations.add(name='uid', int_value=1001)
+        self.path.write_bytes(trace.SerializeToString())
+        result = report.analyze(self.path, filters={'uids': [1002]})
+        self.assertEqual({c['key'] for c in result['connections']}, {'flow:f2'})
+        self.assertEqual(result['scope']['context_events'], 1)
+        birth = result['sockets'][0]['events'][0]
+        self.assertTrue(birth['context_only'])
+        self.assertEqual(birth['kinds'], ['create'])
+        self.assertEqual(birth['app_uid'], 1001)
+        result = report.analyze(self.path, filters={'uids': [1001]})
+        self.assertEqual(result['scope']['packet_events'], 0)
+
+    def test_flow_tag_duration_and_time_window_do_not_clip_calls(self):
+        filter_fixture(self.path)
+        result = report.analyze(self.path, filters={'flows': ['tcp-1'], 'min_call_ms': '100',
+                               'start_ms': '15', 'end_ms': '20'})
+        call = result['slow_calls'][0]
+        self.assertEqual(call['dur_ns'], str(140*MS))
+        self.assertEqual(call['schedule']['running_ns'], str(60*MS))
+        self.assertEqual(result['calls']['ranked_total'], 1)
+        self.assertIn(f's.ts={BASE+100*MS}', call['evidence']['sql'])
+
+    def test_invalid_filters_are_rejected(self):
+        fixture(self.path)
+        for filters in ({'uids': [-1]}, {'ports': [65536]}, {'min_call_ms': 'NaN'},
+                        {'start_ms': 10, 'end_ms': 2}, {'start_ms': 2, 'end_ms': 2},
+                        [], False, {'surprise': 'x'}):
+            with self.subTest(filters=filters), self.assertRaises(ValueError):
+                report.normalize_filters(filters)
+
+    def test_process_uid_fallback_requires_consistent_event_identity(self):
+        fixture(self.path)
+        trace = Trace.FromString(self.path.read_bytes())
+        trace.packet[0].process_tree.processes[0].uid = 0
+        # A conflicting explicit PID must not borrow the track's process UID.
+        for packet in trace.packet:
+            if packet.track_event.name == 'sendmmsg':
+                packet.track_event.debug_annotations.add(name='tgid', int_value=999)
+        self.path.write_bytes(trace.SerializeToString())
+        result = report.analyze(self.path, filters={'uids': [0]})
+        self.assertEqual([c['call_id'] for c in result['slow_calls']], ['call-a'])
+        self.assertEqual(result['slow_calls'][0]['identity_source'], 'thread_process')
+        unknown = report.analyze(self.path, filters={'uids': ['unknown']})
+        self.assertEqual([c['call_id'] for c in unknown['slow_calls']], ['call-b'])
+        self.assertEqual(report.normalize_filters({'addresses': ['unknown']}), {'addresses': ['unknown']})
 
     def test_report_time_uses_clock_mapping_and_keeps_exact_evidence(self):
         fixture(self.path)
@@ -243,13 +364,13 @@ class NetworkReportTest(unittest.TestCase):
     def test_perfetto_reuses_popup_and_reloads_selection(self):
         root = Path(__file__).resolve().parents[1]
         subprocess.run(['node', str(root/'tests/network_report_navigation.js'),
-                        str(root/'tools/network_report.html')], check=True)
+                        str(root/'skills/anettrace-analysis/assets/report.html')], check=True)
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for time formatting regression')
     def test_time_formatting_preserves_microseconds_and_missing_clocks(self):
         root = Path(__file__).resolve().parents[1]
         subprocess.run(['node', str(root/'tests/network_report_time.js'),
-                        str(root/'tools/network_report.html')], check=True)
+                        str(root/'skills/anettrace-analysis/assets/report.html')], check=True)
 
     def test_tags_and_missing_capture_state_remain_unknown(self):
         fixture(self.path, states=False, ended=False, lifecycle=False)
@@ -325,6 +446,30 @@ class NetworkReportTest(unittest.TestCase):
         moved.write_bytes(b'wrong')
         with self.assertRaisesRegex(ValueError, 'SHA-256'):
             report.make_server(out, trace=moved)
+
+    def test_local_filter_api_recomputes_and_persists_full_selection(self):
+        filter_fixture(self.path)
+        out = Path(self.tmp.name)/'report'
+        report.write_report(report.analyze(self.path, limit=1),out)
+        server = report.make_server(out,port=0)
+        self.addCleanup(server.server_close)
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        self.addCleanup(server.shutdown)
+        url = f'http://127.0.0.1:{server.server_port}'
+        body = json.dumps({'filters':{'uids':[1002]},'limit':1}).encode()
+        with urlopen(Request(url+'/api/report',data=body,
+                     headers={'Content-Type':'application/json','Origin':url})) as response:
+            selected = json.load(response)
+        self.assertEqual(selected['slow_calls'][0]['call_id'],'call-b')
+        self.assertEqual(selected['calls']['ranked_total'],1)
+        self.assertEqual(selected['quality']['calls'],4)
+        self.assertEqual(json.loads((out/'report.json').read_text()), selected)
+        report.validate_report(out)
+        request = Request(url+'/api/report',data=body,
+                          headers={'Content-Type':'application/json','Origin':'https://attacker.example'})
+        with self.assertRaises(HTTPError) as error: urlopen(request)
+        self.assertEqual(error.exception.code,403)
+        error.exception.close()
 
     def test_native_string_annotations_match_typed_annotations(self):
         fixture(self.path)

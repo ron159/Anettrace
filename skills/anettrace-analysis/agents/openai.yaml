@@ -1,0 +1,4 @@
+interface:
+  display_name: "Anettrace 轨迹分析"
+  short_description: "按 UID、流和 Socket 筛选已有轨迹，生成可定位事件的收发性能报告"
+  default_prompt: "使用 $anettrace-analysis 分析这份 Anettrace 轨迹，按指定 UID 或 flow 筛选，生成包含调用耗时和原始证据的报告。"
