@@ -45,7 +45,7 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             clang gcc libbpf-dev libelf-dev libzstd-dev llvm make \
-            pkg-config python3 python3-venv python3-yaml zlib1g-dev
+            iproute2 pkg-config python3 python3-venv python3-yaml zlib1g-dev
       - name: Build Linux dual-backend binary
         run: make all
       - name: Check CLI contracts
@@ -148,6 +148,8 @@ jobs:
         run: ./tests/source-contracts.sh
       - name: Test tracing filesystem paths and monitor filter isolation
         run: python3 -m unittest tests/test_tracefs_paths.py tests/test_monitor_filters.py
+      - name: Test symbol uniqueness and independent XFRM capture
+        run: python3 -m unittest tests/test_symbol_resolution.py tests/test_probe_selection.py tests/test_explicit_trace_presets.py tests/test_xfrm_policy_capture.py
       - name: Test traffic accounting and terminal presentation
         run: |
           python3 -m unittest \
@@ -178,6 +180,18 @@ jobs:
         run: sudo python3 tests/send_packet_integration.py ./src/anettrace
       - name: Verify ICMP and ICMPv6 packet send and receive events
         run: sudo python3 tests/icmp_trace_integration.py ./src/anettrace
+      - name: Verify independent XFRM slow-path capture in an isolated namespace
+        run: |
+          gcc -O2 -Wall -Wextra -Werror tests/android/xfrm_workload.c \
+            -o /tmp/anettrace-xfrm-workload
+          status=0
+          sudo sh tests/xfrm-smoke.sh ./src/anettrace /tmp/anettrace-xfrm-smoke \
+            /tmp/anettrace-xfrm-workload || status=$?
+          if [ "$status" -eq 77 ]; then
+            echo "XFRM runtime check skipped because the runner lacks the required environment"
+          else
+            exit "$status"
+          fi
       - name: Run timezone offset tests
         run: |
           gcc -O2 -Wall -Wextra -Iutils \
@@ -216,6 +230,7 @@ jobs:
           /tmp/perfetto-venv/bin/python -m unittest \
             tests/test_perfetto_converter.py \
             tests/test_perfetto_graph.py \
+            tests/test_probe_status_export.py \
             tests/test_socket_overview_native.py \
             tests/test_trace_merge.py \
             tests/test_network_report.py \

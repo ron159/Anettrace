@@ -28,6 +28,8 @@ struct analyzer;
 #define TRACE_ATTACH_MANUAL	(1 << 5)
 #define TRACE_RET_ONLY		(1 << 6)
 #define TRACE_CFREE		(1 << 7)
+#define TRACE_EXPLICIT		(1 << 8)
+#define TRACE_SYMBOL_AMBIGUOUS	(1 << 9)
 
 #define trace_for_each(pos)		\
 	list_for_each_entry(pos, &trace_list, all)

@@ -10,7 +10,8 @@
 enum {
 	SYM_NOT_EXIST,
 	SYM_MODULE,
-	SYM_KERNEL
+	SYM_KERNEL,
+	SYM_AMBIGUOUS
 };
 
 struct sym_result {
@@ -25,6 +26,8 @@ struct sym_result {
 struct sym_result *sym_parse_exact(__u64 pc);
 struct sym_result *sym_parse(__u64 pc);
 int sym_search_pattern(const char *name, char *result, bool partial);
+/* Require one function with a unique full name across all symbol types. */
+int sym_search_unique(const char *name, char *result, size_t result_size, bool partial);
 
 static inline int sym_get_type(const char *name)
 {

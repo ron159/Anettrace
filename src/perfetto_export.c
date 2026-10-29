@@ -2604,6 +2604,42 @@ static void native_export_meta(u64 timestamp_ns, const char *name, int cpu,
 	proto_free(&event);
 }
 
+static void export_probe_status(u64 timestamp_ns)
+{
+	trace_t *trace;
+
+	trace_for_each(trace) {
+		if (!trace_is_enable(trace) ||
+		    !(trace->status & TRACE_SYMBOL_AMBIGUOUS))
+			continue;
+		if (export_file) {
+			char probe[sizeof(trace->name) * 2 + 1];
+
+			json_escape(trace->name, probe, sizeof(probe));
+			fprintf(export_file,
+				"{\"schema\":\"%s\",\"type\":\"probe_status\",\"ts_ns\":%llu,"
+				"\"probe\":\"%s\",\"status\":\"unavailable\","
+				"\"reason\":\"ambiguous_symbol\",\"coverage\":\"degraded\"}\n",
+				PERFETTO_SCHEMA, timestamp_ns, probe);
+		}
+		if (native_file) {
+			struct native_track *global = native_global_track();
+			struct proto_buffer metadata = {};
+
+			if (!global)
+				continue;
+			native_event_start(&metadata, 3, global->uuid,
+					   "probe_status", "anettrace.metadata");
+			native_annotation_string(&metadata, "probe", trace->name);
+			native_annotation_string(&metadata, "status", "unavailable");
+			native_annotation_string(&metadata, "reason", "ambiguous_symbol");
+			native_annotation_string(&metadata, "coverage", "degraded");
+			native_event_write(timestamp_ns, &metadata);
+			proto_free(&metadata);
+		}
+	}
+}
+
 static void native_clock_snapshot(u64 monotonic_ns, u64 boottime_ns,
 				  u64 realtime_ns)
 {
@@ -3752,6 +3788,7 @@ void perfetto_export_close(u64 event_count)
 	pthread_mutex_unlock(&rx_context_lock);
 	pthread_mutex_lock(&export_lock);
 	write_clock_snapshot();
+	export_probe_status(end_ts);
 	if (trace_ctx.bpf_args.rx_context) {
 		if (export_file)
 			fprintf(export_file,

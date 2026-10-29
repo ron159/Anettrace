@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "parse_sym.h"
 #include "sys_utils.h"
@@ -199,4 +200,100 @@ found:
 		strcpy(result, func);
 
 	return count == 2 ? SYM_MODULE : SYM_KERNEL;
+}
+
+int sym_search_unique(const char *name, char *result, size_t result_size, bool partial)
+{
+	const char *line, *match = NULL;
+	size_t name_length, match_length = 0;
+	int match_type = SYM_NOT_EXIST;
+	unsigned record_count = 0;
+	bool functions_only = true;
+
+	if (!name || !*name || !result || !result_size || sym_init_data())
+		goto unavailable;
+	name_length = strlen(name);
+scan_records:
+	line = proc_syms;
+	while (*line) {
+		const char *line_end = strchr(line, '\n');
+		const char *cursor = line, *end, *symbol, *module;
+		size_t symbol_length;
+		char type;
+
+		if (!line_end)
+			line_end = line + strlen(line);
+		end = line_end;
+		while (end > line && isspace((unsigned char)end[-1]))
+			end--;
+
+		/* Parse one complete record without copying or truncating tokens. */
+		while (cursor < end && isxdigit((unsigned char)*cursor))
+			cursor++;
+		if (cursor == line || cursor == end || !isspace((unsigned char)*cursor))
+			goto next_line;
+		while (cursor < end && isspace((unsigned char)*cursor))
+			cursor++;
+		if (cursor == end)
+			goto next_line;
+		type = *cursor++;
+		if ((!isalpha((unsigned char)type) && type != '?') ||
+		    (functions_only && type != 'T' && type != 't' && type != 'W' && type != 'w') ||
+		    cursor == end || !isspace((unsigned char)*cursor))
+			goto next_line;
+		while (cursor < end && isspace((unsigned char)*cursor))
+			cursor++;
+		symbol = cursor;
+		while (cursor < end && !isspace((unsigned char)*cursor))
+			cursor++;
+		symbol_length = cursor - symbol;
+		if (symbol_length < name_length ||
+		    (!partial && symbol_length != name_length) ||
+		    memcmp(symbol, name, name_length))
+			goto next_line;
+		while (cursor < end && isspace((unsigned char)*cursor))
+			cursor++;
+		if (cursor < end) {
+			if (end - cursor < 3 || *cursor != '[' || end[-1] != ']')
+				goto next_line;
+			for (module = cursor + 1; module < end - 1; module++) {
+				if (isspace((unsigned char)*module) || *module == '[' || *module == ']')
+					goto next_line;
+			}
+		}
+		if (!functions_only) {
+			if (++record_count > 1) {
+				result[0] = '\0';
+				return SYM_AMBIGUOUS;
+			}
+			goto next_line;
+		}
+		/* Zeroed kallsyms addresses still represent distinct candidates. */
+		if (match) {
+			result[0] = '\0';
+			return SYM_AMBIGUOUS;
+		}
+		match = symbol;
+		match_length = symbol_length;
+		match_type = cursor < end ? SYM_MODULE : SYM_KERNEL;
+next_line:
+		line = *line_end ? line_end + 1 : line_end;
+	}
+	if (match && functions_only) {
+		/* Name-based kernel attachment also counts same-name data records. */
+		name = match;
+		name_length = match_length;
+		partial = false;
+		functions_only = false;
+		goto scan_records;
+	}
+	if (match && match_length < result_size) {
+		memmove(result, match, match_length);
+		result[match_length] = '\0';
+		return match_type;
+	}
+unavailable:
+	if (result && result_size)
+		result[0] = '\0';
+	return SYM_NOT_EXIST;
 }

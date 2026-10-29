@@ -1110,7 +1110,7 @@ class PerfettoExporter:
                 continue
             if self.trace_tags and record_type not in (
                 "socket_create", "packet_event", "network_syscall",
-                "lost_events", "trace_end", "rx_context",
+                "lost_events", "trace_end", "rx_context", "probe_status",
             ):
                 continue
             if record_type == "socket_create":
@@ -1146,7 +1146,7 @@ class PerfettoExporter:
                 self.export_network_syscall(record)
             elif record_type.startswith("connect_"):
                 self.export_connect_event(record)
-            elif record_type in ("lost_events", "trace_end", "rx_context"):
+            elif record_type in ("lost_events", "trace_end", "rx_context", "probe_status"):
                 if record_type == "trace_end" and record.get("ts_ns"):
                     for socket_id in tuple(self.socket_lifetimes):
                         self.event(

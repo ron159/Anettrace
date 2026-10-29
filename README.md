@@ -18,7 +18,7 @@
 ### Android arm64
 
 ```sh
-version=0.8.13
+version=0.8.14
 curl -fLO "https://github.com/ron159/Anettrace/releases/download/v${version}/anettrace-${version}-android-arm64-dual"
 curl -fLO "https://github.com/ron159/Anettrace/releases/download/v${version}/SHA256SUMS"
 grep " anettrace-${version}-android-arm64-dual$" SHA256SUMS | shasum -a 256 -c -

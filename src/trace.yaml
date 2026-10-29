@@ -309,6 +309,9 @@ children:
     - xfrm4_transport_output:1
     - xfrm4_prepare_output:1
     - xfrm4_policy_check:2
+    - name: __xfrm_policy_check:2
+      custom: true
+      desc: XFRM policy check slow-path only; fast accepts and bypasses are not covered
     - xfrm4_rcv:0
     - xfrm_input:0
     - xfrm4_transport_input:1

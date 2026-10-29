@@ -926,7 +926,8 @@ static __attribute__((noinline)) int perfetto_handle_owner(
 			    (!owner->tid && owner->uid == flow_owner->owner.uid))
 				*owner = flow_owner->owner;
 			owner_valid = true;
-			if (!direction)
+			/* Shared policy checks do not establish TX/RX direction. */
+			if (!direction && info->func != INDEX___xfrm_policy_check)
 				direction = flow_owner->direction;
 		}
 	} else if (!perfetto_socket_supported(&event->ske) &&
@@ -1406,6 +1407,29 @@ static inline int default_handle_entry(context_info_t *info)
  **********************************************************************/
 
 DEFINE_ALL_PROBES(KPROBE_DEFAULT, TP_DEFAULT, FNC)
+
+/* The policy-check slow path excludes wrapper fast accepts and bypasses. */
+DEFINE_KPROBE_SKB(__xfrm_policy_check, 2, 4)
+{
+	struct sk_buff *skb = info->skb;
+	u16 family = (u64)info_get_arg(info, 3);
+	u16 protocol;
+
+	if (!skb)
+		return -1;
+	protocol = _C(skb, protocol);
+	if (family == AF_INET) {
+		if (protocol != bpf_htons(ETH_P_IP))
+			return -1;
+	} else if (family == AF_INET6) {
+		if (protocol != bpf_htons(ETH_P_IPV6))
+			return -1;
+	} else {
+		return -1;
+	}
+
+	return default_handle_entry(info);
+}
 
 
 #ifdef __PROG_TYPE_TRACING

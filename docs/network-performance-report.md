@@ -58,7 +58,7 @@ python3 tools/network_report.py serve report --trace /new/path/capture.pftrace -
 
 | 内容 | 口径 | 如何使用 |
 | --- | --- | --- |
-| 采集质量 | trace_end 中的 BPF 丢事件、解析/时钟 stats、缓冲压力元数据、未关联事件和调度覆盖提示 | 先确认哪些观测存在缺口；缺失计数显示“未知”，不当作零 |
+| 采集质量 | trace_end 中的 BPF 丢事件、probe_status 中的探针覆盖缺口、解析/时钟 stats、缓冲压力元数据、未关联事件和调度覆盖提示 | 先确认哪些观测存在缺口；缺失计数显示“未知”，不当作零 |
 | 连接概览 | 显式 flow_id；无 flow 时退回显式 socket_id，保留局部观测标记 | 从端点、flow、socket 筛选目标，查询关联的原始记录，包括 socket allocation |
 | Socket 时间线 | 显式 socket_id（缺失时使用 owner_socket_id）的 allocation 和 TCP 标志观测 | 查看全部或按 Socket ID 筛选创建、SYN、SYN-ACK、FIN、RST，定位每条原始 tag |
 | 慢调用 | `anettrace.syscall`，完整且起点未裁剪，按持续时间降序 | 查看应用调用、返回值、线程、call/socket/flow ID；失败调用也保留 |

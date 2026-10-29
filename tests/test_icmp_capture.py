@@ -147,6 +147,7 @@ typedef struct { bpf_args_t *args; event_t *e; struct sk_buff *skb;
 #define FUNC_STATUS_RX 2
 #define FUNC_STATUS_RET 4
 #define PACKET_DIRECTION_UNKNOWN 0
+#define INDEX___xfrm_policy_check 100
 #define _C(object, field) ((object)->field)
 static int m_perfetto_scratch, m_perfetto_io;
 static bool trusted_current;

@@ -87,8 +87,8 @@ run_profile() {
     [ ! -e "$expired" ] || fail "$profile timed out; inspect $log"
     [ "$result" = 0 ] || fail "$profile exited $result; inspect $log"
     [ "$ready" = 1 ] || fail "$profile never became ready; inspect $log"
-    # Loading succeeds even when a tracepoint attach is rejected. That is a
-    # coverage failure, not a successful smoke test (e.g. short TP contexts).
+    # Unexpected attach failures are errors. Declared skipped probes are
+    # reported separately as degraded coverage below.
     if grep -Eq 'failed to (auto|manually) attach|failed to attach to tracepoint|tracepoint .* unavailable:' "$log"; then
         fail "$profile has missing probe coverage; inspect $log"
     fi
@@ -106,7 +106,12 @@ run_profile() {
     grep '"type":"packet_event"' "$events" | grep "\"proto_l4\":$proto" | \
         grep "\"dport\":$PORT" | grep "\"stage\":\"$stage\"" >/dev/null || \
         fail "$profile did not capture the test packet at $stage"
-    echo "PASS: $profile BPF load and IPv4 packet at $stage"
+    coverage=no_declared_gaps
+    if grep -q '"type":"probe_status"' "$events"; then
+        coverage=degraded
+        grep '"type":"probe_status"' "$events"
+    fi
+    echo "PASS: $profile BPF load and IPv4 packet at $stage (probe coverage=$coverage)"
 }
 
 run_profile compact

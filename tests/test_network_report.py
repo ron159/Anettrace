@@ -120,6 +120,31 @@ def filter_fixture(path):
 
 
 class NetworkReportTest(unittest.TestCase):
+    def test_unavailable_probe_metadata_degrades_capture_quality(self):
+        fixture(self.path)
+        trace = Trace()
+        trace.ParseFromString(self.path.read_bytes())
+        for packet in trace.packet:
+            if packet.HasField('track_event') and packet.track_event.name == 'trace_end':
+                for arg in packet.track_event.debug_annotations:
+                    if arg.name == 'lost_events':
+                        arg.int_value = 0
+        packet = trace.packet.add(timestamp=BASE + 299 * MS,
+                                  timestamp_clock_id=6, trusted_packet_sequence_id=1)
+        event = packet.track_event
+        event.track_uuid = 1
+        event.type = TrackEvent.TYPE_INSTANT
+        event.categories.append('anettrace.metadata')
+        event.name = 'probe_status'
+        for key, value in dict(probe='xfrm4_policy_check', status='unavailable',
+                               reason='ambiguous_symbol', coverage='degraded').items():
+            event.debug_annotations.add(name=key, string_value=value)
+        self.path.write_bytes(trace.SerializeToString())
+        result = report.analyze(self.path)
+        self.assertEqual(result['quality']['status'], 'degraded')
+        self.assertTrue(any('xfrm4_policy_check' in issue and 'ambiguous_symbol' in issue
+                            for issue in result['quality']['issues']))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
