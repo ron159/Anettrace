@@ -58,6 +58,9 @@ def varint(n):
 def emit():
     # A timestamped TracePacket, using the monotonic clock.
     packet = b"\x40" + varint(time.monotonic_ns()) + b"\x58\x03"
+    if os.environ.get("TRIM_EVENTS"):
+        packet = (b"\x40" + varint(time.clock_gettime_ns(time.CLOCK_MONOTONIC)) + b"\xd0\x03\x03"
+                  + b"\x5a\x02\x48\x03")  # monotonic TrackEvent instant
     trace.write(b"\x0a" + varint(len(packet)) + packet)
     trace.flush()
 def stop(*args):
@@ -128,6 +131,12 @@ int main(int argc, char **argv) {
     if (trace_capture_start(argv[1], atoi(argv[2]), "sched",
                             argv[4][0] ? argv[4] : NULL,
                             atoi(argv[3]), !combined)) return 1;
+    if (getenv("FINISH_DELAY")) {
+        sleep(atoi(argv[2]));
+        trace_capture_stop();
+        sleep(2); /* Simulate draining a large native export queue. */
+        return trace_capture_finish() ? 1 : 0;
+    }
     if (combined) {
         FILE *network = fopen(trace_capture_network_path(), "wb");
         if (!network) return 3;
@@ -212,6 +221,14 @@ typedef unsigned long long u64;
             if pid_log.exists():
                 with self.assertRaises(ProcessLookupError):
                     os.kill(int(pid_log.read_text()), 0)
+
+    def test_ring_cutoff_is_stop_time_even_when_export_drain_delays_finish(self):
+        self.env["FINISH_DELAY"] = "1"
+        self.env["TRIM_EVENTS"] = "1"
+        result = self.run_capture(ring=True, duration=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreater(self.output.stat().st_size, 0)
+        self.assert_clean()
 
     def test_waits_for_delayed_binary_ready_ack(self):
         self.env["FAKE_MODE"] = "delayed-ready"

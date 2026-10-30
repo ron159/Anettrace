@@ -45,6 +45,7 @@ static u64 export_salt;
 static u64 exported_events;
 static u64 lost_events;
 static u64 queue_lost_events;
+static u64 capture_end_ns;
 static u64 last_clock_snapshot_ns;
 static bool native_sequence_started;
 static bool native_failed;
@@ -2740,6 +2741,7 @@ static void export_state_start(void)
 	exported_events = 0;
 	lost_events = 0;
 	queue_lost_events = 0;
+	capture_end_ns = 0;
 	last_clock_snapshot_ns = 0;
 	native_sequence_started = false;
 	native_failed = false;
@@ -3779,6 +3781,19 @@ void perfetto_export_queue_lost(u64 count)
 	queue_lost_events += count;
 }
 
+void perfetto_export_mark_capture_end(void)
+{
+	struct timespec monotonic;
+	u64 now;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &monotonic))
+		return;
+	now = timespec_to_ns(&monotonic);
+	pthread_mutex_lock(&export_lock);
+	capture_end_ns = now;
+	pthread_mutex_unlock(&export_lock);
+}
+
 void perfetto_export_tick(void)
 {
 	struct timespec monotonic;
@@ -3789,6 +3804,10 @@ void perfetto_export_tick(void)
 		return;
 	if (!clock_gettime(CLOCK_MONOTONIC, &monotonic))
 		now = timespec_to_ns(&monotonic);
+	pthread_mutex_lock(&export_lock);
+	if (capture_end_ns && now > capture_end_ns)
+		now = capture_end_ns;
+	pthread_mutex_unlock(&export_lock);
 	pthread_mutex_lock(&rx_context_lock);
 	if (now)
 		rx_context_expire(&rx_context, now);
@@ -3812,11 +3831,11 @@ void perfetto_export_tick(void)
 void perfetto_export_close(u64 event_count)
 {
 	struct timespec monotonic;
-	u64 end_ts = 0;
+	u64 end_ts = capture_end_ns;
 
 	if (!export_file && !native_file)
 		return;
-	if (!clock_gettime(CLOCK_MONOTONIC, &monotonic))
+	if (!end_ts && !clock_gettime(CLOCK_MONOTONIC, &monotonic))
 		end_ts = timespec_to_ns(&monotonic);
 	pthread_mutex_lock(&rx_context_lock);
 	rx_context_finish(&rx_context);

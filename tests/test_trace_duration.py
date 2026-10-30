@@ -68,6 +68,8 @@ static size_t trace_capture_queue_bytes(void) { return CAPTURE_QUEUE_BYTES; }
 static int capture_queue_start(size_t size) { (void)size; printf("queue "); return queue_error; }
 static void capture_queue_tick(void) { printf("tick "); }
 static void capture_queue_stop(void) { printf("drained "); }
+static void trace_capture_stop(void) { printf("system-stop "); }
+static void perfetto_export_mark_capture_end(void) { printf("cutoff "); }
 static int trace_disable_capture(void) { printf("disable "); return 0; }
 static int perf_buffer__consume(struct perf_buffer *p) { (void)p; printf("consume "); return consume_result; }
 static void ready(void) { printf("enable "); }
@@ -116,9 +118,9 @@ printf("%d %d", trace_poll(), released);
 ''')
         self.assertEqual(result, ["buffer", "enable", "poll", "0",
                                   "buffer", "queue", "enable", "poll", "tick",
-                                  "disable", "consume", "drained", "0",
+                                  "disable", "consume", "system-stop", "cutoff", "drained", "0",
                                   "buffer", "queue", "enable", "poll",
-                                  "disable", "consume", "drained", "-5",
+                                  "disable", "consume", "system-stop", "cutoff", "drained", "-5",
                                   "buffer", "queue", str(-errno.EAGAIN), "buffer", "-12", "-2",
                                   "enable", "raw", "0", "4"])
 

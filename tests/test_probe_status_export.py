@@ -63,7 +63,7 @@ static pthread_mutex_t rx_context_lock=PTHREAD_MUTEX_INITIALIZER;
 static struct { u64 replayed, expired, capacity_dropped, unresolved; } rx_context;
 static struct { struct { bool trace_tags; } args;
     struct { bool rx_context; } bpf_args; } trace_ctx;
-static u64 exported_events, lost_events, queue_lost_events;
+static u64 exported_events, lost_events, queue_lost_events, capture_end_ns;
 static int fixed_clock_gettime(clockid_t clock, struct timespec *value) {
     (void)clock; value->tv_sec=20; value->tv_nsec=0; return 0;
 }
@@ -147,6 +147,8 @@ int main(int argc, char **argv) {
         perfetto_export_lost(3,5);
         perfetto_export_queue_lost(7);
     }
+    if (!strcmp(argv[3],"capture-end"))
+        capture_end_ns=10000000000ULL;
     perfetto_export_close(0);
     assert(!native_failed);
     return 0;
@@ -217,6 +219,13 @@ int main(int argc, char **argv) {
                     arg.name: arg.string_value for arg in packet.track_event.debug_annotations}
         self.assertEqual(fields["trace_end"]["lost_events"], "12")
         self.assertEqual(fields["capture_queue"]["lost_events"], "7")
+
+    def test_close_uses_capture_cutoff_instead_of_late_export_clock(self):
+        records, trace = self.run_case("capture-end")
+        end = next(record for record in records if record["type"] == "trace_end")
+        self.assertEqual(end["ts_ns"], 10_000_000_000)
+        native_end = next(packet for packet in trace.packet if packet.track_event.name == "trace_end")
+        self.assertEqual(native_end.timestamp, 10_000_000_000)
 
     def test_end_status_survives_the_ring_window_and_trace_tags(self):
         for scenario in ("tags", "ring", "ring-tags"):

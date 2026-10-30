@@ -39,6 +39,8 @@ struct capture_state {
 	char network_trace[PATH_MAX];
 	char config[PATH_MAX];
 	__u32 window_s;
+	u64 stop_boottime_ns;
+	u64 stop_monotonic_ns;
 	bool ring_buffer;
 	bool stop_requested;
 	bool started;
@@ -778,6 +780,14 @@ void trace_capture_stop(void)
 {
 	if (!capture.started || capture.stop_requested)
 		return;
+	if (capture.ring_buffer) {
+		struct timespec boottime, monotonic;
+		if (!clock_gettime(CLOCK_BOOTTIME, &boottime) &&
+		    !clock_gettime(CLOCK_MONOTONIC, &monotonic)) {
+			capture.stop_boottime_ns = (u64)boottime.tv_sec * 1000000000ULL + boottime.tv_nsec;
+			capture.stop_monotonic_ns = (u64)monotonic.tv_sec * 1000000000ULL + monotonic.tv_nsec;
+		}
+	}
 	if (kill(capture.perfetto_pid, SIGTERM) && errno != ESRCH)
 		pr_warn("failed to request system Perfetto stop: %s\n",
 			strerror(errno));
@@ -823,17 +833,21 @@ int trace_capture_finish(void)
 		struct timespec boottime, monotonic;
 		u64 window_ns = (u64)capture.window_s * 1000000000ULL;
 
-		if (clock_gettime(CLOCK_BOOTTIME, &boottime) ||
-		    clock_gettime(CLOCK_MONOTONIC, &monotonic)) {
-			err = -errno;
-			pr_err("failed to read ring-buffer cutoff clock: %s\n",
-			       strerror(-err));
-			goto out;
+		boottime_cutoff_ns = capture.stop_boottime_ns;
+		monotonic_cutoff_ns = capture.stop_monotonic_ns;
+		if (!boottime_cutoff_ns || !monotonic_cutoff_ns) {
+			if (clock_gettime(CLOCK_BOOTTIME, &boottime) ||
+			    clock_gettime(CLOCK_MONOTONIC, &monotonic)) {
+				err = -errno;
+				pr_err("failed to read ring-buffer cutoff clock: %s\n",
+				       strerror(-err));
+				goto out;
+			}
+			boottime_cutoff_ns = (u64)boottime.tv_sec * 1000000000ULL +
+				boottime.tv_nsec;
+			monotonic_cutoff_ns = (u64)monotonic.tv_sec * 1000000000ULL +
+				monotonic.tv_nsec;
 		}
-		boottime_cutoff_ns = (u64)boottime.tv_sec * 1000000000ULL +
-			boottime.tv_nsec;
-		monotonic_cutoff_ns = (u64)monotonic.tv_sec * 1000000000ULL +
-			monotonic.tv_nsec;
 		if (boottime_cutoff_ns > window_ns)
 			boottime_cutoff_ns -= window_ns;
 		else

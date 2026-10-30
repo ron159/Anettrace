@@ -15,6 +15,7 @@
 #include "perfetto_export.h"
 #include "traffic.h"
 #include "capture_queue.h"
+#include "trace_capture.h"
 
 const char *cond_pre = "verlte() { [ \"$1\" = \"$2\" ] && echo 0 && return; "
 		       "[ \"$1\" = \"$(/bin/echo -e \"$1\\n$2\" | sort -V | head -n1)\" ] "
@@ -1571,6 +1572,8 @@ int trace_poll()
 		drain_err = perf_buffer__consume(pb);
 		if (drain_err < 0 && (err >= 0 || err == -EINTR))
 			err = drain_err;
+		trace_capture_stop();
+		perfetto_export_mark_capture_end();
 		capture_queue_stop();
 		capture_async = false;
 	}
