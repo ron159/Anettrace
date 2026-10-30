@@ -223,6 +223,8 @@ typedef unsigned long long u64;
                     os.kill(int(pid_log.read_text()), 0)
 
     def test_ring_cutoff_is_stop_time_even_when_export_drain_delays_finish(self):
+        if os.environ.get("ANETTRACE_TEST_BIN") and isinstance(self, SystemOnlyCliTest):
+            self.skipTest("export-drain delay injection requires the test driver")
         self.env["FINISH_DELAY"] = "1"
         self.env["TRIM_EVENTS"] = "1"
         result = self.run_capture(ring=True, duration=1)
