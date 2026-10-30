@@ -2,7 +2,6 @@
 import unittest
 
 from tests import test_flow_identity as helpers
-from tests.test_perfetto_graph import declaration
 
 
 class NativeEncodingTests(unittest.TestCase):
@@ -15,7 +14,9 @@ class NativeEncodingTests(unittest.TestCase):
 static unsigned allocations;
 static void *counted_realloc(void *p, size_t size) { allocations++; return realloc(p,size); }
 #define realloc counted_realloc
-''' + declaration(source, "struct proto_buffer")
+'''
+        start = source.index("struct proto_buffer {")
+        code += source[start:source.index("\n};", start) + 3]
         code += source[source.index("static void proto_free("):source.index("static void native_packet_queue_free(")]
         code += helpers.function(source, "native_annotation_string")
         result = self.run_source(code, r'''
