@@ -25,6 +25,7 @@ perf 数据区内存约为 `CPU 缓冲区数量 × 页数 × 系统页大小`，
 
 - Perfetto 输出默认分配 **16 MiB/CPU**，根据实际页大小换算页数，避免 16/64 KiB 页设备额外放大内存。
 - `--capture-trace` 默认使用 **32 MiB 有界队列**，可用 `--capture-queue-mib` 调整为 1..512 MiB。
+  未设置 UID/TID/报文过滤的 `--force --trace-detail` 抓取默认使用 **256 MiB**，应对全量阶段事件突发。
   采集线程只复制原始事件，工作线程负责关联、编码和写盘。
   8 CPU 设备上，perf 数据区加导出队列约 **160 MiB**，比旧版增加约 **128 MiB**；另有 BPF map、
   导出状态、线程栈、系统 Perfetto 等内存。

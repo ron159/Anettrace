@@ -351,8 +351,8 @@ static void do_parse_args(int argc, char *argv[])
 			.lname = "capture-queue-mib", .dest = &trace_args->capture_queue_mib,
 			.type = OPTION_U32,
 			.set = &capture_queue_set,
-			.desc = "raw event export queue in MiB: 1..512, default 32;\n"
-				"                     requires --capture-trace; larger queues absorb bursts",
+			.desc = "raw event export queue in MiB: 1..512; requires --capture-trace;\n"
+				"                     default 32, or 256 for unfiltered --force --trace-detail",
 		},
 		{
 			.lname = "output", .dest = &trace_args->output,

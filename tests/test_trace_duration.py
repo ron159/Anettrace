@@ -64,6 +64,7 @@ struct perf_buffer { int unused; } buffer;
 static int buffer_error, queue_error, map_result = 3, released, poll_result, consume_result;
 static bool capture_async;
 static size_t trace_perf_buffer_pages(void) { return 4096; }
+static size_t trace_capture_queue_bytes(void) { return CAPTURE_QUEUE_BYTES; }
 static int capture_queue_start(size_t size) { (void)size; printf("queue "); return queue_error; }
 static void capture_queue_tick(void) { printf("tick "); }
 static void capture_queue_stop(void) { printf("drained "); }

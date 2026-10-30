@@ -23,7 +23,6 @@ const char *cond_pre = "verlte() { [ \"$1\" = \"$2\" ] && echo 0 && return; "
 trace_context_t trace_ctx = {
 	.mode = TRACE_MODE_TIMELINE,
 	.args.traffic_interval = 1,
-	.args.capture_queue_mib = CAPTURE_QUEUE_BYTES / (1024 * 1024),
 };
 
 extern trace_ops_t tracing_ops;
@@ -1470,6 +1469,17 @@ static size_t trace_perf_buffer_pages(void)
 	return 1024;
 }
 
+static size_t trace_capture_queue_bytes(void)
+{
+	if (trace_ctx.args.capture_queue_mib)
+		return (size_t)trace_ctx.args.capture_queue_mib * 1024 * 1024;
+	/* Full unfiltered stage capture produces many records per packet. */
+	if (trace_ctx.args.force && trace_ctx.args.trace_detail &&
+	    !trace_ctx.bpf_args.has_filter)
+		return 256U * 1024 * 1024;
+	return CAPTURE_QUEUE_BYTES;
+}
+
 static int trace_disable_capture(void)
 {
 	int fd = bpf_object__find_map_fd_by_name(trace_ctx.obj, "m_config");
@@ -1491,6 +1501,7 @@ int trace_poll()
 	struct timespec now;
 	int err, map_fd;
 	size_t pages = trace_perf_buffer_pages();
+	size_t queue_bytes = trace_capture_queue_bytes();
 
 	if (trace_ctx.ops->raw_poll) {
 		trace_ctx.ops->trace_ready();
@@ -1521,7 +1532,7 @@ int trace_poll()
 		return err;
 	}
 	if (trace_ctx.args.capture_trace) {
-		err = capture_queue_start((size_t)trace_ctx.args.capture_queue_mib * 1024 * 1024);
+		err = capture_queue_start(queue_bytes);
 		if (err) {
 			pr_err("failed to start capture exporter: %s\n", strerror(-err));
 			perf_buffer__free(pb);
@@ -1531,7 +1542,7 @@ int trace_poll()
 	}
 	pr_info("BPF perf buffer: %zu pages/CPU (%zu KiB/CPU); export queue: %u MiB\n",
 		pages, pages * (size_t)sysconf(_SC_PAGESIZE) / 1024,
-		capture_async ? trace_ctx.args.capture_queue_mib : 0);
+		capture_async ? (unsigned)(queue_bytes / (1024 * 1024)) : 0);
 
 	poll_deadline_ns = 0;
 	if (trace_ctx.args.duration && !trace_ctx.args.ring_buffer &&

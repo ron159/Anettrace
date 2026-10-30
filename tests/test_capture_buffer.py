@@ -11,6 +11,28 @@ from tests import test_flow_identity as helpers
 class CaptureBufferTests(unittest.TestCase):
     run_source = helpers.FlowIdentityTests.run_source
 
+    def test_unfiltered_force_detail_gets_burst_capacity_and_override_wins(self):
+        source = (helpers.ROOT / "src/trace.c").read_text()
+        code = r'''
+#define CAPTURE_QUEUE_BYTES (32U * 1024 * 1024)
+static struct {
+    struct { bool force, trace_detail; u32 capture_queue_mib; } args;
+    struct { bool has_filter; } bpf_args;
+} trace_ctx;
+''' + helpers.function(source, "trace_capture_queue_bytes")
+        result = self.run_source(code, r'''
+printf("%zu ",trace_capture_queue_bytes()/(1024*1024));
+trace_ctx.args.force = true;
+printf("%zu ",trace_capture_queue_bytes()/(1024*1024));
+trace_ctx.args.trace_detail = true;
+printf("%zu ",trace_capture_queue_bytes()/(1024*1024));
+trace_ctx.bpf_args.has_filter = true;
+printf("%zu ",trace_capture_queue_bytes()/(1024*1024));
+trace_ctx.args.capture_queue_mib = 1;
+printf("%zu",trace_capture_queue_bytes()/(1024*1024));
+''')
+        self.assertEqual(result, ["32", "32", "256", "32", "1"])
+
     def test_capture_uses_larger_buffer_and_explicit_size_wins(self):
         source = (helpers.ROOT / "src/trace.c").read_text()
         code = r'''
