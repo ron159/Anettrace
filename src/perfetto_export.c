@@ -3761,6 +3761,8 @@ void perfetto_export_lost(int cpu, u64 count)
 	if (!clock_gettime(CLOCK_MONOTONIC, &monotonic))
 		ts = timespec_to_ns(&monotonic);
 	pthread_mutex_lock(&export_lock);
+	if (capture_end_ns && ts > capture_end_ns)
+		ts = capture_end_ns;
 	write_clock_snapshot_if_due();
 	lost_events += count;
 	if (export_file)

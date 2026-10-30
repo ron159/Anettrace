@@ -140,15 +140,15 @@ int main(int argc, char **argv) {
         struct proto_buffer event={};
         native_ring_window_ns=1000000000ULL;
         native_event_start(&event,3,7,"early_marker","test");
-        native_event_write(1000000000ULL,&event);
+        native_event_write(strstr(argv[3],"capture-end") ? 9500000000ULL : 1000000000ULL,&event);
         proto_free(&event);
     }
-    if (!strcmp(argv[3],"loss")) {
+    if (strstr(argv[3],"capture-end"))
+        capture_end_ns=10000000000ULL;
+    if (strstr(argv[3],"loss")) {
         perfetto_export_lost(3,5);
         perfetto_export_queue_lost(7);
     }
-    if (!strcmp(argv[3],"capture-end"))
-        capture_end_ns=10000000000ULL;
     perfetto_export_close(0);
     assert(!native_failed);
     return 0;
@@ -226,6 +226,16 @@ int main(int argc, char **argv) {
         self.assertEqual(end["ts_ns"], 10_000_000_000)
         native_end = next(packet for packet in trace.packet if packet.track_event.name == "trace_end")
         self.assertEqual(native_end.timestamp, 10_000_000_000)
+
+    def test_late_queue_loss_cannot_evict_the_retained_ring_window(self):
+        records, trace = self.run_case("ring-loss-capture-end")
+        events = [(packet.timestamp, packet.track_event.name) for packet in trace.packet]
+        self.assertIn((9_500_000_000, "early_marker"), events)
+        self.assertIn((10_000_000_000, "trace_end"), events)
+        self.assertTrue(all(timestamp == 10_000_000_000
+                            for timestamp, name in events if name == "lost_events"))
+        losses = [record for record in records if record["type"] == "lost_events"]
+        self.assertTrue(all(record["ts_ns"] == 10_000_000_000 for record in losses))
 
     def test_end_status_survives_the_ring_window_and_trace_tags(self):
         for scenario in ("tags", "ring", "ring-tags"):
