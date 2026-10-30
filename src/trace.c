@@ -14,6 +14,7 @@
 #include "rstreason.h"
 #include "perfetto_export.h"
 #include "traffic.h"
+#include "capture_queue.h"
 
 const char *cond_pre = "verlte() { [ \"$1\" = \"$2\" ] && echo 0 && return; "
 		       "[ \"$1\" = \"$(/bin/echo -e \"$1\\n$2\" | sort -V | head -n1)\" ] "
@@ -1373,8 +1374,14 @@ err:
 	return -1;
 }
 
+static bool capture_async;
+
 static void trace_on_lost(void *ctx, int cpu, __u64 cnt)
 {
+	if (capture_async) {
+		capture_queue_lost(cpu, cnt);
+		return;
+	}
 	perfetto_export_lost(cpu, cnt);
 	if (trace_ctx.args.capture_trace || trace_ctx.args.perfetto_events) {
 		pr_warn("lost %llu events on CPU %d; continuing Perfetto capture. "
@@ -1392,6 +1399,10 @@ static void trace_on_lost(void *ctx, int cpu, __u64 cnt)
 static inline void poll_handler_wrap(void *ctx, int cpu, void *data,
 				     u32 size)
 {
+	if (capture_async) {
+		capture_queue_event(data, cpu, size);
+		return;
+	}
 	if (trace_stopped())
 		return;
 
@@ -1449,11 +1460,36 @@ static int poll_timeout(int err)
 	return 0;
 }
 
+static size_t trace_perf_buffer_pages(void)
+{
+	if (trace_ctx.args.perf_buffer_pages)
+		return trace_ctx.args.perf_buffer_pages;
+	if (trace_ctx.args.capture_trace || trace_ctx.args.perfetto_events)
+		return (16U * 1024 * 1024) / (size_t)sysconf(_SC_PAGESIZE);
+	return 1024;
+}
+
+static int trace_disable_capture(void)
+{
+	int fd = bpf_object__find_map_fd_by_name(trace_ctx.obj, "m_config");
+	int key = 0;
+
+	if (fd < 0)
+		return fd;
+	if (bpf_map_lookup_elem(fd, &key, bpf_args_buf))
+		return -errno;
+	((bpf_args_t *)bpf_args_buf)->ready = false;
+	if (bpf_map_update_elem(fd, &key, bpf_args_buf, BPF_ANY))
+		return -errno;
+	return 0;
+}
+
 int trace_poll()
 {
 	struct perf_buffer *pb;
 	struct timespec now;
 	int err, map_fd;
+	size_t pages = trace_perf_buffer_pages();
 
 	if (trace_ctx.ops->raw_poll) {
 		trace_ctx.ops->trace_ready();
@@ -1466,7 +1502,7 @@ int trace_poll()
 		return map_fd;
 
 #if defined(LIBBPF_MAJOR_VERSION) && (LIBBPF_MAJOR_VERSION >= 1)
-	pb = perf_buffer__new(map_fd, 1024, poll_handler_wrap,
+	pb = perf_buffer__new(map_fd, pages, poll_handler_wrap,
 			      trace_on_lost, NULL, NULL);
 #else
 	struct perf_buffer_opts pb_opts = {
@@ -1474,14 +1510,27 @@ int trace_poll()
 		.lost_cb = trace_on_lost,
 	};
 
-	pb = perf_buffer__new(map_fd, 1024, &pb_opts);
+	pb = perf_buffer__new(map_fd, pages, &pb_opts);
 #endif
 
 	err = libbpf_get_error(pb);
 	if (err) {
-		pr_err("failed to setup perf_buffer: %d\n", err);
+		pr_err("failed to setup perf_buffer (%zu pages/CPU): %d; "
+		       "try --perf-buffer-pages 1024 on memory-constrained devices\n", pages, err);
 		return err;
 	}
+	if (trace_ctx.args.capture_trace) {
+		err = capture_queue_start(CAPTURE_QUEUE_BYTES);
+		if (err) {
+			pr_err("failed to start capture exporter: %s\n", strerror(-err));
+			perf_buffer__free(pb);
+			return err;
+		}
+		capture_async = true;
+	}
+	pr_info("BPF perf buffer: %zu pages/CPU (%zu KiB/CPU); export queue: %u MiB\n",
+		pages, pages * (size_t)sysconf(_SC_PAGESIZE) / 1024,
+		capture_async ? CAPTURE_QUEUE_BYTES / (1024 * 1024) : 0);
 
 	poll_deadline_ns = 0;
 	if (trace_ctx.args.duration && !trace_ctx.args.ring_buffer &&
@@ -1491,9 +1540,27 @@ int trace_poll()
 	trace_ctx.ops->trace_ready();
 	pr_info("begin trace...\n");
 	while ((err = perf_buffer__poll(pb, trace_ctx.args.traffic_ui ? 100 : 1000)) >= 0) {
-		perfetto_export_tick();
+		if (capture_async)
+			capture_queue_tick();
+		else
+			perfetto_export_tick();
 		if (poll_timeout(err))
 			break;
+	}
+	if (capture_async) {
+		/* Stop producers before consuming the final kernel backlog. Accepted
+		 * samples still export after SIGINT; trace_stopped must not discard them. */
+		int drain_err, disable_err = trace_disable_capture();
+		if (disable_err) {
+			pr_warn("failed to disable BPF producer before final drain: %s\n", strerror(-disable_err));
+			if (err >= 0 || err == -EINTR)
+				err = disable_err;
+		}
+		drain_err = perf_buffer__consume(pb);
+		if (drain_err < 0 && (err >= 0 || err == -EINTR))
+			err = drain_err;
+		capture_queue_stop();
+		capture_async = false;
 	}
 	perf_buffer__free(pb);
 	return err < 0 && err != -EINTR ? err : 0;

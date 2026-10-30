@@ -10,7 +10,7 @@ prog-anettrace-origin = \
 		trace.c trace_probe.c output.c trace_tracing.c traffic.c traffic_display.c \
 		traffic_history.c \
 		analysis.c trace_group.c perfetto_export.c trace_capture.c \
-		perfetto_config.c perfetto_trim.c dropreason.c rstreason.c
+		perfetto_config.c perfetto_trim.c capture_queue.c dropreason.c rstreason.c
 prog-anettrace	= $(prog-anettrace-origin) anettrace.c
 
 ifdef COMPAT

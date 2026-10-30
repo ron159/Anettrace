@@ -144,6 +144,7 @@ typedef struct trace_args {
 	char *trace_profile;
 	char *perfetto_config;
 	u32 duration;
+	u32 perf_buffer_pages;
 	char *output;
 	u32  count;
 	char *btf_path;

@@ -42,6 +42,7 @@ static void perfetto_export_event_now(const void *data, int cpu, u32 size);
 static u64 export_salt;
 static u64 exported_events;
 static u64 lost_events;
+static u64 queue_lost_events;
 static u64 last_clock_snapshot_ns;
 static bool native_sequence_started;
 static bool native_failed;
@@ -2712,6 +2713,7 @@ static void export_state_start(void)
 	memset(&rx_context, 0, sizeof(rx_context));
 	exported_events = 0;
 	lost_events = 0;
+	queue_lost_events = 0;
 	last_clock_snapshot_ns = 0;
 	native_sequence_started = false;
 	native_failed = false;
@@ -3744,6 +3746,13 @@ void perfetto_export_lost(int cpu, u64 count)
 	pthread_mutex_unlock(&export_lock);
 }
 
+void perfetto_export_queue_lost(u64 count)
+{
+	/* Include queue loss in the existing integrity total, and expose its source. */
+	perfetto_export_lost(-1, count);
+	queue_lost_events += count;
+}
+
 void perfetto_export_tick(void)
 {
 	struct timespec monotonic;
@@ -3864,20 +3873,27 @@ void perfetto_export_close(u64 event_count)
 				   "event_count", exported_events,
 				   "exported_events", lost_events,
 				   "lost_events");
+		native_export_meta(end_ts, "capture_queue", -1, queue_lost_events,
+				   "lost_events", 0, NULL, 0, NULL);
 	}
 	if (export_file) {
 		fprintf(export_file,
 			"{\"schema\":\"%s\",\"type\":\"trace_end\","
 			"\"ts_ns\":%llu,"
 			"\"event_count\":%llu,\"exported_events\":%llu,"
-			"\"lost_events\":%llu}\n",
+			"\"lost_events\":%llu,\"queue_lost_events\":%llu}\n",
 			PERFETTO_SCHEMA, end_ts, event_count, exported_events,
-			lost_events);
+			lost_events, queue_lost_events);
 		if (fclose(export_file))
 			pr_warn("failed to close Perfetto event file: %s\n",
 				strerror(errno));
 		export_file = NULL;
 	}
+	if (lost_events)
+		pr_warn("capture lost %llu events (%llu in export queue); "
+			"use UID/protocol/port filters or increase --perf-buffer-pages for bursts\n",
+			(unsigned long long)lost_events,
+			(unsigned long long)queue_lost_events);
 	if (native_file) {
 		if (native_ring_window_ns)
 			native_ring_prune_all();
