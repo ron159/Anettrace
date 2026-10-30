@@ -143,6 +143,8 @@ typedef long long s64; typedef int32_t s32;
 static unsigned terminal;
 static bool trace_stopped(void) { return false; }
 static void perfetto_export_event(const void *d,int c,u32 s) {(void)d;(void)c;(void)s;}
+static bool capture_async;
+#define capture_queue_event perfetto_export_event
 static void terminal_poll(void *x,int c,void *d,u32 s) {(void)x;(void)c;(void)d;(void)s;terminal++;}
 static struct { struct {void (*trace_poll)(void *,int,void *,u32);} *ops;} trace_ctx;
 ''' + function((ROOT / "src/trace.c").read_text(), "poll_handler_wrap")

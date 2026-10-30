@@ -58,9 +58,17 @@ def varint(n):
 def emit():
     # A timestamped TracePacket, using the monotonic clock.
     packet = b"\x40" + varint(time.monotonic_ns()) + b"\x58\x03"
+    if os.environ.get("TRIM_EVENTS"):
+        packet = (b"\x40" + varint(time.clock_gettime_ns(time.CLOCK_MONOTONIC)) + b"\xd0\x03\x03"
+                  + b"\x5a\x02\x48\x03")  # monotonic TrackEvent instant
     trace.write(b"\x0a" + varint(len(packet)) + packet)
     trace.flush()
 def stop(*args):
+    if os.environ.get("SLOW_STOP"):
+        until = time.monotonic() + 6
+        while time.monotonic() < until:
+            emit()
+            time.sleep(0.1)
     sys.exit(0)
 signal.signal(signal.SIGTERM, stop)
 mode = os.environ.get("FAKE_MODE")
@@ -128,14 +136,27 @@ int main(int argc, char **argv) {
     if (trace_capture_start(argv[1], atoi(argv[2]), "sched",
                             argv[4][0] ? argv[4] : NULL,
                             atoi(argv[3]), !combined)) return 1;
+    if (getenv("FINISH_DELAY")) {
+        sleep(atoi(argv[2]));
+        trace_capture_stop();
+        sleep(2); /* Simulate draining a large native export queue. */
+        return trace_capture_finish() ? 1 : 0;
+    }
     if (combined) {
         FILE *network = fopen(trace_capture_network_path(), "wb");
         if (!network) return 3;
         fputs("network", network);
         fclose(network);
         sleep(atoi(argv[2]));
+        if (getenv("FAIL_MERGE")) {
+            FILE *existing=fopen(argv[1],"wb");
+            if (!existing) return 4;
+            fputs("keep",existing); fclose(existing);
+        }
         trace_capture_stop();
-        return trace_capture_finish() ? 1 : 0;
+        int result=trace_capture_finish();
+        if (getenv("ABORT_AFTER_FAILURE")) trace_capture_abort();
+        return result ? 1 : 0;
     }
     if (trace_capture_network_path() != NULL) return 3;
     return trace_capture_wait_system(&stopped) ? 1 : 0;
@@ -213,6 +234,66 @@ typedef unsigned long long u64;
                 with self.assertRaises(ProcessLookupError):
                     os.kill(int(pid_log.read_text()), 0)
 
+    def assert_failed_cleanup(self, stderr):
+        traces = list(self.base.glob("*.system.tmp")) + list(self.base.glob("*.anettrace.tmp"))
+        if "PERFETTO_TEST_ROOT" in self.env:
+            traces += list((self.perfetto_root / "traces").glob("*.pftrace"))
+        for trace in traces:
+            self.assertIn(str(trace).encode(), stderr)
+            self.assertIn(f"bytes={trace.stat().st_size}".encode(), stderr)
+            self.assertIn(b"grace_ms=30000", stderr)
+            trace.unlink()  # Remove only after proving failed-capture evidence survived.
+        self.assert_clean()
+
+    def test_slow_stop_keeps_writing_past_the_old_five_second_timeout(self):
+        self.env["SLOW_STOP"] = "1"
+        result = subprocess.run(self.command(), env=self.env,
+                                capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreater(self.output.stat().st_size, 0)
+        self.assert_clean()
+
+    def test_failed_perfetto_keeps_nonempty_system_trace_and_reports_its_size(self):
+        self.env["FAKE_MODE"] = "fail"
+        result = self.run_capture()
+        self.assertNotEqual(result.returncode, 0)
+        traces = list(self.base.glob("*.system.tmp"))
+        if "PERFETTO_TEST_ROOT" in self.env:
+            traces = list((self.perfetto_root / "traces").glob("*.pftrace"))
+        self.assertEqual(len(traces), 1, result.stderr)
+        self.assertGreater(traces[0].stat().st_size, 0)
+        self.assertIn(str(traces[0]).encode(), result.stderr)
+        self.assertIn(b"bytes=", result.stderr)
+        self.assertFalse(self.output.exists())
+        self.assert_failed_cleanup(result.stderr)
+
+    def test_merge_failure_and_repeated_abort_keep_both_original_traces(self):
+        if os.environ.get("ANETTRACE_TEST_BIN") and isinstance(self, SystemOnlyCliTest):
+            self.skipTest("merge fault injection requires the test driver")
+        self.env.update(COMBINED="1", FAIL_MERGE="1", ABORT_AFTER_FAILURE="1")
+        result = subprocess.run([str(self.combined_driver), str(self.output), "1", "0", ""],
+                                env=self.env, capture_output=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.output.read_bytes(), b"keep")
+        network = Path(str(self.output) + ".anettrace.tmp")
+        self.assertEqual(network.read_bytes(), b"network")
+        system = list(self.base.glob("*.system.tmp"))
+        if "PERFETTO_TEST_ROOT" in self.env:
+            system = list((self.perfetto_root / "traces").glob("*.pftrace"))
+        self.assertEqual(len(system), 1, result.stderr)
+        self.assertGreater(system[0].stat().st_size, 0)
+        self.assert_failed_cleanup(result.stderr)
+
+    def test_ring_cutoff_is_stop_time_even_when_export_drain_delays_finish(self):
+        if os.environ.get("ANETTRACE_TEST_BIN") and isinstance(self, SystemOnlyCliTest):
+            self.skipTest("export-drain delay injection requires the test driver")
+        self.env["FINISH_DELAY"] = "1"
+        self.env["TRIM_EVENTS"] = "1"
+        result = self.run_capture(ring=True, duration=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreater(self.output.stat().st_size, 0)
+        self.assert_clean()
+
     def test_waits_for_delayed_binary_ready_ack(self):
         self.env["FAKE_MODE"] = "delayed-ready"
         start = time.monotonic()
@@ -258,7 +339,7 @@ typedef unsigned long long u64;
                 result = self.run_capture()
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(self.output.exists())
-                self.assert_clean()
+                self.assert_failed_cleanup(result.stderr)
 
     def test_interrupt_during_readiness_aborts_and_reaps_child(self):
         self.env["FAKE_MODE"] = "no-ack"
@@ -273,7 +354,7 @@ typedef unsigned long long u64;
             _, err = proc.communicate(timeout=5)
             self.assertNotEqual(proc.returncode, 0, err)
             self.assertFalse(self.output.exists())
-            self.assert_clean()
+            self.assert_failed_cleanup(err)
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -288,7 +369,7 @@ typedef unsigned long long u64;
         self.assertGreaterEqual(time.monotonic() - start, 30)
         self.assertLess(time.monotonic() - start, 35)
         self.assertFalse(self.output.exists())
-        self.assert_clean()
+        self.assert_failed_cleanup(result.stderr)
 
     def test_combined_capture_uses_the_same_ready_ack(self):
         if os.environ.get("ANETTRACE_TEST_BIN") and isinstance(self, SystemOnlyCliTest):
@@ -357,7 +438,7 @@ typedef unsigned long long u64;
                 result = self.run_capture()
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(self.output.exists())
-                self.assert_clean()
+                self.assert_failed_cleanup(result.stderr)
 
     def test_ring_waits_for_signal_and_saves(self):
         self.assert_ring_capture()
@@ -390,7 +471,7 @@ typedef unsigned long long u64;
                 result = self.run_capture()
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(self.output.exists())
-                self.assert_clean()
+                self.assert_failed_cleanup(result.stderr)
 
     def test_existing_output_and_temporary_files_are_preserved(self):
         for suffix in ("", ".system.tmp", ".config.tmp"):

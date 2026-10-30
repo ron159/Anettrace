@@ -63,7 +63,7 @@ static pthread_mutex_t rx_context_lock=PTHREAD_MUTEX_INITIALIZER;
 static struct { u64 replayed, expired, capacity_dropped, unresolved; } rx_context;
 static struct { struct { bool trace_tags; } args;
     struct { bool rx_context; } bpf_args; } trace_ctx;
-static u64 exported_events, lost_events;
+static u64 exported_events, lost_events, queue_lost_events, capture_end_ns;
 static int fixed_clock_gettime(clockid_t clock, struct timespec *value) {
     (void)clock; value->tv_sec=20; value->tv_nsec=0; return 0;
 }
@@ -125,6 +125,7 @@ static void write_clock_snapshot(void) {
         "\"boottime_ns\":1000000000,\"realtime_ns\":1000000000}\n",export_file);
     native_clock_snapshot(1000000000ULL,1000000000ULL,1000000000ULL);
 }
+static void write_clock_snapshot_if_due(void) {}
 '''
         body = r'''
 int main(int argc, char **argv) {
@@ -139,8 +140,14 @@ int main(int argc, char **argv) {
         struct proto_buffer event={};
         native_ring_window_ns=1000000000ULL;
         native_event_start(&event,3,7,"early_marker","test");
-        native_event_write(1000000000ULL,&event);
+        native_event_write(strstr(argv[3],"capture-end") ? 9500000000ULL : 1000000000ULL,&event);
         proto_free(&event);
+    }
+    if (strstr(argv[3],"capture-end"))
+        capture_end_ns=10000000000ULL;
+    if (strstr(argv[3],"loss")) {
+        perfetto_export_lost(3,5);
+        perfetto_export_queue_lost(7);
     }
     perfetto_export_close(0);
     assert(!native_failed);
@@ -151,6 +158,8 @@ int main(int argc, char **argv) {
         cls.binary = cls.base / "probe_status"
         cfile.write_text(prelude + structures + state + protos + queue + global_track +
                          event_helpers + status + clock_stub +
+                         function(source, "perfetto_export_lost") +
+                         function(source, "perfetto_export_queue_lost") +
                          function(source, "perfetto_export_close") + body)
         result = subprocess.run(
             ["cc", "-std=gnu11", "-Wall", "-Werror", "-Wno-unused-function",
@@ -197,6 +206,36 @@ int main(int argc, char **argv) {
                              tuple(record[field] for field in FIELDS))
             self.assertEqual((args["status"], args["reason"], args["coverage"]),
                              ("unavailable", "ambiguous_symbol", "degraded"))
+
+    def test_kernel_and_queue_loss_are_counted_once_and_queue_is_identified(self):
+        records, trace = self.run_case("loss")
+        end = next(record for record in records if record["type"] == "trace_end")
+        self.assertEqual(end["lost_events"], 12)
+        self.assertEqual(end["queue_lost_events"], 7)
+        fields = {}
+        for packet in trace.packet:
+            if packet.track_event.name in ("trace_end", "capture_queue"):
+                fields[packet.track_event.name] = {
+                    arg.name: arg.string_value for arg in packet.track_event.debug_annotations}
+        self.assertEqual(fields["trace_end"]["lost_events"], "12")
+        self.assertEqual(fields["capture_queue"]["lost_events"], "7")
+
+    def test_close_uses_capture_cutoff_instead_of_late_export_clock(self):
+        records, trace = self.run_case("capture-end")
+        end = next(record for record in records if record["type"] == "trace_end")
+        self.assertEqual(end["ts_ns"], 10_000_000_000)
+        native_end = next(packet for packet in trace.packet if packet.track_event.name == "trace_end")
+        self.assertEqual(native_end.timestamp, 10_000_000_000)
+
+    def test_late_queue_loss_cannot_evict_the_retained_ring_window(self):
+        records, trace = self.run_case("ring-loss-capture-end")
+        events = [(packet.timestamp, packet.track_event.name) for packet in trace.packet]
+        self.assertIn((9_500_000_000, "early_marker"), events)
+        self.assertIn((10_000_000_000, "trace_end"), events)
+        self.assertTrue(all(timestamp == 10_000_000_000
+                            for timestamp, name in events if name == "lost_events"))
+        losses = [record for record in records if record["type"] == "lost_events"]
+        self.assertTrue(all(record["ts_ns"] == 10_000_000_000 for record in losses))
 
     def test_end_status_survives_the_ring_window_and_trace_tags(self):
         for scenario in ("tags", "ring", "ring-tags"):

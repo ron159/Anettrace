@@ -18,7 +18,7 @@
 ### Android arm64
 
 ```sh
-version=0.8.14
+version=0.8.15
 curl -fLO "https://github.com/ron159/Anettrace/releases/download/v${version}/anettrace-${version}-android-arm64-dual"
 curl -fLO "https://github.com/ron159/Anettrace/releases/download/v${version}/SHA256SUMS"
 grep " anettrace-${version}-android-arm64-dual$" SHA256SUMS | shasum -a 256 -c -
@@ -102,7 +102,7 @@ adb shell /data/local/tmp/anettrace --capture-trace --system-trace-only \
 | 实时诊断 | [报文追踪](https://github.com/ron159/Anettrace/wiki/Packet-Tracing-and-Diagnostics) · [流量统计](https://github.com/ron159/Anettrace/wiki/Traffic-Statistics) · [TCP 建连诊断](https://github.com/ron159/Anettrace/wiki/TCP-Connect-Diagnostics) |
 | 采集与链路 | [Perfetto 采集](https://github.com/ron159/Anettrace/wiki/Perfetto-Trace-Capture) · [应用链路采集](https://github.com/ron159/Anettrace/wiki/Application-Flow-Capture) · [链路分析](https://github.com/ron159/Anettrace/wiki/Perfetto-Chain-Analysis) |
 | 离线报告与 AI | [收发性能报告](https://github.com/ron159/Anettrace/wiki/Network-Performance-Report) · [独立分析 Skill](https://github.com/ron159/Anettrace/wiki/Analysis-Skill) |
-| 排障与源码说明 | [常见问题](https://github.com/ron159/Anettrace/wiki/Troubleshooting) · [仓库文档](docs/) |
+| 排障与源码说明 | [常见问题](https://github.com/ron159/Anettrace/wiki/Troubleshooting) · [抓取缓冲区与丢事件](docs/capture-buffers.md) · [仓库文档](docs/) |
 
 ## 来源与许可
 

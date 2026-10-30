@@ -35,6 +35,8 @@
 
 static FILE *export_file;
 static FILE *native_file;
+/* A NULL setvbuf buffer lets libc choose a smaller allocation on some targets. */
+static char native_file_buffer[256 * 1024];
 static pthread_mutex_t export_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t rx_context_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct rx_context rx_context;
@@ -42,6 +44,8 @@ static void perfetto_export_event_now(const void *data, int cpu, u32 size);
 static u64 export_salt;
 static u64 exported_events;
 static u64 lost_events;
+static u64 queue_lost_events;
+static u64 capture_end_ns;
 static u64 last_clock_snapshot_ns;
 static bool native_sequence_started;
 static bool native_failed;
@@ -874,30 +878,50 @@ static void native_event_correlation(struct proto_buffer *event,
 static void native_annotation_string(struct proto_buffer *event,
 				     const char *name, const char *value)
 {
-	struct proto_buffer annotation = {};
+	const char *text = value ?: "";
+	size_t name_size = strlen(name), value_size = strlen(text);
+	size_t size = 4 + name_size + value_size;
 
-	proto_string(&annotation, 10, name);
-	proto_string(&annotation, 6, value ?: "");
-	proto_message(event, 4, &annotation);
-	proto_free(&annotation);
+	for (size_t n = name_size; n >= 128; n >>= 7)
+		size++;
+	for (size_t n = value_size; n >= 128; n >>= 7)
+		size++;
+	/* Write the same nested message directly into the event. Each annotation
+	 * used to allocate, copy and free a separate protobuf buffer. */
+	proto_tag(event, 4, 2);
+	proto_varint(event, size);
+	proto_string(event, 10, name);
+	proto_string(event, 6, text);
 }
 
 static void native_annotation_uint(struct proto_buffer *event,
 				   const char *name, u64 value)
 {
 	char text[32];
-
-	snprintf(text, sizeof(text), "%llu", value);
-	native_annotation_string(event, name, text);
+	char *end = text + sizeof(text) - 1;
+	*end = '\0';
+	do {
+		*--end = '0' + value % 10;
+		value /= 10;
+	} while (value);
+	native_annotation_string(event, name, end);
 }
 
 static void native_annotation_int(struct proto_buffer *event,
 				  const char *name, s64 value)
 {
 	char text[32];
-
-	snprintf(text, sizeof(text), "%lld", value);
-	native_annotation_string(event, name, text);
+	char *end = text + sizeof(text) - 1;
+	/* Unsigned subtraction also handles INT64_MIN without signed overflow. */
+	u64 magnitude = value < 0 ? 0ULL - (u64)value : (u64)value;
+	*end = '\0';
+	do {
+		*--end = '0' + magnitude % 10;
+		magnitude /= 10;
+	} while (magnitude);
+	if (value < 0)
+		*--end = '-';
+	native_annotation_string(event, name, end);
 }
 
 static void native_annotation_bool(struct proto_buffer *event,
@@ -910,8 +934,12 @@ static void native_annotation_id(struct proto_buffer *event, const char *name,
 				 u64 value)
 {
 	char id[24];
-
-	snprintf(id, sizeof(id), "%016llx", value);
+	static const char hex[] = "0123456789abcdef";
+	for (int i = 15; i >= 0; i--) {
+		id[i] = hex[value & 15];
+		value >>= 4;
+	}
+	id[16] = '\0';
 	native_annotation_string(event, name, id);
 }
 
@@ -2712,6 +2740,8 @@ static void export_state_start(void)
 	memset(&rx_context, 0, sizeof(rx_context));
 	exported_events = 0;
 	lost_events = 0;
+	queue_lost_events = 0;
+	capture_end_ns = 0;
 	last_clock_snapshot_ns = 0;
 	native_sequence_started = false;
 	native_failed = false;
@@ -2797,7 +2827,7 @@ static int perfetto_export_native_open_internal(const char *path,
 		       path, strerror(err));
 		return -err;
 	}
-	setvbuf(native_file, NULL, _IOFBF, 64 * 1024);
+	setvbuf(native_file, native_file_buffer, _IOFBF, sizeof(native_file_buffer));
 	write_clock_snapshot();
 	return 0;
 }
@@ -3731,6 +3761,8 @@ void perfetto_export_lost(int cpu, u64 count)
 	if (!clock_gettime(CLOCK_MONOTONIC, &monotonic))
 		ts = timespec_to_ns(&monotonic);
 	pthread_mutex_lock(&export_lock);
+	if (capture_end_ns && ts > capture_end_ns)
+		ts = capture_end_ns;
 	write_clock_snapshot_if_due();
 	lost_events += count;
 	if (export_file)
@@ -3744,6 +3776,26 @@ void perfetto_export_lost(int cpu, u64 count)
 	pthread_mutex_unlock(&export_lock);
 }
 
+void perfetto_export_queue_lost(u64 count)
+{
+	/* Include queue loss in the existing integrity total, and expose its source. */
+	perfetto_export_lost(-1, count);
+	queue_lost_events += count;
+}
+
+void perfetto_export_mark_capture_end(void)
+{
+	struct timespec monotonic;
+	u64 now;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &monotonic))
+		return;
+	now = timespec_to_ns(&monotonic);
+	pthread_mutex_lock(&export_lock);
+	capture_end_ns = now;
+	pthread_mutex_unlock(&export_lock);
+}
+
 void perfetto_export_tick(void)
 {
 	struct timespec monotonic;
@@ -3754,6 +3806,10 @@ void perfetto_export_tick(void)
 		return;
 	if (!clock_gettime(CLOCK_MONOTONIC, &monotonic))
 		now = timespec_to_ns(&monotonic);
+	pthread_mutex_lock(&export_lock);
+	if (capture_end_ns && now > capture_end_ns)
+		now = capture_end_ns;
+	pthread_mutex_unlock(&export_lock);
 	pthread_mutex_lock(&rx_context_lock);
 	if (now)
 		rx_context_expire(&rx_context, now);
@@ -3777,11 +3833,11 @@ void perfetto_export_tick(void)
 void perfetto_export_close(u64 event_count)
 {
 	struct timespec monotonic;
-	u64 end_ts = 0;
+	u64 end_ts = capture_end_ns;
 
 	if (!export_file && !native_file)
 		return;
-	if (!clock_gettime(CLOCK_MONOTONIC, &monotonic))
+	if (!end_ts && !clock_gettime(CLOCK_MONOTONIC, &monotonic))
 		end_ts = timespec_to_ns(&monotonic);
 	pthread_mutex_lock(&rx_context_lock);
 	rx_context_finish(&rx_context);
@@ -3864,19 +3920,31 @@ void perfetto_export_close(u64 event_count)
 				   "event_count", exported_events,
 				   "exported_events", lost_events,
 				   "lost_events");
+		native_export_meta(end_ts, "capture_queue", -1, queue_lost_events,
+				   "lost_events", 0, NULL, 0, NULL);
 	}
 	if (export_file) {
 		fprintf(export_file,
 			"{\"schema\":\"%s\",\"type\":\"trace_end\","
 			"\"ts_ns\":%llu,"
 			"\"event_count\":%llu,\"exported_events\":%llu,"
-			"\"lost_events\":%llu}\n",
+			"\"lost_events\":%llu,\"queue_lost_events\":%llu}\n",
 			PERFETTO_SCHEMA, end_ts, event_count, exported_events,
-			lost_events);
+			lost_events, queue_lost_events);
 		if (fclose(export_file))
 			pr_warn("failed to close Perfetto event file: %s\n",
 				strerror(errno));
 		export_file = NULL;
+	}
+	if (lost_events) {
+		pr_warn("capture lost %llu events (%llu in export queue); "
+			"use UID/protocol/port filters to reduce sustained load\n",
+			(unsigned long long)lost_events,
+			(unsigned long long)queue_lost_events);
+		if (queue_lost_events)
+			pr_warn("increase --capture-queue-mib to absorb export bursts\n");
+		if (lost_events > queue_lost_events)
+			pr_warn("increase --perf-buffer-pages to absorb kernel buffer bursts\n");
 	}
 	if (native_file) {
 		if (native_ring_window_ns)

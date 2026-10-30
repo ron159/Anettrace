@@ -49,6 +49,8 @@ static void do_parse_args(int argc, char *argv[])
 	bool libbpf_debug = false;
 	bool timestamp = false, date = false;
 	bool pid_set = false, tid_set = false;
+	bool perf_buffer_pages_set = false;
+	bool capture_queue_set = false;
 	trace_args_t *trace_args = &trace_ctx.args;
 	bpf_args_t *bpf_args = &trace_ctx.bpf_args;
 	pkt_args_t *pkt_args = &bpf_args->pkt;
@@ -339,6 +341,20 @@ static void do_parse_args(int argc, char *argv[])
 			.desc = "capture duration, or ring-buffer retention window, in seconds",
 		},
 		{
+			.lname = "perf-buffer-pages", .dest = &trace_args->perf_buffer_pages,
+			.type = OPTION_U32,
+			.set = &perf_buffer_pages_set,
+			.desc = "BPF perf pages per CPU: power of two, 64..16384;\n"
+				"                     default 16 MiB/CPU for Perfetto, 1024 pages for terminal",
+		},
+		{
+			.lname = "capture-queue-mib", .dest = &trace_args->capture_queue_mib,
+			.type = OPTION_U32,
+			.set = &capture_queue_set,
+			.desc = "raw event export queue in MiB: 1..512; requires --capture-trace;\n"
+				"                     default 32, or 256 for unfiltered --force --trace-detail",
+		},
+		{
 			.lname = "output", .dest = &trace_args->output,
 			.type = OPTION_STRING,
 			.desc = "output .pftrace file or existing output directory",
@@ -540,6 +556,19 @@ static void do_parse_args(int argc, char *argv[])
 	}
 	if (trace_args->traffic_ui)
 		trace_args->traffic = true;
+	if (capture_queue_set &&
+	    (!trace_args->capture_trace || !trace_args->capture_queue_mib ||
+	     trace_args->capture_queue_mib > 512)) {
+		pr_err("--capture-queue-mib requires --capture-trace and a value from 1 to 512\n");
+		goto err;
+	}
+	if (perf_buffer_pages_set &&
+	    (trace_args->perf_buffer_pages < 64 ||
+	     trace_args->perf_buffer_pages > 16384 ||
+	     (trace_args->perf_buffer_pages & (trace_args->perf_buffer_pages - 1)))) {
+		pr_err("--perf-buffer-pages must be a power of two from 64 to 16384\n");
+		goto err;
+	}
 	if (trace_args->traffic && trace_args->perfetto_events) {
 		pr_err("--traffic cannot be combined with --perfetto-events\n");
 		goto err;

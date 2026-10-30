@@ -1,4 +1,5 @@
 """Event-loss callbacks must not shorten a timed Perfetto capture."""
+import errno
 import unittest
 
 from tests import test_flow_identity as helpers
@@ -15,7 +16,12 @@ class TraceDurationTests(unittest.TestCase):
 typedef struct { u16 meta; } event_t;
 typedef struct { u16 meta; u8 owner_pending; } detail_event_t;
 static unsigned exported, printed;
-static bool trace_stopped(void) { return false; }
+static bool capture_async;
+static void capture_queue_event(void *data, int cpu, u32 size) {
+    (void)data; (void)cpu; (void)size; exported++;
+}
+static bool stopped;
+static bool trace_stopped(void) { return stopped; }
 static void perfetto_export_event(void *data, int cpu, u32 size) {
     (void)data; (void)cpu; (void)size; exported++;
 }
@@ -34,25 +40,43 @@ poll_handler_wrap(NULL,0,&pending,sizeof(pending));
 printf("%u %u ",exported,printed);
 pending.owner_pending=0;
 poll_handler_wrap(NULL,0,&pending,sizeof(pending));
+printf("%u %u ",exported,printed);
+stopped = true;
+capture_async = true;
+poll_handler_wrap(NULL,0,&pending,sizeof(pending));
 printf("%u %u",exported,printed);
 ''')
-        self.assertEqual(result, ["1", "0", "2", "0", "3", "1"])
+        self.assertEqual(result, ["1", "0", "2", "0", "3", "1", "4", "1"])
 
     def test_ready_is_emitted_only_after_buffer_creation_and_before_poll(self):
         source = (helpers.ROOT / "src/trace.c").read_text()
         code = r'''
 #include <errno.h>
 #include <time.h>
+#include <unistd.h>
 #define LIBBPF_MAJOR_VERSION 1
 #define pr_err(...) ((void)0)
-#define pr_info(...) printf("ready ")
+#define pr_warn(...) ((void)0)
+#define pr_info(...) ((void)0)
+#define CAPTURE_QUEUE_BYTES 32768
+#define BPF_ANY 0
 struct perf_buffer { int unused; } buffer;
-static int buffer_error, map_result = 3, released;
+static int buffer_error, queue_error, map_result = 3, released, poll_result, consume_result;
+static bool capture_async;
+static size_t trace_perf_buffer_pages(void) { return 4096; }
+static size_t trace_capture_queue_bytes(void) { return CAPTURE_QUEUE_BYTES; }
+static int capture_queue_start(size_t size) { (void)size; printf("queue "); return queue_error; }
+static void capture_queue_tick(void) { printf("tick "); }
+static void capture_queue_stop(void) { printf("drained "); }
+static void trace_capture_stop(void) { printf("system-stop "); }
+static void perfetto_export_mark_capture_end(void) { printf("cutoff "); }
+static int trace_disable_capture(void) { printf("disable "); return 0; }
+static int perf_buffer__consume(struct perf_buffer *p) { (void)p; printf("consume "); return consume_result; }
 static void ready(void) { printf("enable "); }
 static int raw_poll(void) { printf("raw "); return 0; }
 static struct { void (*trace_ready)(void); int (*raw_poll)(void); } ops = {ready, NULL};
 static struct {
-    struct { unsigned duration; bool ring_buffer, traffic_ui; } args;
+    struct { unsigned duration, capture_queue_mib; bool ring_buffer, traffic_ui, capture_trace; } args;
     typeof(ops) *ops;
     void *obj;
 } trace_ctx = {.ops = &ops};
@@ -69,13 +93,21 @@ static struct perf_buffer *perf_buffer__new(int fd, int pages, void *sample,
 }
 static int libbpf_get_error(void *p) { (void)p; return buffer_error; }
 static int perf_buffer__poll(struct perf_buffer *p, int timeout) {
-    (void)p; (void)timeout; printf("poll "); return 0;
+    (void)p; (void)timeout; printf("poll "); return poll_result;
 }
 static void perf_buffer__free(struct perf_buffer *p) { (void)p; released++; }
 static void perfetto_export_tick(void) {}
 static int poll_timeout(int err) { (void)err; return 1; }
 ''' + helpers.function(source, "trace_poll")
         result = self.run_source(code, r'''
+printf("%d ", trace_poll());
+trace_ctx.args.capture_trace = true;
+printf("%d ", trace_poll());
+poll_result = -EINTR;
+consume_result = -EIO;
+printf("%d ", trace_poll());
+poll_result = consume_result = 0;
+queue_error = -EAGAIN;
 printf("%d ", trace_poll());
 buffer_error = -ENOMEM;
 printf("%d ", trace_poll());
@@ -84,8 +116,13 @@ printf("%d ", trace_poll());
 ops.raw_poll = raw_poll;
 printf("%d %d", trace_poll(), released);
 ''')
-        self.assertEqual(result, ["buffer", "enable", "ready", "poll", "0",
-                                  "buffer", "-12", "-2", "enable", "ready", "raw", "0", "1"])
+        self.assertEqual(result, ["buffer", "enable", "poll", "0",
+                                  "buffer", "queue", "enable", "poll", "tick",
+                                  "disable", "consume", "system-stop", "cutoff", "drained", "0",
+                                  "buffer", "queue", "enable", "poll",
+                                  "disable", "consume", "system-stop", "cutoff", "drained", "-5",
+                                  "buffer", "queue", str(-errno.EAGAIN), "buffer", "-12", "-2",
+                                  "enable", "raw", "0", "4"])
 
     def run_capture(self, mode, ring=False):
         source = (helpers.ROOT / "src/trace.c").read_text()
@@ -103,6 +140,8 @@ static struct {
     } args;
 } trace_ctx;
 static u64 lost_events, now_ns, poll_deadline_ns;
+static bool capture_async;
+static void capture_queue_lost(int cpu, u64 count) { (void)cpu; lost_events += count; }
 static void perfetto_export_lost(int cpu, u64 count) {
     (void)cpu;
     lost_events += count;
