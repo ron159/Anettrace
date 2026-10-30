@@ -335,6 +335,7 @@ if [[ "${ANETTRACE_STATIC_ONLY:-0}" != 1 ]]; then
 	python3 -m unittest discover -s "$ROOT/tests" -p 'test_icmp_capture.py'
 	python3 -m unittest discover -s "$ROOT/tests" -p 'test_trace_duration.py'
 	python3 -m unittest tests.test_capture_queue tests.test_capture_buffer
+	python3 -m unittest tests.test_native_encoding
 	python3 -m unittest discover -s "$ROOT/tests" -p 'test_wakeup_capture.py'
 	python3 -m unittest discover -s "$ROOT/tests" -p 'test_rx_context.py'
 fi

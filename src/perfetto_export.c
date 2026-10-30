@@ -35,6 +35,8 @@
 
 static FILE *export_file;
 static FILE *native_file;
+/* A NULL setvbuf buffer lets libc choose a smaller allocation on some targets. */
+static char native_file_buffer[256 * 1024];
 static pthread_mutex_t export_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t rx_context_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct rx_context rx_context;
@@ -875,30 +877,50 @@ static void native_event_correlation(struct proto_buffer *event,
 static void native_annotation_string(struct proto_buffer *event,
 				     const char *name, const char *value)
 {
-	struct proto_buffer annotation = {};
+	const char *text = value ?: "";
+	size_t name_size = strlen(name), value_size = strlen(text);
+	size_t size = 4 + name_size + value_size;
 
-	proto_string(&annotation, 10, name);
-	proto_string(&annotation, 6, value ?: "");
-	proto_message(event, 4, &annotation);
-	proto_free(&annotation);
+	for (size_t n = name_size; n >= 128; n >>= 7)
+		size++;
+	for (size_t n = value_size; n >= 128; n >>= 7)
+		size++;
+	/* Write the same nested message directly into the event. Each annotation
+	 * used to allocate, copy and free a separate protobuf buffer. */
+	proto_tag(event, 4, 2);
+	proto_varint(event, size);
+	proto_string(event, 10, name);
+	proto_string(event, 6, text);
 }
 
 static void native_annotation_uint(struct proto_buffer *event,
 				   const char *name, u64 value)
 {
 	char text[32];
-
-	snprintf(text, sizeof(text), "%llu", value);
-	native_annotation_string(event, name, text);
+	char *end = text + sizeof(text) - 1;
+	*end = '\0';
+	do {
+		*--end = '0' + value % 10;
+		value /= 10;
+	} while (value);
+	native_annotation_string(event, name, end);
 }
 
 static void native_annotation_int(struct proto_buffer *event,
 				  const char *name, s64 value)
 {
 	char text[32];
-
-	snprintf(text, sizeof(text), "%lld", value);
-	native_annotation_string(event, name, text);
+	char *end = text + sizeof(text) - 1;
+	/* Unsigned subtraction also handles INT64_MIN without signed overflow. */
+	u64 magnitude = value < 0 ? 0ULL - (u64)value : (u64)value;
+	*end = '\0';
+	do {
+		*--end = '0' + magnitude % 10;
+		magnitude /= 10;
+	} while (magnitude);
+	if (value < 0)
+		*--end = '-';
+	native_annotation_string(event, name, end);
 }
 
 static void native_annotation_bool(struct proto_buffer *event,
@@ -911,8 +933,12 @@ static void native_annotation_id(struct proto_buffer *event, const char *name,
 				 u64 value)
 {
 	char id[24];
-
-	snprintf(id, sizeof(id), "%016llx", value);
+	static const char hex[] = "0123456789abcdef";
+	for (int i = 15; i >= 0; i--) {
+		id[i] = hex[value & 15];
+		value >>= 4;
+	}
+	id[16] = '\0';
 	native_annotation_string(event, name, id);
 }
 
@@ -2799,7 +2825,7 @@ static int perfetto_export_native_open_internal(const char *path,
 		       path, strerror(err));
 		return -err;
 	}
-	setvbuf(native_file, NULL, _IOFBF, 64 * 1024);
+	setvbuf(native_file, native_file_buffer, _IOFBF, sizeof(native_file_buffer));
 	write_clock_snapshot();
 	return 0;
 }
