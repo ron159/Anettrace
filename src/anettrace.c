@@ -50,6 +50,7 @@ static void do_parse_args(int argc, char *argv[])
 	bool timestamp = false, date = false;
 	bool pid_set = false, tid_set = false;
 	bool perf_buffer_pages_set = false;
+	bool capture_queue_set = false;
 	trace_args_t *trace_args = &trace_ctx.args;
 	bpf_args_t *bpf_args = &trace_ctx.bpf_args;
 	pkt_args_t *pkt_args = &bpf_args->pkt;
@@ -347,6 +348,13 @@ static void do_parse_args(int argc, char *argv[])
 				"                     default 16 MiB/CPU for Perfetto, 1024 pages for terminal",
 		},
 		{
+			.lname = "capture-queue-mib", .dest = &trace_args->capture_queue_mib,
+			.type = OPTION_U32,
+			.set = &capture_queue_set,
+			.desc = "raw event export queue in MiB: 1..512, default 32;\n"
+				"                     requires --capture-trace; larger queues absorb bursts",
+		},
+		{
 			.lname = "output", .dest = &trace_args->output,
 			.type = OPTION_STRING,
 			.desc = "output .pftrace file or existing output directory",
@@ -548,6 +556,12 @@ static void do_parse_args(int argc, char *argv[])
 	}
 	if (trace_args->traffic_ui)
 		trace_args->traffic = true;
+	if (capture_queue_set &&
+	    (!trace_args->capture_trace || !trace_args->capture_queue_mib ||
+	     trace_args->capture_queue_mib > 512)) {
+		pr_err("--capture-queue-mib requires --capture-trace and a value from 1 to 512\n");
+		goto err;
+	}
 	if (perf_buffer_pages_set &&
 	    (trace_args->perf_buffer_pages < 64 ||
 	     trace_args->perf_buffer_pages > 16384 ||

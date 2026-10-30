@@ -3915,11 +3915,16 @@ void perfetto_export_close(u64 event_count)
 				strerror(errno));
 		export_file = NULL;
 	}
-	if (lost_events)
+	if (lost_events) {
 		pr_warn("capture lost %llu events (%llu in export queue); "
-			"use UID/protocol/port filters or increase --perf-buffer-pages for bursts\n",
+			"use UID/protocol/port filters to reduce sustained load\n",
 			(unsigned long long)lost_events,
 			(unsigned long long)queue_lost_events);
+		if (queue_lost_events)
+			pr_warn("increase --capture-queue-mib to absorb export bursts\n");
+		if (lost_events > queue_lost_events)
+			pr_warn("increase --perf-buffer-pages to absorb kernel buffer bursts\n");
+	}
 	if (native_file) {
 		if (native_ring_window_ns)
 			native_ring_prune_all();

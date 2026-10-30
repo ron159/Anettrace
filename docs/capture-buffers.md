@@ -24,9 +24,12 @@ perf 数据区内存约为 `CPU 缓冲区数量 × 页数 × 系统页大小`，
 ## 当前采集策略
 
 - Perfetto 输出默认分配 **16 MiB/CPU**，根据实际页大小换算页数，避免 16/64 KiB 页设备额外放大内存。
-- `--capture-trace` 使用 **32 MiB 固定有界队列**。采集线程只复制原始事件，工作线程负责关联、编码和写盘。
+- `--capture-trace` 默认使用 **32 MiB 有界队列**，可用 `--capture-queue-mib` 调整为 1..512 MiB。
+  采集线程只复制原始事件，工作线程负责关联、编码和写盘。
   8 CPU 设备上，perf 数据区加导出队列约 **160 MiB**，比旧版增加约 **128 MiB**；另有 BPF map、
   导出状态、线程栈、系统 Perfetto 等内存。
+- 导出注释直接编码，避免每个字段单独分配临时内存；数值保持原有文本表示。
+  原生文件使用实际提供的 256 KiB 写缓冲，降低小块写盘调用开销。
 - 队列满时采集线程不等待磁盘，准确记录队列丢失；`trace_end.lost_events` 包含内核与队列丢失。
   原生轨迹的 `capture_queue.lost_events` 单独记录队列丢失，JSONL 的 `trace_end.queue_lost_events` 同义。
 - 抓取结束时先关闭 BPF 生产开关，消费残留 perf 数据，再排空已接收的队列；收到 SIGINT 也会排空。
@@ -40,7 +43,15 @@ perf 数据区内存约为 `CPU 缓冲区数量 × 页数 × 系统页大小`，
 # 内存受限设备：4 KiB 页时恢复为 4 MiB/CPU，仍使用异步导出队列
 anettrace --capture-trace --uid 10187 --duration 10 \
   --perf-buffer-pages 1024 --output capture.pftrace
+
+# 全量详细突发抓取：以额外内存换取更大的导出积压容量
+anettrace --capture-trace --force --trace-detail --duration 10 \
+  --capture-queue-mib 256 --output burst.pftrace
 ```
+
+8 CPU、4 KiB 页、默认 perf 容量下，队列取 32、128、256 MiB 时，perf 数据区与队列
+合计约为 160、256、384 MiB。扩大 perf 页数解决内核突发积压；扩大导出队列解决导出突发积压，
+两者不能互相替代。
 
 优先缩小 UID、协议、端口范围；扩大 perf 缓冲区适合吸收突发。
 持续过载需要减少事件量或降低导出成本，不能承诺所有负载下零丢失。

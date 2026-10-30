@@ -49,6 +49,20 @@ printf("%zu", trace_perf_buffer_pages());
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("--perf-buffer-pages must be a power of two", result.stdout + result.stderr)
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux CLI binary required")
+    def test_cli_rejects_invalid_queue_size_and_mode(self):
+        binary = Path(os.environ.get("ANETTRACE_TEST_BIN", helpers.ROOT / "src/anettrace"))
+        if not binary.is_file():
+            self.skipTest("CLI binary not built")
+        for args in (("--capture-queue-mib", "32"),
+                     ("--capture-trace", "--capture-queue-mib", "0"),
+                     ("--capture-trace", "--capture-queue-mib", "513"),
+                     ("--capture-trace", "--capture-queue-mib", "-1")):
+            with self.subTest(args=args):
+                result = subprocess.run([str(binary), *args], capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("--capture-queue-mib requires", result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

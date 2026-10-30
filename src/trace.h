@@ -145,6 +145,7 @@ typedef struct trace_args {
 	char *perfetto_config;
 	u32 duration;
 	u32 perf_buffer_pages;
+	u32 capture_queue_mib;
 	char *output;
 	u32  count;
 	char *btf_path;

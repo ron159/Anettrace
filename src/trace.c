@@ -23,6 +23,7 @@ const char *cond_pre = "verlte() { [ \"$1\" = \"$2\" ] && echo 0 && return; "
 trace_context_t trace_ctx = {
 	.mode = TRACE_MODE_TIMELINE,
 	.args.traffic_interval = 1,
+	.args.capture_queue_mib = CAPTURE_QUEUE_BYTES / (1024 * 1024),
 };
 
 extern trace_ops_t tracing_ops;
@@ -1520,7 +1521,7 @@ int trace_poll()
 		return err;
 	}
 	if (trace_ctx.args.capture_trace) {
-		err = capture_queue_start(CAPTURE_QUEUE_BYTES);
+		err = capture_queue_start((size_t)trace_ctx.args.capture_queue_mib * 1024 * 1024);
 		if (err) {
 			pr_err("failed to start capture exporter: %s\n", strerror(-err));
 			perf_buffer__free(pb);
@@ -1530,7 +1531,7 @@ int trace_poll()
 	}
 	pr_info("BPF perf buffer: %zu pages/CPU (%zu KiB/CPU); export queue: %u MiB\n",
 		pages, pages * (size_t)sysconf(_SC_PAGESIZE) / 1024,
-		capture_async ? CAPTURE_QUEUE_BYTES / (1024 * 1024) : 0);
+		capture_async ? trace_ctx.args.capture_queue_mib : 0);
 
 	poll_deadline_ns = 0;
 	if (trace_ctx.args.duration && !trace_ctx.args.ring_buffer &&

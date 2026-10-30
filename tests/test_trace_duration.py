@@ -73,7 +73,7 @@ static void ready(void) { printf("enable "); }
 static int raw_poll(void) { printf("raw "); return 0; }
 static struct { void (*trace_ready)(void); int (*raw_poll)(void); } ops = {ready, NULL};
 static struct {
-    struct { unsigned duration; bool ring_buffer, traffic_ui, capture_trace; } args;
+    struct { unsigned duration, capture_queue_mib; bool ring_buffer, traffic_ui, capture_trace; } args;
     typeof(ops) *ops;
     void *obj;
 } trace_ctx = {.ops = &ops};
