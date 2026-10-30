@@ -24,6 +24,8 @@
 
 #define PERFETTO_READY_TIMEOUT_MS 30000
 #define PERFETTO_HELP_TIMEOUT_MS 3000
+#define PERFETTO_STOP_TIMEOUT_MS 30000
+#define PERFETTO_STOP_IDLE_MS 3000
 
 #ifndef PERFETTO_CONFIG_DIR
 #define PERFETTO_CONFIG_DIR "/data/misc/perfetto-configs"
@@ -341,6 +343,94 @@ static int wait_child(pid_t pid, unsigned int timeout_ms, int *status)
 	return -ETIMEDOUT;
 }
 
+static int wait_perfetto_stop(int *status, bool *stalled)
+{
+	struct timespec clock;
+	struct stat file;
+	u64 start_ms, now_ms, elapsed_ms, idle_ms, last_growth_ms;
+	u64 next_report_ms = PERFETTO_STOP_TIMEOUT_MS;
+	off_t last_size = -1, size;
+
+	*stalled = false;
+	if (clock_gettime(CLOCK_MONOTONIC, &clock))
+		return -errno;
+	start_ms = (u64)clock.tv_sec * 1000 + clock.tv_nsec / 1000000;
+	last_growth_ms = start_ms;
+	for (;;) {
+		pid_t result = waitpid(capture.perfetto_pid, status, WNOHANG);
+		if (result == capture.perfetto_pid)
+			return 0;
+		if (result < 0) {
+			if (errno == EINTR)
+				continue;
+			return -errno;
+		}
+		if (clock_gettime(CLOCK_MONOTONIC, &clock))
+			return -errno;
+		now_ms = (u64)clock.tv_sec * 1000 + clock.tv_nsec / 1000000;
+		if (stat(capture.system_trace, &file)) {
+			int err = errno;
+			pr_err("cannot inspect Perfetto stop progress: system_trace='%s' bytes=unknown: %s\n",
+			       capture.system_trace, strerror(err));
+			return -err;
+		}
+		size = file.st_size;
+		if (size > last_size)
+			last_growth_ms = now_ms;
+		last_size = size;
+		elapsed_ms = now_ms - start_ms;
+		idle_ms = now_ms - last_growth_ms;
+		if (elapsed_ms >= PERFETTO_STOP_TIMEOUT_MS &&
+		    idle_ms >= PERFETTO_STOP_IDLE_MS) {
+			*stalled = true;
+			pr_err("Perfetto stop has no write progress: grace_ms=%u idle_limit_ms=%u waited_ms=%llu idle_ms=%llu system_trace='%s' bytes=%lld\n",
+			       PERFETTO_STOP_TIMEOUT_MS, PERFETTO_STOP_IDLE_MS,
+			       (unsigned long long)elapsed_ms, (unsigned long long)idle_ms,
+			       capture.system_trace, (long long)size);
+			return -ETIMEDOUT;
+		}
+		if (elapsed_ms >= next_report_ms) {
+			pr_warn("waiting for Perfetto flush: grace_ms=%u idle_limit_ms=%u waited_ms=%llu idle_ms=%llu system_trace='%s' bytes=%lld\n",
+				PERFETTO_STOP_TIMEOUT_MS, PERFETTO_STOP_IDLE_MS,
+				(unsigned long long)elapsed_ms, (unsigned long long)idle_ms,
+				capture.system_trace, (long long)size);
+			next_report_ms = elapsed_ms + 5000;
+		}
+		usleep(100000);
+	}
+}
+
+static int stop_perfetto(int *status)
+{
+	int err, reap_err;
+	bool stalled = false;
+
+	trace_capture_stop();
+	err = wait_perfetto_stop(status, &stalled);
+	if (!err) {
+		capture.child_reaped = true;
+		capture.child_status = *status;
+		return 0;
+	}
+	/* A failed stat/wait is not evidence of a stalled writer. */
+	if (stalled) {
+		pr_warn("sending SIGKILL to stalled Perfetto pid %d; original traces will be retained\n",
+			capture.perfetto_pid);
+		if (kill(capture.perfetto_pid, SIGKILL) && errno != ESRCH)
+			pr_warn("failed to kill Perfetto: %s\n", strerror(errno));
+		reap_err = wait_child(capture.perfetto_pid, 2000, status);
+		if (!reap_err) {
+			capture.child_reaped = true;
+			capture.child_status = *status;
+			/* The process may have exited normally just before SIGKILL. */
+			return WIFEXITED(*status) ? 0 : err;
+		}
+	}
+	pr_warn("Perfetto exit not confirmed for pid %d after SIGTERM: %s; leaving original traces in place\n",
+		capture.perfetto_pid, strerror(-err));
+	return err;
+}
+
 static int perfetto_supports_notify(bool *supported)
 {
 	struct timespec start, now;
@@ -539,12 +629,33 @@ static int merge_traces(u64 boottime_cutoff_ns, u64 monotonic_cutoff_ns)
 	return err;
 }
 
-static void cleanup_temporary(void)
+static void cleanup_trace_file(const char *kind, const char *path, bool failed)
 {
+	struct stat file;
+
+	if (!path[0])
+		return;
+	if (!failed) {
+		unlink(path);
+		return;
+	}
+	if (!stat(path, &file))
+		pr_warn("retained %s: path='%s' bytes=%lld\n", kind, path,
+			(long long)file.st_size);
+	else
+		pr_warn("%s evidence: path='%s' bytes=unknown (%s)\n",
+			kind, path, strerror(errno));
+}
+
+static void cleanup_temporary(bool failed)
+{
+	if (failed && capture.system_created)
+		pr_warn("capture failed; stop grace_ms=%u idle_limit_ms=%u; original traces are retained when present and may be incomplete\n",
+			PERFETTO_STOP_TIMEOUT_MS, PERFETTO_STOP_IDLE_MS);
 	if (capture.system_created)
-		unlink(capture.system_trace);
+		cleanup_trace_file("system trace", capture.system_trace, failed);
 	if (capture.network_trace[0])
-		unlink(capture.network_trace);
+		cleanup_trace_file("Anettrace trace", capture.network_trace, failed);
 	if (capture.config_created)
 		unlink(capture.config);
 }
@@ -805,19 +916,10 @@ int trace_capture_finish(void)
 		status = capture.child_status;
 		err = 0;
 	} else {
-		err = wait_child(capture.perfetto_pid,
-				 capture.stop_requested ? 5000 : 250, &status);
-	}
-	if (err == -ETIMEDOUT && !capture.stop_requested) {
-		trace_capture_stop();
-		err = wait_child(capture.perfetto_pid, 5000, &status);
-	}
-	if (err == -ETIMEDOUT) {
-		int reap_err;
-
-		kill(capture.perfetto_pid, SIGKILL);
-		reap_err = wait_child(capture.perfetto_pid, 2000, &status);
-		err = reap_err ? reap_err : -ETIMEDOUT;
+		err = capture.stop_requested ? -ETIMEDOUT :
+			wait_child(capture.perfetto_pid, 250, &status);
+		if (err == -ETIMEDOUT)
+			err = stop_perfetto(&status);
 	}
 	capture.started = false;
 	if (err) {
@@ -880,7 +982,7 @@ int trace_capture_finish(void)
 		capture.output);
 
 out:
-	cleanup_temporary();
+	cleanup_temporary(err != 0);
 	return err;
 }
 
@@ -889,14 +991,8 @@ void trace_capture_abort(void)
 	int status;
 
 	if (capture.started && !capture.child_reaped) {
-		kill(capture.perfetto_pid, SIGTERM);
-		if (wait_child(capture.perfetto_pid, 2000, &status) == -ETIMEDOUT) {
-			kill(capture.perfetto_pid, SIGKILL);
-			while (waitpid(capture.perfetto_pid, &status, 0) < 0 &&
-			       errno == EINTR)
-				;
-		}
+		stop_perfetto(&status);
 		capture.started = false;
 	}
-	cleanup_temporary();
+	cleanup_temporary(true);
 }

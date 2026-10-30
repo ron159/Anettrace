@@ -58,3 +58,25 @@ anettrace --capture-trace --force --trace-detail --duration 10 \
 持续过载需要减少事件量或降低导出成本，不能承诺所有负载下零丢失。
 
 参考：[Linux perf ring buffer](https://docs.kernel.org/userspace-api/perf_ring_buffer.html)。
+
+## 慢设备停止与失败现场
+
+停止系统 Perfetto 后，先给予至少 30 秒退出宽限期。每 100 ms 检查子进程和 system trace
+文件大小；超过宽限期后，只有连续 3 秒未增长才按“疑似停滞”发送 SIGKILL。
+文件仍增长时继续等待，每 5 秒输出等待时间、未增长时间、路径和字节数。这里的 30 秒不是
+有写入进度时的硬截止时间；文件未增长也只是启发式，无法证明进程必然卡死。
+读取进度失败会报告具体错误并保留现场，不把 stat 的超时错误误当作已确认停滞。
+
+这套策略同时用于正常结束和失败中止。强停后最多再等待 2 秒回收子进程，避免无限阻塞。
+无法确认退出时，会打印 PID；原始文件保留，可能仍由收到 SIGTERM 的子进程完成写入。
+
+只有成功生成最终文件才删除原始临时 trace。超时、非零退出、导出或合并失败时，保留已经创建的
+system trace 和 Anettrace trace（包括空文件），日志打印路径、大小及宽限/停滞阈值。
+文件可能不完整，保留不等于验证通过。配置临时文件仍清理；已有用户文件不会被覆盖。
+
+Android 的 system trace 通常保留在 `/data/misc/perfetto-traces/`，其他构建通常位于输出文件旁的
+`.system.tmp`；Anettrace 原始部分位于输出文件旁的 `.anettrace.tmp`。以日志中的实际路径为准。
+失败后可先复制这些原始文件分析；再次采集使用新的 `--output` 名称，避免覆盖现场。
+
+Perfetto 在结束时会请求数据源刷新缓冲区；这是正常停止的一部分，不能只按进程运行时长判定失败。
+参见 [Perfetto 数据流说明](https://perfetto.dev/docs/concepts/buffers)。
