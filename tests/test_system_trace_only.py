@@ -521,12 +521,15 @@ class SystemOnlyCliTest(CaptureTestCase):
     # The native and Android drivers cover the full capture state machine.
     # Keep CLI coverage focused on argument wiring and observable outcomes.
     test_duration_and_no_network = SystemOnlyCaptureTest.test_duration_and_no_network
+    test_custom_duration_is_overridden = SystemOnlyCaptureTest.test_custom_duration_is_overridden
     test_waits_for_delayed_binary_ready_ack = SystemOnlyCaptureTest.test_waits_for_delayed_binary_ready_ack
     test_legacy_perfetto_without_notify_fd_captures = SystemOnlyCaptureTest.test_legacy_perfetto_without_notify_fd_captures
     test_ring_waits_for_signal_and_saves = SystemOnlyCaptureTest.test_ring_waits_for_signal_and_saves
     test_bad_ack_is_rejected_and_child_is_reaped = SystemOnlyCaptureTest.test_bad_ack_is_rejected_and_child_is_reaped
     test_perfetto_errors_and_empty_output_are_not_success = SystemOnlyCaptureTest.test_perfetto_errors_and_empty_output_are_not_success
     test_existing_output_and_temporary_files_are_preserved = SystemOnlyCaptureTest.test_existing_output_and_temporary_files_are_preserved
+    test_interrupt_during_capability_probe_reaps_child = SystemOnlyCaptureTest.test_interrupt_during_capability_probe_reaps_child
+    test_interrupt_during_readiness_aborts_and_reaps_child = SystemOnlyCaptureTest.test_interrupt_during_readiness_aborts_and_reaps_child
 
     @classmethod
     def setUpClass(cls):
