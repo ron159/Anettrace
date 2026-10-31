@@ -34,6 +34,11 @@ on:
 permissions:
   contents: read
 
+# Only superseded PR runs share a group; pushes and release calls stay independent.
+concurrency:
+  group: linux-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: ubuntu-latest

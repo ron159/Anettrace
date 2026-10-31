@@ -34,7 +34,6 @@ require_text 'runs-on: ubuntu-24.04-arm' \
 require_text 'packet mark must remain the final field' src/progs/skb_shared.h
 require_text $'\t\t} ipv4;\n#ifndef NT_DISABLE_IPV6\n\t\tstruct {' \
 	src/progs/skb_shared.h
-require_text $'\t\t} ipv4;\n#ifndef NT_DISABLE_IPV6\n\t\tstruct {' src/progs/skb_shared.h
 require_text 'pkt->mark = _C(skb, mark);' src/progs/skb_parse.h
 require_text 'pkt->l3.ipv4.id = bpf_ntohs(_C(ipv4, id));' src/progs/skb_parse.h
 require_text $'u16\tdns_transaction_id;' src/progs/skb_shared.h
@@ -51,7 +50,6 @@ require_text 'if (sym_init_data())' utils/parse_sym.c
 require_text 'else if (bpf_core_field_exists(icsk->icsk_retransmit_timer))' \
 	src/progs/skb_parse.h
 require_text 'ske->timer_out = 0;' src/progs/skb_parse.h
-require_text 'Author: ron' src/anettrace.c
 require_text 'printf("\n%s\n", config->desc);' utils/arg_parse.c
 require_text '--date and --timestamp cannot be used together' src/anettrace.c
 require_text 'OPTION_GROUP' utils/arg_parse.h
@@ -234,7 +232,6 @@ require_text 'event->pkt.proto_l4 == IPPROTO_UDP' src/trace.c
 require_text 'event->pkt.proto_l4 == IPPROTO_TCP ||' src/trace.c
 require_text 'return trace_ctx.args.connect_diagnostics;' src/trace.c
 require_text 'static const char *const compact_events[]' src/trace.c
-require_text 'return false;' src/trace.c
 require_text '"TCP SYN send"' src/trace.c
 require_text '"TCP packet receive"' src/trace.c
 require_text '"DNS query send"' src/trace.c

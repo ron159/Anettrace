@@ -98,8 +98,11 @@ while True:
 '''
 
 DRIVER = r'''
+/* Only trace_capture.c uses the test poll shim; the driver calls real poll. */
+#undef poll
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <signal.h>
@@ -128,6 +131,17 @@ int open(const char *path, int flags, ...) {
 }
 static volatile sig_atomic_t stopped;
 static void stop(int sig) { (void)sig; stopped = 1; }
+int capture_test_poll(struct pollfd *fds, nfds_t count, int timeout) {
+    const char *short_timeout = getenv("CAPTURE_TEST_READY_TIMEOUT_MS");
+    if (short_timeout && timeout == 30000) {
+        FILE *log = fopen(getenv("CAPTURE_TEST_POLL_LOG"), "w");
+        if (!log) return -1;
+        fprintf(log, "%d\n", timeout);
+        fclose(log);
+        timeout = atoi(short_timeout);
+    }
+    return poll(fds, count, timeout);
+}
 int main(int argc, char **argv) {
     int combined = getenv("COMBINED") != NULL;
     if (argc != 5) return 2;
@@ -164,7 +178,7 @@ int main(int argc, char **argv) {
 '''
 
 
-class SystemOnlyCaptureTest(unittest.TestCase):
+class CaptureTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.build = tempfile.TemporaryDirectory(prefix="anettrace-system-build-")
@@ -189,6 +203,7 @@ typedef unsigned long long u64;
         (cls.perfetto_root / "configs").mkdir(parents=True)
         (cls.perfetto_root / "traces").mkdir()
         cmd = ["cc", "-std=gnu11", "-Wall", "-Wextra", "-Werror",
+               "-Dpoll=capture_test_poll",
                f"-I{base}", f"-I{ROOT / 'src'}"]
         if sys.platform == "darwin":
             cmd += ["-DCLOCK_BOOTTIME=CLOCK_MONOTONIC"]
@@ -245,6 +260,25 @@ typedef unsigned long long u64;
             trace.unlink()  # Remove only after proving failed-capture evidence survived.
         self.assert_clean()
 
+    def assert_ring_capture(self):
+        proc = subprocess.Popen(self.command(ring=True), env=self.env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            time.sleep(1.5)
+            self.assertIsNone(proc.poll())
+            proc.send_signal(signal.SIGINT)
+            _, err = proc.communicate(timeout=8)
+            self.assertEqual(proc.returncode, 0, err)
+            self.assertNotIn("duration_ms:", self.log.read_text())
+            self.assertGreater(self.output.stat().st_size, 0)
+            self.assert_clean()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+
+
+class SystemOnlyCaptureTest(CaptureTestCase):
     def test_slow_stop_keeps_writing_past_the_old_five_second_timeout(self):
         self.env["SLOW_STOP"] = "1"
         result = subprocess.run(self.command(), env=self.env,
@@ -268,8 +302,6 @@ typedef unsigned long long u64;
         self.assert_failed_cleanup(result.stderr)
 
     def test_merge_failure_and_repeated_abort_keep_both_original_traces(self):
-        if os.environ.get("ANETTRACE_TEST_BIN") and isinstance(self, SystemOnlyCliTest):
-            self.skipTest("merge fault injection requires the test driver")
         self.env.update(COMBINED="1", FAIL_MERGE="1", ABORT_AFTER_FAILURE="1")
         result = subprocess.run([str(self.combined_driver), str(self.output), "1", "0", ""],
                                 env=self.env, capture_output=True, timeout=10)
@@ -285,8 +317,6 @@ typedef unsigned long long u64;
         self.assert_failed_cleanup(result.stderr)
 
     def test_ring_cutoff_is_stop_time_even_when_export_drain_delays_finish(self):
-        if os.environ.get("ANETTRACE_TEST_BIN") and isinstance(self, SystemOnlyCliTest):
-            self.skipTest("export-drain delay injection requires the test driver")
         self.env["FINISH_DELAY"] = "1"
         self.env["TRIM_EVENTS"] = "1"
         result = self.run_capture(ring=True, duration=1)
@@ -361,19 +391,22 @@ typedef unsigned long long u64;
                 proc.communicate()
 
     def test_readiness_timeout_aborts_and_reaps_child(self):
-        self.env["FAKE_MODE"] = "no-ack"
+        poll_log = self.base / "ready-poll.log"
+        self.env.update(FAKE_MODE="no-ack", CAPTURE_TEST_READY_TIMEOUT_MS="1000",
+                        CAPTURE_TEST_POLL_LOG=str(poll_log))
         start = time.monotonic()
         result = subprocess.run(self.command(), env=self.env,
-                                capture_output=True, timeout=40)
+                                capture_output=True, timeout=10)
         self.assertNotEqual(result.returncode, 0, result.stderr)
-        self.assertGreaterEqual(time.monotonic() - start, 30)
-        self.assertLess(time.monotonic() - start, 35)
+        # Assert the production deadline, then exercise a real, shorter poll
+        # timeout through the same failure and child-cleanup path.
+        self.assertEqual(poll_log.read_text(), "30000\n")
+        self.assertGreaterEqual(time.monotonic() - start, 1)
+        self.assertIn(b"did not acknowledge data-source readiness", result.stderr)
         self.assertFalse(self.output.exists())
         self.assert_failed_cleanup(result.stderr)
 
     def test_combined_capture_uses_the_same_ready_ack(self):
-        if os.environ.get("ANETTRACE_TEST_BIN") and isinstance(self, SystemOnlyCliTest):
-            self.skipTest("combined driver test uses no BPF")
         self.env["COMBINED"] = "1"
         self.env["FAKE_MODE"] = "delayed-ready"
         result = subprocess.run([str(self.combined_driver), *self.command()[1:]],
@@ -383,8 +416,6 @@ typedef unsigned long long u64;
         self.assert_clean()
 
     def test_legacy_combined_capture(self):
-        if os.environ.get("ANETTRACE_TEST_BIN") and isinstance(self, SystemOnlyCliTest):
-            self.skipTest("combined driver test uses no BPF")
         self.env["COMBINED"] = "1"
         self.env["FAKE_LEGACY"] = "1"
         result = subprocess.run([str(self.combined_driver), *self.command()[1:]],
@@ -447,23 +478,6 @@ typedef unsigned long long u64;
         self.env["FAKE_LEGACY"] = "1"
         self.assert_ring_capture()
 
-    def assert_ring_capture(self):
-        proc = subprocess.Popen(self.command(ring=True), env=self.env,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        try:
-            time.sleep(1.5)
-            self.assertIsNone(proc.poll())
-            proc.send_signal(signal.SIGINT)
-            _, err = proc.communicate(timeout=8)
-            self.assertEqual(proc.returncode, 0, err)
-            self.assertNotIn("duration_ms:", self.log.read_text())
-            self.assertGreater(self.output.stat().st_size, 0)
-            self.assert_clean()
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.communicate()
-
     def test_perfetto_errors_and_empty_output_are_not_success(self):
         for mode in ("fail", "early-fail", "empty"):
             with self.subTest(mode=mode):
@@ -503,7 +517,21 @@ class AndroidSystemOnlyCaptureTest(SystemOnlyCaptureTest):
 
 
 @unittest.skipUnless(os.environ.get("ANETTRACE_TEST_BIN"), "full CLI binary not supplied")
-class SystemOnlyCliTest(SystemOnlyCaptureTest):
+class SystemOnlyCliTest(CaptureTestCase):
+    # The native and Android drivers cover the full capture state machine.
+    # Keep CLI coverage focused on argument wiring and observable outcomes.
+    test_duration_and_no_network = SystemOnlyCaptureTest.test_duration_and_no_network
+    test_waits_for_delayed_binary_ready_ack = SystemOnlyCaptureTest.test_waits_for_delayed_binary_ready_ack
+    test_legacy_perfetto_without_notify_fd_captures = SystemOnlyCaptureTest.test_legacy_perfetto_without_notify_fd_captures
+    test_ring_waits_for_signal_and_saves = SystemOnlyCaptureTest.test_ring_waits_for_signal_and_saves
+    test_bad_ack_is_rejected_and_child_is_reaped = SystemOnlyCaptureTest.test_bad_ack_is_rejected_and_child_is_reaped
+    test_perfetto_errors_and_empty_output_are_not_success = SystemOnlyCaptureTest.test_perfetto_errors_and_empty_output_are_not_success
+    test_existing_output_and_temporary_files_are_preserved = SystemOnlyCaptureTest.test_existing_output_and_temporary_files_are_preserved
+
+    @classmethod
+    def setUpClass(cls):
+        """Use the supplied CLI binary without compiling unused test drivers."""
+
     def command(self, ring=False, custom="", duration=1):
         cmd = [os.environ["ANETTRACE_TEST_BIN"], "--capture-trace",
                "--system-trace-only", "--duration", str(duration),
