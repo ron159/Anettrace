@@ -38,6 +38,11 @@ on:
 permissions:
   contents: read
 
+# Use a distinct prefix so Linux and Android cannot cancel each other.
+concurrency:
+  group: android-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-android-arm64:
     runs-on: ubuntu-24.04-arm
