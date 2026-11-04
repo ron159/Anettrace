@@ -1514,23 +1514,31 @@ int trace_poll()
 	if (map_fd < 0)
 		return map_fd;
 
+	for (;;) {
 #if defined(LIBBPF_MAJOR_VERSION) && (LIBBPF_MAJOR_VERSION >= 1)
-	pb = perf_buffer__new(map_fd, pages, poll_handler_wrap,
-			      trace_on_lost, NULL, NULL);
+		pb = perf_buffer__new(map_fd, pages, poll_handler_wrap,
+				      trace_on_lost, NULL, NULL);
 #else
-	struct perf_buffer_opts pb_opts = {
-		.sample_cb = poll_handler_wrap,
-		.lost_cb = trace_on_lost,
-	};
+		struct perf_buffer_opts pb_opts = {
+			.sample_cb = poll_handler_wrap,
+			.lost_cb = trace_on_lost,
+		};
 
-	pb = perf_buffer__new(map_fd, pages, &pb_opts);
+		pb = perf_buffer__new(map_fd, pages, &pb_opts);
 #endif
-
-	err = libbpf_get_error(pb);
-	if (err) {
-		pr_err("failed to setup perf_buffer (%zu pages/CPU): %d; "
-		       "try --perf-buffer-pages 1024 on memory-constrained devices\n", pages, err);
-		return err;
+		err = libbpf_get_error(pb);
+		if (!err)
+			break;
+		if (err != -ENOMEM || pages <= 64 || trace_ctx.args.perf_buffer_pages ||
+		    !(trace_ctx.args.capture_trace || trace_ctx.args.perfetto_events)) {
+			pr_err("failed to set up BPF perf buffer (%zu pages/CPU): %s\n",
+			       pages, strerror(-err));
+			return err;
+		}
+		/* libbpf releases partially initialized buffers before returning. */
+		pr_warn("insufficient memory for BPF perf buffer (%zu pages/CPU); "
+			"retrying with %zu pages/CPU\n", pages, pages / 2);
+		pages /= 2;
 	}
 	if (trace_ctx.args.capture_trace) {
 		err = capture_queue_start(queue_bytes);

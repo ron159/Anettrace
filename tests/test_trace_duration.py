@@ -62,8 +62,8 @@ printf("%u %u",exported,printed);
 #define BPF_ANY 0
 struct perf_buffer { int unused; } buffer;
 static int buffer_error, queue_error, map_result = 3, released, poll_result, consume_result;
+static size_t max_buffer_pages = 4096;
 static bool capture_async;
-static size_t trace_perf_buffer_pages(void) { return 4096; }
 static size_t trace_capture_queue_bytes(void) { return CAPTURE_QUEUE_BYTES; }
 static int capture_queue_start(size_t size) { (void)size; printf("queue "); return queue_error; }
 static void capture_queue_tick(void) { printf("tick "); }
@@ -76,22 +76,32 @@ static void ready(void) { printf("enable "); }
 static int raw_poll(void) { printf("raw "); return 0; }
 static struct { void (*trace_ready)(void); int (*raw_poll)(void); } ops = {ready, NULL};
 static struct {
-    struct { unsigned duration, capture_queue_mib; bool ring_buffer, traffic_ui, capture_trace; } args;
+    struct {
+        unsigned duration, perf_buffer_pages;
+        bool ring_buffer, traffic_ui, capture_trace;
+        char *perfetto_events;
+    } args;
     typeof(ops) *ops;
     void *obj;
 } trace_ctx = {.ops = &ops};
+static size_t trace_perf_buffer_pages(void) {
+    return trace_ctx.args.perf_buffer_pages ? trace_ctx.args.perf_buffer_pages : 4096;
+}
 static u64 poll_deadline_ns;
 static int bpf_object__find_map_fd_by_name(void *obj, const char *name) {
     (void)obj; (void)name; return map_result;
 }
 #define poll_handler_wrap NULL
 #define trace_on_lost NULL
-static struct perf_buffer *perf_buffer__new(int fd, int pages, void *sample,
+static int create_error;
+static struct perf_buffer *perf_buffer__new(int fd, size_t pages, void *sample,
         void *lost, void *ctx, void *opts) {
-    (void)fd; (void)pages; (void)sample; (void)lost; (void)ctx; (void)opts;
-    printf("buffer "); return &buffer;
+    (void)fd; (void)sample; (void)lost; (void)ctx; (void)opts;
+    printf("buffer%zu ", pages);
+    create_error = pages > max_buffer_pages ? -ENOMEM : buffer_error;
+    return create_error ? NULL : &buffer;
 }
-static int libbpf_get_error(void *p) { (void)p; return buffer_error; }
+static int libbpf_get_error(void *p) { return p ? 0 : create_error; }
 static int perf_buffer__poll(struct perf_buffer *p, int timeout) {
     (void)p; (void)timeout; printf("poll "); return poll_result;
 }
@@ -109,20 +119,44 @@ printf("%d ", trace_poll());
 poll_result = consume_result = 0;
 queue_error = -EAGAIN;
 printf("%d ", trace_poll());
-buffer_error = -ENOMEM;
+queue_error = 0;
+max_buffer_pages = 1024;
+printf("%d ", trace_poll());
+trace_ctx.args.perf_buffer_pages = 4096;
+printf("%d ", trace_poll());
+trace_ctx.args.perf_buffer_pages = 0;
+trace_ctx.args.capture_trace = false;
+printf("%d ", trace_poll());
+trace_ctx.args.perfetto_events = "capture.jsonl";
+max_buffer_pages = 64;
+printf("%d ", trace_poll());
+max_buffer_pages = 0;
+printf("%d ", trace_poll());
+max_buffer_pages = 4096;
+buffer_error = -EPERM;
 printf("%d ", trace_poll());
 map_result = -ENOENT;
 printf("%d ", trace_poll());
 ops.raw_poll = raw_poll;
 printf("%d %d", trace_poll(), released);
 ''')
-        self.assertEqual(result, ["buffer", "enable", "poll", "0",
-                                  "buffer", "queue", "enable", "poll", "tick",
+        self.assertEqual(result, ["buffer4096", "enable", "poll", "0",
+                                  "buffer4096", "queue", "enable", "poll", "tick",
                                   "disable", "consume", "system-stop", "cutoff", "drained", "0",
-                                  "buffer", "queue", "enable", "poll",
+                                  "buffer4096", "queue", "enable", "poll",
                                   "disable", "consume", "system-stop", "cutoff", "drained", "-5",
-                                  "buffer", "queue", str(-errno.EAGAIN), "buffer", "-12", "-2",
-                                  "enable", "raw", "0", "4"])
+                                  "buffer4096", "queue", str(-errno.EAGAIN),
+                                  "buffer4096", "buffer2048", "buffer1024", "queue", "enable",
+                                  "poll", "tick", "disable", "consume", "system-stop", "cutoff",
+                                  "drained", "0",
+                                  "buffer4096", str(-errno.ENOMEM),
+                                  "buffer4096", str(-errno.ENOMEM),
+                                  "buffer4096", "buffer2048", "buffer1024", "buffer512",
+                                  "buffer256", "buffer128", "buffer64", "enable", "poll", "0",
+                                  "buffer4096", "buffer2048", "buffer1024", "buffer512",
+                                  "buffer256", "buffer128", "buffer64", str(-errno.ENOMEM),
+                                  "buffer4096", str(-errno.EPERM), str(-errno.ENOENT),
+                                  "enable", "raw", "0", "6"])
 
     def run_capture(self, mode, ring=False):
         source = (helpers.ROOT / "src/trace.c").read_text()
