@@ -148,6 +148,11 @@ class PerfettoExporter:
         self.packet_flows: dict[tuple[int, str], set[int]] = {}
         self.flow_endpoints: dict[int, set[tuple[str, int]]] = {}
         self.socket_owners: dict[int, tuple[int, str]] = {}
+        # Older JSONL links carry neither a protocol nor an skb identity kind.
+        # A matching UDP ingress at a different timestamp establishes a shared
+        # instance: untracked packet IDs include the observation timestamp.
+        self.udp_rx_anchors: dict[int, int] = {}
+        self.rx_io_calls: set[tuple[int, int]] = set()
         self.index_socket_evidence()
 
     def index_socket_evidence(self) -> None:
@@ -158,6 +163,15 @@ class PerfettoExporter:
             packet = nonzero_id(record.get("packet_id"))
             direction = str(record.get("direction", "unknown"))
             packet_key = (packet, direction if direction in ("tx", "rx") else "unknown")
+            if self.trace_tags and record.get("type") == "rx_read_start":
+                io = nonzero_id(record.get("io_id"))
+                call = nonzero_id(record.get("call_id"))
+                if io and call:
+                    self.rx_io_calls.add((io, call))
+            if (self.trace_tags and packet and record.get("type") == "packet_event"
+                    and direction == "rx" and int(record.get("proto_l4", 0) or 0) == 17
+                    and packet_flow_anchor(record)):
+                self.udp_rx_anchors.setdefault(packet, int(record["ts_ns"]))
             if packet and flow:
                 self.packet_flows.setdefault(packet_key, set()).add(flow)
             if flow and record.get("type") in ("flow_start", "flow_end"):
@@ -719,10 +733,27 @@ class PerfettoExporter:
             )
 
     def export_packet_io_link(self, record: dict[str, Any]) -> None:
+        if self.trace_tags:
+            packet = nonzero_id(record.get("packet_id"))
+            call = nonzero_id(record.get("call_id"))
+            io = nonzero_id(record.get("io_id"))
+            if (not packet or not call or not io or record.get("direction") != "rx"
+                    or record.get("evidence") not in ("copy_attempt", "receive_release")):
+                return
+            if "proto_l4" in record or "packet_identity" in record:
+                if (int(record.get("proto_l4", 0) or 0) != 17
+                        or record.get("packet_identity") != "skb_instance"):
+                    return
+            else:
+                if packet not in self.udp_rx_anchors or self.udp_rx_anchors[packet] == int(record["ts_ns"]):
+                    return
+                if record.get("evidence") == "copy_attempt" and (io, call) not in self.rx_io_calls:
+                    return
         record = self.chain_record(record)
+        copy_label = "packet copy attempt" if self.trace_tags else "packet copy to application"
         name = ("packet submitted by call" if record.get("direction") == "tx"
                 else ("packet released by receive" if record.get("evidence") == "receive_release"
-                      else "packet copy to application"))
+                      else copy_label))
         self.event(
             int(record["ts_ns"]), self.thread_track(record),
             TrackEvent.TYPE_INSTANT,
@@ -1109,7 +1140,7 @@ class PerfettoExporter:
             if record_type == "clock_snapshot":
                 continue
             if self.trace_tags and record_type not in (
-                "socket_create", "packet_event", "network_syscall",
+                "socket_create", "packet_event", "packet_io_link", "network_syscall",
                 "lost_events", "trace_end", "rx_context", "probe_status",
             ):
                 continue

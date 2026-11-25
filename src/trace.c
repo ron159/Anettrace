@@ -1045,6 +1045,8 @@ static int trace_resolve_symbol(trace_t *trace)
 static int trace_prepare_traces()
 {
 	const char *tracing_path = get_tracing_path();
+	const char *functions[TRACE_MAX];
+	size_t count = 0;
 	char name[256];
 	trace_t *trace;
 	int err;
@@ -1057,6 +1059,11 @@ static int trace_prepare_traces()
 
 	trace_exec_cond();
 	pr_debug("begin to resolve kernel symbol...\n");
+	trace_for_each(trace) {
+		if (trace_is_enable(trace) && !trace_is_invalid(trace) && trace_is_func(trace))
+			functions[count++] = trace->name;
+	}
+	sym_prepare_name_index(functions, count);
 
 	/* make the programs that target kernel function can't be found
 	 * load manually.

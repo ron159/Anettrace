@@ -1958,6 +1958,9 @@ static void export_packet_io_link(const detail_event_t *detail, struct flow_stat
 	struct proto_buffer link = {};
 	struct native_track *thread;
 	char tag[16], name[128];
+	const char *copy_label = trace_ctx.args.trace_tags ?
+		"packet copy attempt" : "packet copy to application";
+	const char *identity = event->key_generation ? "skb_instance" : "untracked_event";
 	const char *evidence = detail->io_role == 1 ? "submission_context" :
 		(detail->io_role == 2 ? "copy_attempt" : "receive_release");
 
@@ -1990,27 +1993,36 @@ static void export_packet_io_link(const detail_event_t *detail, struct flow_stat
 		fprintf(export_file,
 			"{\"schema\":\"%s\",\"type\":\"packet_io_link\","
 			"\"ts_ns\":%llu,\"io_id\":\"%016llx\",\"call_id\":\"%016llx\","
-			"\"packet_id\":\"%016llx\",\"flow_id\":\"%016llx\","
+			"\"packet_id\":\"%016llx\",\"packet_identity\":\"%s\","
+			"\"proto_l4\":%u,\"flow_id\":\"%016llx\","
 			"\"socket_id\":\"%016llx\",\"flow_tag\":\"%s\","
 			"\"tid\":%u,\"tgid\":%u,\"direction\":\"%s\","
 			"\"offset\":%u,\"copy_bytes\":%u,\"evidence\":\"%s\"}\n",
 			PERFETTO_SCHEMA, event->pkt.ts, io_id, call_id, pkt_id,
-			flow ? flow->id : 0, socket_id, tag, detail->io_tid, detail->io_tgid,
+			identity, event->pkt.proto_l4, flow ? flow->id : 0, socket_id, tag,
+			detail->io_tid, detail->io_tgid,
 			detail->io_role == 1 ? "tx" : "rx", detail->io_offset, detail->io_bytes,
 			evidence);
-	if (!native_file || trace_ctx.args.trace_tags)
+	/* The receive call can follow ingress by seconds, and multiple reads
+	 * (e.g. MSG_PEEK) can observe one skb. Keep each direct observation at
+	 * its own timestamp instead of assigning a single call to ingress. */
+	if (!native_file || (trace_ctx.args.trace_tags &&
+	    (event->pkt.proto_l4 != IPPROTO_UDP || !event->key_generation || !call_id ||
+	     (detail->io_role != 2 && detail->io_role != 3))))
 		return;
 	thread = native_thread_track(detail->io_tgid, detail->io_tid, detail->task);
 	if (!thread)
 		return;
 	snprintf(name, sizeof(name), "%s%s%s", tag, tag[0] ? " · " : "",
 		detail->io_role == 1 ? "packet submitted by call" :
-		(detail->io_role == 2 ? "packet copy to application" : "packet released by receive"));
+		(detail->io_role == 2 ? copy_label : "packet released by receive"));
 	native_event_start(&link, 3, thread->uuid, name, "anettrace.io.link");
 	native_event_flow(&link, pkt_id, false);
 	native_event_flow(&link, io_id, false);
 	native_event_flow(&link, call_id, false);
 	native_annotation_id(&link, "packet_id", pkt_id);
+	native_annotation_string(&link, "packet_identity", identity);
+	native_annotation_uint(&link, "proto_l4", event->pkt.proto_l4);
 	native_annotation_id(&link, "io_id", io_id);
 	native_annotation_id(&link, "call_id", call_id);
 	native_annotation_id(&link, "flow_id", flow ? flow->id : 0);

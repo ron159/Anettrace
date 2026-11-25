@@ -259,8 +259,17 @@ for (unsigned i=0; i<3; i++) {
     printf("%u %llu %llu %u ", detail.key_generation, detail.io_start_ts,
         detail.syscall_start_ts, detail.io_role);
 }
+/* The same copy helper can run under a send. A UDP receive association
+ * requires an active read; preserve the existing TCP control case above. */
+for (int tx=1; tx>=0; tx--) {
+    active.tx=tx;
+    detail_event_t detail = {.pkt.proto_l4=IPPROTO_UDP};
+    perfetto_record_identity(&detail, 1, 2, 0);
+    printf("%u %llu %llu %u ", detail.key_generation, detail.io_start_ts,
+        detail.syscall_start_ts, detail.io_role);
+}
 ''')
-        self.assertEqual(result, "42 0 0 0 42 0 0 0 42 99 9 2".split())
+        self.assertEqual(result, "42 0 0 0 42 0 0 0 42 99 9 2 42 0 0 0 42 10 9 2".split())
 
 
 if __name__ == "__main__":

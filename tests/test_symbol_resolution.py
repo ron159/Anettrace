@@ -21,18 +21,25 @@ class SymbolResolutionTests(unittest.TestCase):
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-static bool fail_index_allocation;
+static bool fail_index_allocation, fail_index_growth;
 static void *index_calloc(size_t n, size_t size) {
     return fail_index_allocation ? NULL : calloc(n, size);
 }
+static void *index_realloc(void *p, size_t size) {
+    return p && fail_index_growth ? NULL : realloc(p, size);
+}
 #define calloc index_calloc
+#define realloc index_realloc
 static char *proc_syms;
 static int sym_init_data(void) { return 0; }
 ''' + constants + resolver + f'''
 int main(int argc, char **argv) {{
-    fail_index_allocation = argc > 1;
+    fail_index_allocation = argc > 1 && !strcmp(argv[1], "no-index");
+    fail_index_growth = argc > 1 && !strcmp(argv[1], "no-growth");
     proc_syms = strdup({json.dumps(fixture)});
     char result[512];
+    const char *const wanted[] = {{{json.dumps(name or "unrelated")}}};
+    sym_prepare_name_index(wanted, 1);
     {setup}
     memset(result, 'X', sizeof(result));
     int status = sym_search_unique({'NULL' if name is None else json.dumps(name)},
@@ -54,9 +61,10 @@ int main(int argc, char **argv) {{
             self.assertEqual(result.returncode, 0, result.stderr.decode())
             result = subprocess.run([str(binary)], capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr.decode())
-            fallback = subprocess.run([str(binary), 'no-index'], capture_output=True)
-            self.assertEqual(fallback.returncode, 0, fallback.stderr.decode())
-            self.assertEqual(fallback.stdout, result.stdout)
+            for failure in ('no-index', 'no-growth'):
+                fallback = subprocess.run([str(binary), failure], capture_output=True)
+                self.assertEqual(fallback.returncode, 0, fallback.stderr.decode())
+                self.assertEqual(fallback.stdout, result.stdout)
         status, buffer = result.stdout.split(b'\n', 1)
         self.assertEqual(len(buffer), 512)
         written_size = size if output else 0
@@ -68,7 +76,9 @@ int main(int argc, char **argv) {{
         fixture = ('00000000 d duplicate\n00000000 T plain\n'
                    '00000000 t variant.isra.42 [driver]\n00000000 t duplicate\n')
         self.assertEqual(self.query(fixture, 'plain', setup=r'''
+    const char *const names[] = {"plain", "variant", "duplicate"};
     for (int cycle = 0; cycle < 2; cycle++) {
+        sym_prepare_name_index(names, 3);
         if (sym_search_unique("plain", result, sizeof(result), false) != SYM_KERNEL ||
             strcmp(result, "plain")) return 1;
         if (sym_search_unique("variant.", result, sizeof(result), true) != SYM_MODULE ||
@@ -78,6 +88,20 @@ int main(int argc, char **argv) {{
         sym_release_name_index();
     }
 '''), (2, 'plain'))
+
+    def test_scoped_index_retains_families_and_falls_back_for_other_queries(self):
+        fixture = ('00 T net.isra.0\n00 T netlink\n00 r unrelated\n'
+                   '00 r net.unrelated [driver]\n00 t other\n')
+        self.assertEqual(self.query(fixture, 'net', setup=r'''
+    if (!fail_index_allocation && !fail_index_growth && name_count != 2) return 1;
+    if (sym_search_unique("net.", result, sizeof(result), true) != SYM_KERNEL) return 2;
+    if (sym_search_unique("net", result, sizeof(result), true) != SYM_AMBIGUOUS) return 3;
+    if (sym_search_unique("other", result, sizeof(result), false) != SYM_KERNEL) return 4;
+    const char *const empty_family[] = {"missing"};
+    sym_prepare_name_index(empty_family, 1);
+    if (name_count || sym_search_unique("missing.", result, sizeof(result), true)) return 5;
+    if (sym_search_unique("netlink", result, sizeof(result), false) != SYM_KERNEL) return 6;
+'''), (0, ''))
 
     def test_duplicate_zero_addresses_are_ambiguous(self):
         self.assertEqual(self.query(

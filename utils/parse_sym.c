@@ -211,7 +211,8 @@ struct symbol_record {
 
 static struct symbol_record *name_index;
 static size_t name_count;
-static bool index_attempted;
+static struct symbol_record *wanted_names;
+static size_t wanted_count;
 
 /* Keep the original address-ordered text intact for stack symbolization. */
 static bool next_symbol_record(const char **next, struct symbol_record *record)
@@ -269,31 +270,19 @@ static int compare_symbol_names(const void *left, const void *right)
 	return order ? order : (a->length > b->length) - (a->length < b->length);
 }
 
-static void build_name_index(void)
+static size_t base_length(const struct symbol_record *record)
 {
-	const char *next = proc_syms;
-	struct symbol_record record;
-	size_t capacity = 0;
+	const char *dot = memchr(record->name, '.', record->length);
 
-	index_attempted = true;
-	while (*next) {
-		capacity++;
-		next = strchr(next, '\n');
-		if (!next)
-			break;
-		next++;
-	}
-	if (!capacity)
-		return;
-	name_index = calloc(capacity, sizeof(*name_index));
-	if (!name_index)
-		return;
+	return dot ? (size_t)(dot - record->name) : record->length;
+}
 
-	next = proc_syms;
-	while (next_symbol_record(&next, &record))
-		name_index[name_count++] = record;
-	if (name_count)
-		qsort(name_index, name_count, sizeof(*name_index), compare_symbol_names);
+static bool indexed_family(const struct symbol_record *record)
+{
+	struct symbol_record key = { .name = record->name, .length = base_length(record) };
+
+	return bsearch(&key, wanted_names, wanted_count, sizeof(*wanted_names),
+		       compare_symbol_names) != NULL;
 }
 
 void sym_release_name_index(void)
@@ -301,7 +290,54 @@ void sym_release_name_index(void)
 	free(name_index);
 	name_index = NULL;
 	name_count = 0;
-	index_attempted = false;
+	free(wanted_names);
+	wanted_names = NULL;
+	wanted_count = 0;
+}
+
+/* The caller keeps the base names (up to the first dot) alive until release.
+ * Save all types in each requested family to detect ambiguous attach names. */
+void sym_prepare_name_index(const char *const *names, size_t count)
+{
+	const char *next;
+	struct symbol_record record;
+	size_t capacity = 0, i;
+
+	sym_release_name_index();
+	if (!count || sym_init_data())
+		return;
+	wanted_names = calloc(count, sizeof(*wanted_names));
+	if (!wanted_names)
+		return;
+	wanted_count = count;
+	for (i = 0; i < count; i++) {
+		wanted_names[i].name = names[i];
+		wanted_names[i].length = strcspn(names[i], ".");
+	}
+	qsort(wanted_names, count, sizeof(*wanted_names), compare_symbol_names);
+
+	next = proc_syms;
+	while (next_symbol_record(&next, &record)) {
+		if (!indexed_family(&record))
+			continue;
+		if (name_count == capacity) {
+			struct symbol_record *grown;
+
+			if (capacity > (size_t)-1 / sizeof(*name_index) / 2)
+				goto fallback;
+			capacity = capacity ? capacity * 2 : count;
+			grown = realloc(name_index, capacity * sizeof(*name_index));
+			if (!grown)
+				goto fallback;
+			name_index = grown;
+		}
+		name_index[name_count++] = record;
+	}
+	if (name_count)
+		qsort(name_index, name_count, sizeof(*name_index), compare_symbol_names);
+	return;
+fallback:
+	sym_release_name_index();
 }
 
 static size_t symbol_lower_bound(const struct symbol_record *key)
@@ -323,21 +359,22 @@ int sym_search_unique(const char *name, char *result, size_t result_size, bool p
 	struct symbol_record key, record, match = {};
 	const char *next;
 	unsigned matches = 0;
-	bool functions_only = true;
+	bool functions_only = true, indexed;
 	size_t index;
 
 	if (!name || !*name || !result || !result_size || sym_init_data())
 		goto unavailable;
 	key.name = name;
 	key.length = strlen(name);
-	if (!index_attempted)
-		build_name_index();
+	/* An arbitrary prefix without a dot can span multiple base names. */
+	indexed = wanted_names && (!partial || memchr(name, '.', key.length)) &&
+		  indexed_family(&key);
 
 scan_records:
 	index = symbol_lower_bound(&key);
 	next = proc_syms;
 	for (;;) {
-		if (name_index) {
+		if (indexed) {
 			if (index == name_count)
 				break;
 			record = name_index[index++];
@@ -346,7 +383,7 @@ scan_records:
 		}
 		if (record.length < key.length || memcmp(record.name, key.name, key.length) ||
 		    (!partial && record.length != key.length)) {
-			if (name_index)
+			if (indexed)
 				break;
 			continue;
 		}

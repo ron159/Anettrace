@@ -799,6 +799,17 @@ static void finish_trace(void)
 		event_count, ctx_count);
 }
 
+static int prepare_network_capture(void)
+{
+	if (trace_ctx.stop)
+		return -EINTR;
+	if (trace_bpf_load_and_attach()) {
+		pr_err("failed to load bpf\n");
+		return -1;
+	}
+	return trace_ctx.stop ? -EINTR : 0;
+}
+
 int main(int argc, char *argv[])
 {
 	int capture_err = 0;
@@ -817,7 +828,8 @@ int main(int argc, char *argv[])
 					trace_ctx.args.duration,
 					trace_ctx.args.trace_profile,
 					trace_ctx.args.perfetto_config,
-					trace_ctx.args.ring_buffer, true))
+					trace_ctx.args.ring_buffer, NULL,
+					&system_capture_stop))
 			return -1;
 		return trace_capture_wait_system(&system_capture_stop) ? -1 : 0;
 	}
@@ -829,16 +841,13 @@ int main(int argc, char *argv[])
 	if (perfetto_export_open(trace_ctx.args.perfetto_events))
 		goto err;
 
-	if (trace_bpf_load_and_attach()) {
-		pr_err("failed to load bpf\n");
-		goto err;
-	}
 	if (trace_ctx.args.capture_trace) {
 		if (trace_capture_start(trace_ctx.args.output,
 					trace_ctx.args.duration,
 					trace_ctx.args.trace_profile,
 					trace_ctx.args.perfetto_config,
-					trace_ctx.args.ring_buffer, false))
+					trace_ctx.args.ring_buffer, prepare_network_capture,
+					&system_capture_stop))
 			goto err;
 		if ((trace_ctx.args.ring_buffer ?
 		     perfetto_export_native_open_ring(
@@ -846,6 +855,8 @@ int main(int argc, char *argv[])
 			     trace_ctx.args.duration) :
 			     perfetto_export_native_open(trace_capture_network_path())))
 			goto err;
+	} else if (prepare_network_capture()) {
+		goto err;
 	}
 	if (trace_ctx.args.traffic) {
 		if (traffic_start(&trace_ctx.args, &trace_ctx.bpf_args))

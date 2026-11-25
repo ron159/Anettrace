@@ -57,6 +57,8 @@ static int sym_search_unique(const char *name, char *out, size_t size, bool part
     snprintf(out, size, "%s", resolved);
     return SYM_KERNEL;
 }
+#define TRACE_MAX 2
+static void sym_prepare_name_index(const char *const *names, size_t count) {}
 static int sym_get_type(const char *name) {
     char out[64];
     int result=sym_search_unique(name,out,sizeof(out),false);

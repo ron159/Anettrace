@@ -41,7 +41,8 @@ class PerfettoConverterTest(unittest.TestCase):
         self.assertTrue(all(not e.flow_ids and not e.terminating_flow_ids for e in events))
         categories = {c for e in events for c in e.categories}
         self.assertLessEqual(categories, {"anettrace.socket", "anettrace.packet",
-                                         "anettrace.syscall", "anettrace.metadata"})
+                                         "anettrace.syscall", "anettrace.metadata",
+                                         "anettrace.io.link"})
         self.assertIn("socket allocation", {e.name for e in events})
         self.assertNotIn("socket lifetime", {e.name for e in events})
         packets = [e for e in events if "anettrace.packet" in e.categories]
@@ -52,6 +53,33 @@ class PerfettoConverterTest(unittest.TestCase):
             self.assertEqual(args[key], str(packet[key]), key)
         self.assertEqual(args["socket_id"], "0000000000001001")
         self.assertIn("anettrace.syscall", categories)
+
+    def test_trace_tags_udp_read_evidence_is_per_observation(self) -> None:
+        records = self.chain_records()
+        first = next(r for r in records if r["type"] == "packet_io_link")
+        # A legacy link needs a matching UDP ingress. A new link identifies
+        # the skb directly, even when the ingress is outside the capture.
+        records.extend([
+            dict(first, ts_ns=first["ts_ns"] + 2_000_000_000,
+                 call_id="6002", evidence="receive_release"),
+            dict(first, packet_id="abcd", call_id="6003",
+                 proto_l4=17, packet_identity="skb_instance"),
+            dict(first, packet_id="ffff"),
+            dict(first, packet_identity="untracked_event", proto_l4=17),
+            dict(first, packet_identity="skb_instance", proto_l4=6),
+            dict(first, direction="tx"), dict(first, call_id="0"),
+            dict(first, io_id="0"), dict(first, evidence="socket_readable_callback"),
+            dict(first, evidence="copy_attempt", io_id="5555"),
+        ])
+        trace = Trace.FromString(MODULE.PerfettoExporter(records, trace_tags=True).serialize())
+        links = [p.track_event for p in trace.packet if "anettrace.io.link" in p.track_event.categories]
+        pairs = [dict((arg.name, arg.string_value) for arg in link.debug_annotations)
+                 for link in links]
+        self.assertEqual([(p["packet_id"], p["call_id"], p["evidence"]) for p in pairs],
+                         [("3001", "6001", "copy_attempt"), ("3001", "6002", "receive_release"),
+                          ("abcd", "6003", "copy_attempt")])
+        self.assertTrue(all(not link.flow_ids and not link.terminating_flow_ids for link in links))
+        self.assertIn("copy attempt", links[0].name)
 
     def socket_overview_records(self) -> list[dict]:
         clock = MODULE.read_records(ROOT / "tests/fixtures/perfetto-events.jsonl")[0]

@@ -370,6 +370,12 @@ static int wait_perfetto_stop(int *status, bool *stalled)
 		now_ms = (u64)clock.tv_sec * 1000 + clock.tv_nsec / 1000000;
 		if (stat(capture.system_trace, &file)) {
 			int err = errno;
+			/* A cancelled startup can precede Perfetto creating its file. */
+			if (err == ENOENT && last_size < 0 &&
+			    now_ms - start_ms < PERFETTO_STOP_TIMEOUT_MS) {
+				usleep(100000);
+				continue;
+			}
 			pr_err("cannot inspect Perfetto stop progress: system_trace='%s' bytes=unknown: %s\n",
 			       capture.system_trace, strerror(err));
 			return -err;
@@ -524,7 +530,45 @@ out:
 	return 0;
 }
 
-static int wait_perfetto_ready(int fd)
+/* A failing network setup can cancel the child before it reaches exec.
+ * Block cancellation across fork so it cannot run the parent's signal handler. */
+static pid_t fork_perfetto(void)
+{
+	sigset_t blocked, saved;
+	pid_t pid;
+	int err, status;
+
+	sigemptyset(&blocked);
+	sigaddset(&blocked, SIGINT);
+	sigaddset(&blocked, SIGTERM);
+	if (sigprocmask(SIG_BLOCK, &blocked, &saved))
+		return -1;
+	pid = fork();
+	err = errno;
+	if (!pid) {
+		if (signal(SIGTERM, SIG_DFL) == SIG_ERR ||
+		    signal(SIGINT, SIG_DFL) == SIG_ERR)
+			_exit(126);
+		sigdelset(&saved, SIGTERM);
+		sigdelset(&saved, SIGINT);
+	}
+	if (sigprocmask(SIG_SETMASK, &saved, NULL)) {
+		err = errno;
+		if (!pid)
+			_exit(126);
+		if (pid > 0) {
+			kill(pid, SIGKILL);
+			while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+				;
+		}
+		pid = -1;
+	}
+	if (pid < 0)
+		errno = err;
+	return pid;
+}
+
+static int wait_perfetto_ready(int fd, int timeout_ms)
 {
 	struct pollfd ready = { .fd = fd, .events = POLLIN };
 	unsigned char status;
@@ -534,7 +578,7 @@ static int wait_perfetto_ready(int fd)
 	/* --notify-fd writes one binary status byte after data-source startup.
 	 * A signal cancels startup; do not restart a fresh timeout after EINTR.
 	 */
-	result = poll(&ready, 1, PERFETTO_READY_TIMEOUT_MS);
+	result = poll(&ready, 1, timeout_ms);
 	if (result < 0)
 		return -errno;
 	if (!result)
@@ -662,13 +706,19 @@ static void cleanup_temporary(bool failed)
 
 int trace_capture_start(const char *output, __u32 duration_s,
 			const char *profile, const char *perfetto_config,
-			bool ring_buffer, bool system_only)
+			bool ring_buffer, int (*prepare_network)(void),
+			const volatile sig_atomic_t *stop)
 {
+	bool system_only = !prepare_network;
+	const unsigned int allowance_s = (system_only ? 1 : 2) *
+					(PERFETTO_READY_TIMEOUT_MS / 1000);
+	struct timespec launched, now;
+	int ready_timeout_ms = PERFETTO_READY_TIMEOUT_MS;
 	const char *profile_name = perfetto_config ? "custom" : profile;
 	char notify_fd[16];
 	char *perfetto_args[10];
 	bool notify_ready;
-	int arg_count = 0;
+	int arg_count;
 	int status, err;
 	int config_fd = -1, system_fd = -1;
 	int ready_pipe[2] = { -1, -1 };
@@ -677,7 +727,7 @@ int trace_capture_start(const char *output, __u32 duration_s,
 	capture.system_only = system_only;
 	if (!duration_s || (!profile && !perfetto_config))
 		return -EINVAL;
-	if (duration_s > UINT_MAX - PERFETTO_READY_TIMEOUT_MS / 1000)
+	if (duration_s > UINT_MAX - allowance_s)
 		return -EOVERFLOW;
 	if (!perfetto_config && strcmp(profile, "full") &&
 	    strcmp(profile, "sched"))
@@ -705,7 +755,7 @@ int trace_capture_start(const char *output, __u32 duration_s,
 	}
 	capture.ring_buffer = ring_buffer;
 	capture.window_s = duration_s;
-	err = write_config(duration_s + PERFETTO_READY_TIMEOUT_MS / 1000,
+	err = write_config(duration_s + allowance_s,
 			   profile, perfetto_config, ring_buffer);
 	if (err) {
 		pr_err("failed to write Perfetto config %s: %s\n",
@@ -731,6 +781,12 @@ int trace_capture_start(const char *output, __u32 duration_s,
 		capture.system_created = true;
 	}
 #endif
+launch:
+	if (*stop) {
+		err = -EINTR;
+		goto fail;
+	}
+	arg_count = 0;
 	perfetto_args[arg_count++] = "perfetto";
 	if (notify_ready) {
 		if (pipe(ready_pipe) ||
@@ -750,7 +806,11 @@ int trace_capture_start(const char *output, __u32 duration_s,
 	perfetto_args[arg_count++] = system_fd >= 0 ? "-" : capture.system_trace;
 	perfetto_args[arg_count] = NULL;
 
-	capture.perfetto_pid = fork();
+	if (prepare_network && clock_gettime(CLOCK_BOOTTIME, &launched)) {
+		err = -errno;
+		goto fail;
+	}
+	capture.perfetto_pid = fork_perfetto();
 	if (capture.perfetto_pid < 0) {
 		err = -errno;
 		goto fail;
@@ -788,7 +848,60 @@ int trace_capture_start(const char *output, __u32 duration_s,
 	if (notify_ready) {
 		close(ready_pipe[1]);
 		ready_pipe[1] = -1;
-		err = wait_perfetto_ready(ready_pipe[0]);
+	}
+	if (prepare_network) {
+		long long elapsed_ms;
+
+		err = prepare_network();
+		if (err)
+			goto fail;
+		prepare_network = NULL; /* The BPF setup runs exactly once. */
+		if (clock_gettime(CLOCK_BOOTTIME, &now)) {
+			err = -errno;
+			goto fail;
+		}
+		elapsed_ms = (long long)(now.tv_sec - launched.tv_sec) * 1000 +
+			     (now.tv_nsec - launched.tv_nsec) / 1000000;
+		/* Keep the original bounded duration plus its full readiness
+		 * allowance available even when the verifier ran unusually long.
+		 * Replace only the pre-capture system trace, before network output
+		 * has been opened. Ring captures have no Perfetto time limit.
+		 */
+		if (!ring_buffer && elapsed_ms >= PERFETTO_READY_TIMEOUT_MS) {
+			if (notify_ready) {
+				err = wait_perfetto_ready(ready_pipe[0], 0);
+				if (err)
+					goto fail;
+				close(ready_pipe[0]);
+				ready_pipe[0] = -1;
+			}
+			err = stop_perfetto(&status);
+			if (err)
+				goto fail;
+			capture.started = false;
+			if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+				err = -ECHILD;
+				goto fail;
+			}
+			if (unlink(capture.system_trace)) {
+				err = -errno;
+				goto fail;
+			}
+			capture.system_created = false;
+			capture.child_reaped = false;
+			capture.stop_requested = false;
+			pr_info("restarting system Perfetto after slow BPF startup to preserve the full capture window\n");
+			goto launch;
+		}
+		ready_timeout_ms = elapsed_ms < PERFETTO_READY_TIMEOUT_MS ?
+				   PERFETTO_READY_TIMEOUT_MS - (int)elapsed_ms : 0;
+	}
+	if (*stop) {
+		err = -EINTR;
+		goto fail;
+	}
+	if (notify_ready) {
+		err = wait_perfetto_ready(ready_pipe[0], ready_timeout_ms);
 		close(ready_pipe[0]);
 		ready_pipe[0] = -1;
 		if (err) {

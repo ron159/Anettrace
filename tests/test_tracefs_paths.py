@@ -198,6 +198,8 @@ static void trace_set_invalid_reason(trace_t *trace, const char *reason) {
 static void trace_group_enable(const char *group, int value) { (void)group; (void)value; }
 static void trace_exec_cond(void) {}
 static void trace_prepare_status(void) {}
+#define TRACE_MAX 2
+static void sym_prepare_name_index(const char *const *names, size_t count) {}
 static int sym_get_type(const char *name) { (void)name; return 1; }
 static int sym_search_unique(const char *name, char *result, size_t size, bool partial) {
     (void)partial; snprintf(result, size, "%s", name); return SYM_KERNEL;
