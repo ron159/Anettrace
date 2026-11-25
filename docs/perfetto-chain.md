@@ -12,6 +12,9 @@
 `socket_id`、`packet_id`、`skb_id`、`flow_id`、`io_id`、`call_id`、IP ID（可用时）、
 地址、端口、TCP/ICMP/DNS 字段和执行上下文；缺失的证据仍保留未知。
 socket 创建的起止时间作为 `socket allocation` 显示，参数含同一 `socket_id`。
+UDP 收包与应用读取之间的直接证据显示在读取线程的 `anettrace.io.link` 事件中。
+用同一 `packet_id` 找到收包，用 `call_id` 找到应用调用。一次拷贝尝试或缓冲区释放
+各是一条观测，同一个包可以对应多次读取。读取结果见系统调用返回值。
 不显示关联箭头、socket 生命周期长条、协议层 I/O 切片或 socket packet 镜像。
 
 ```sh

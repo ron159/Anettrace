@@ -797,7 +797,9 @@ __attribute__((noinline)) int perfetto_record_identity(detail_event_t *detail,
 				  func, func_status);
 	io = bpf_map_lookup_elem(&m_perfetto_io, &task);
 	if (io) {
-		bool copy = perfetto_rx_copy(func);
+		/* A UDP copy probe reached inside a send is not receive evidence. */
+		bool copy = perfetto_rx_copy(func) &&
+			(detail->pkt.proto_l4 != IPPROTO_UDP || !io->tx);
 		bool release = func == INDEX_skb_consume_udp && !io->tx &&
 			io->socket_key == sk_key;
 		bool tx = io->tx && detail->direction == PACKET_DIRECTION_TX &&

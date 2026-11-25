@@ -241,6 +241,18 @@ int main(int argc, char **argv) {
         strcpy(call.waker_task,"worker");
         export_network_syscall(&call,0,false);
     }
+    if (trace_ctx.args.trace_tags) {
+        detail_event_t rx = {.key=990,.key_generation=1,.io_tid=7,.io_tgid=6,
+            .io_start_ts=1500,.syscall_start_ts=1400,.io_role=2,.direction=PACKET_DIRECTION_RX};
+        rx.pkt.proto_l4=IPPROTO_UDP; rx.pkt.ts=2000;
+        export_packet_io_link(&rx,NULL);    /* peek copy */
+        rx.io_start_ts++; rx.syscall_start_ts++; rx.pkt.ts+=2000000000ULL;
+        rx.io_role=3; export_packet_io_link(&rx,NULL);  /* later receive on the same skb */
+        rx.pkt.proto_l4=IPPROTO_TCP; export_packet_io_link(&rx,NULL);
+        rx.pkt.proto_l4=IPPROTO_UDP; rx.key_generation=0; export_packet_io_link(&rx,NULL);
+        rx.key_generation=1; rx.syscall_start_ts=0; export_packet_io_link(&rx,NULL);
+        rx.syscall_start_ts=1400; rx.io_multiple=1; export_packet_io_link(&rx,NULL);
+    }
     fclose(native_file); fclose(export_file);
     return 0;
 }
@@ -289,8 +301,14 @@ int main(int argc, char **argv) {
             events.append((timestamp, event))
             raw = raw[12 + length:]
         self.assertTrue(all(not e.flow_ids and not e.terminating_flow_ids for _, e in events))
-        self.assertTrue(all(c in ("anettrace.packet", "anettrace.socket", "anettrace.syscall")
-                            for _, e in events for c in e.categories))
+        self.assertTrue(all(c in ("anettrace.packet", "anettrace.socket", "anettrace.syscall",
+                                  "anettrace.io.link") for _, e in events for c in e.categories))
+        links = [self.args(e) for _, e in events if "anettrace.io.link" in e.categories]
+        self.assertEqual([link["evidence"] for link in links], ["copy_attempt", "receive_release"])
+        self.assertEqual({link["packet_identity"] for link in links}, {"skb_instance"})
+        self.assertEqual({link["proto_l4"] for link in links}, {"17"})
+        self.assertEqual(links[0]["packet_id"], links[1]["packet_id"])
+        self.assertNotEqual(links[0]["call_id"], links[1]["call_id"])
         allocation = [(ts, e) for ts, e in events if e.name == "socket allocation"]
         self.assertEqual([ts for ts, _ in allocation], [90])
         self.assertEqual(self.args(allocation[0][1])["socket_id"], self.args(self.events_in("anettrace.packet")[0][1])["socket_id"])

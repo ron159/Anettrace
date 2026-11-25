@@ -41,11 +41,19 @@ if "PERFETTO_TEST_ROOT" in os.environ:
     assert args[2].startswith(root + "/configs/")
     assert args[4].startswith(root + "/traces/")
     assert not os.path.exists(args[4]), "shell must not pre-create the trace"
+if os.environ.get("FAKE_MODE") == "hang-before-output":
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    with open(os.environ["PID_LOG"], "w") as log:
+        log.write(str(os.getpid()))
+    while True:
+        time.sleep(1)
 trace = sys.stdout.buffer if args[4] == "-" else open(args[4], "wb")
 with open(os.environ["CONFIG_LOG"], "w") as log:
     log.write(config)
 with open(os.environ["PID_LOG"], "w") as log:
     log.write(str(os.getpid()))
+with open(os.environ["PID_LOG"] + ".all", "a") as log:
+    log.write(str(os.getpid()) + "\n")
 durations = re.findall(r"^duration_ms:\s*(\d+)", config, re.M)
 expires = time.monotonic() + int(durations[-1]) / 1000 if durations else float("inf")
 def varint(n):
@@ -80,9 +88,15 @@ if mode == "delayed-ready":
         if time.monotonic() >= expires:
             sys.exit(0)
         time.sleep(0.01)
+if mode == "wait-network":
+    # The driver waits for this child before it can finish preparing BPF.
+    while not os.path.exists(os.environ["NETWORK_PREPARED"]):
+        time.sleep(0.01)
 if notify_fd is not None and mode != "no-ack":
     os.write(notify_fd, b"\x01" if mode == "bad-ack" else b"0" if mode == "ascii-ack" else b"\x00")
     os.close(notify_fd)
+if os.environ.get("ACK_WRITTEN"):
+    open(os.environ["ACK_WRITTEN"], "w").close()
 if os.environ.get("FAKE_MODE") == "fail":
     emit()
     time.sleep(0.4)
@@ -100,6 +114,9 @@ while True:
 DRIVER = r'''
 /* Only trace_capture.c uses the test poll shim; the driver calls real poll. */
 #undef poll
+#undef clock_gettime
+#undef fork
+#undef kill
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -108,6 +125,8 @@ DRIVER = r'''
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include "trace_capture.h"
 /* Shell may read/unlink traces but SELinux forbids creating files there.
@@ -142,6 +161,56 @@ int capture_test_poll(struct pollfd *fds, nfds_t count, int timeout) {
     }
     return poll(fds, count, timeout);
 }
+/* Hold the capture child immediately after fork until its parent has
+ * actually sent SIGTERM. The first fork queries Perfetto's capabilities. */
+pid_t capture_test_fork(void) {
+    static unsigned calls;
+    const char *gate = getenv("PREEXEC_GATE");
+    calls++;
+    pid_t child = fork();
+    if (!child && calls == 2 && gate)
+        while (access(gate, F_OK)) usleep(1000);
+    return child;
+}
+static int advance_stop_clock;
+int capture_test_kill(pid_t pid, int sig) {
+    int result = kill(pid, sig);
+    const char *gate = getenv("PREEXEC_GATE");
+    if (sig == SIGTERM && getenv("FAST_STOP_CLOCK")) advance_stop_clock = 1;
+    if (gate && sig == SIGTERM) {
+        int fd = open(gate, O_WRONLY | O_CREAT, 0600);
+        if (fd < 0) return -1;
+        close(fd);
+    }
+    return result;
+}
+static int startup_clock_offset;
+int capture_test_clock_gettime(clockid_t which, struct timespec *result) {
+    int err = clock_gettime(which, result);
+    if (!err && which == CLOCK_BOOTTIME) result->tv_sec += startup_clock_offset;
+    if (!err && which == CLOCK_MONOTONIC && advance_stop_clock) {
+        result->tv_sec += advance_stop_clock;
+        advance_stop_clock += 15;
+    }
+    return err;
+}
+static int prepare_network(void) {
+    const char *marker = getenv("NETWORK_PREPARED");
+    if (marker) {
+        while (access(getenv("PID_LOG"), F_OK) && !stopped) usleep(10000);
+        FILE *file = fopen(marker, "a");
+        if (!file) return -errno;
+        fputs("prepared\n", file);
+        fclose(file);
+    }
+    if (getenv("SLOW_NETWORK_PREPARE")) {
+        /* Charge 75 s to the child launch clock without slowing the suite. */
+        startup_clock_offset = 75;
+        while (!stopped && access(getenv("ACK_WRITTEN"), F_OK)) usleep(10000);
+    }
+    if (getenv("FAIL_NETWORK_PREPARE")) return -EIO;
+    return stopped ? -EINTR : 0;
+}
 int main(int argc, char **argv) {
     int combined = getenv("COMBINED") != NULL;
     if (argc != 5) return 2;
@@ -149,7 +218,11 @@ int main(int argc, char **argv) {
     signal(SIGTERM, stop);
     if (trace_capture_start(argv[1], atoi(argv[2]), "sched",
                             argv[4][0] ? argv[4] : NULL,
-                            atoi(argv[3]), !combined)) return 1;
+                            atoi(argv[3]), combined ? prepare_network : NULL, &stopped)) {
+        int status;
+        if (waitpid(-1, &status, WNOHANG) != -1 || errno != ECHILD) return 5;
+        return 1;
+    }
     if (getenv("FINISH_DELAY")) {
         sleep(atoi(argv[2]));
         trace_capture_stop();
@@ -203,7 +276,8 @@ typedef unsigned long long u64;
         (cls.perfetto_root / "configs").mkdir(parents=True)
         (cls.perfetto_root / "traces").mkdir()
         cmd = ["cc", "-std=gnu11", "-Wall", "-Wextra", "-Werror",
-               "-Dpoll=capture_test_poll",
+               "-Dpoll=capture_test_poll", "-Dclock_gettime=capture_test_clock_gettime",
+               "-Dfork=capture_test_fork", "-Dkill=capture_test_kill",
                f"-I{base}", f"-I{ROOT / 'src'}"]
         if sys.platform == "darwin":
             cmd += ["-DCLOCK_BOOTTIME=CLOCK_MONOTONIC"]
@@ -412,6 +486,61 @@ class SystemOnlyCaptureTest(CaptureTestCase):
         result = subprocess.run([str(self.combined_driver), *self.command()[1:]],
                                 env=self.env, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.output.read_bytes().endswith(b"network"))
+        self.assert_clean()
+
+    def test_network_preparation_overlaps_perfetto_startup(self):
+        prepared = self.base / "prepared"
+        self.env.update(COMBINED="1", FAKE_MODE="wait-network", NETWORK_PREPARED=str(prepared))
+        result = self.run_capture()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(prepared.read_text(), "prepared\n")
+        self.assertTrue(self.output.read_bytes().endswith(b"network"))
+        self.assert_clean()
+
+    def test_failed_network_preparation_reaps_unready_child(self):
+        self.env.update(COMBINED="1", FAKE_MODE="no-ack", FAIL_NETWORK_PREPARE="1",
+                        NETWORK_PREPARED=str(self.base / "prepared"))
+        result = self.run_capture()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.output.exists())
+        self.assert_failed_cleanup(result.stderr)
+
+    def test_cancel_before_exec_cannot_escape_into_ring_capture(self):
+        gate = self.base / "preexec-gate"
+        self.env.update(COMBINED="1", FAIL_NETWORK_PREPARE="1", FAKE_MODE="early-fail",
+                        PREEXEC_GATE=str(gate))
+        result = self.run_capture(ring=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertTrue(gate.is_file())
+        self.assertFalse(self.pid_log.exists())
+        self.assertFalse(self.output.exists())
+        self.assert_failed_cleanup(result.stderr)
+
+    def test_startup_child_ignoring_stop_before_output_is_reaped(self):
+        self.env.update(COMBINED="1", FAKE_MODE="hang-before-output", FAST_STOP_CLOCK="1",
+                        FAIL_NETWORK_PREPARE="1", NETWORK_PREPARED=str(self.base / "prepared"))
+        result = self.run_capture(ring=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(b"never created its trace", result.stderr)
+        self.assertIn(b"sending SIGKILL", result.stderr)
+        self.assertFalse(self.output.exists())
+        self.assert_clean()
+
+    def test_slow_network_preparation_restarts_only_system_capture(self):
+        prepared = self.base / "prepared"
+        self.env.update(COMBINED="1", NETWORK_PREPARED=str(prepared), SLOW_NETWORK_PREPARE="1",
+                        ACK_WRITTEN=str(self.base / "ack"))
+        result = self.run_capture()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"restarting system Perfetto", result.stderr)
+        self.assertEqual(prepared.read_text(), "prepared\n")
+        children = (self.base / "pid.log.all").read_text().splitlines()
+        self.assertEqual(len(children), 2)
+        for pid in children:
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(pid), 0)
+        self.assertIn("duration_ms: 62000", self.log.read_text())
         self.assertTrue(self.output.read_bytes().endswith(b"network"))
         self.assert_clean()
 

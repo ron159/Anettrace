@@ -27,8 +27,8 @@ enum scenario {
 static enum scenario scenario;
 static unsigned long long elapsed_ms;
 static unsigned interrupts;
-static struct { pid_t perfetto_pid; char system_trace[64]; } capture = {
-    .perfetto_pid = 4242, .system_trace = "/fake/system.pftrace"
+static struct { pid_t perfetto_pid; char system_trace[64]; bool startup_complete; } capture = {
+    .perfetto_pid = 4242, .system_trace = "/fake/system.pftrace", .startup_complete = true
 };
 
 static int fake_clock_gettime(clockid_t clock, struct timespec *value)
