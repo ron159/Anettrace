@@ -1222,6 +1222,7 @@ int trace_prepare()
 	}
 
 	err = trace_prepare_traces();
+	sym_release_name_index();
 	if (err)
 		goto err;
 

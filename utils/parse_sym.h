@@ -26,6 +26,7 @@ struct sym_result {
 struct sym_result *sym_parse_exact(__u64 pc);
 struct sym_result *sym_parse(__u64 pc);
 int sym_search_pattern(const char *name, char *result, bool partial);
+void sym_release_name_index(void);
 /* Require one function with a unique full name across all symbol types. */
 int sym_search_unique(const char *name, char *result, size_t result_size, bool partial);
 

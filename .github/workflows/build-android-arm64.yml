@@ -34,8 +34,15 @@ on:
       version:
         description: Product version read from VERSION
         value: ${{ jobs.build-android-arm64.outputs.version }}
+      artifact-id:
+        description: Verified Android build artifact ID
+        value: ${{ jobs.build-android-arm64.outputs.artifact-id }}
+      artifact-digest:
+        description: SHA-256 of the uploaded Android build
+        value: ${{ jobs.build-android-arm64.outputs.artifact-digest }}
 
 permissions:
+  actions: read
   contents: read
 
 # Use a distinct prefix so Linux and Android cannot cancel each other.
@@ -48,6 +55,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     outputs:
       version: ${{ steps.product.outputs.version }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
 
     steps:
       - name: Checkout source
@@ -289,6 +298,7 @@ jobs:
             '
 
       - name: Upload Android arm64 artifact
+        id: upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: anettrace-${{ steps.product.outputs.version }}-android-arm64-dual
@@ -308,10 +318,11 @@ jobs:
             output/anettrace-xfrm-workload
 
       - name: Download uploaded artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: anettrace-${{ steps.product.outputs.version }}-android-arm64-dual
-          path: downloaded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: bash script/download-android-artifact.sh "$ARTIFACT_ID" "$ARTIFACT_DIGEST" downloaded
 
       - name: Verify downloaded artifact
         run: |

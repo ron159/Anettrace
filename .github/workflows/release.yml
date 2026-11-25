@@ -21,12 +21,14 @@ jobs:
   android-ci:
     uses: ./.github/workflows/build-android-arm64.yml
     permissions:
+      actions: read
       contents: read
 
   publish:
     needs: [linux-ci, android-ci]
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
 
     steps:
@@ -45,10 +47,11 @@ jobs:
           git merge-base --is-ancestor "${GITHUB_SHA}" origin/master
 
       - name: Download verified Android build
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: anettrace-${{ needs.android-ci.outputs.version }}-android-arm64-dual
-          path: downloaded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.android-ci.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ needs.android-ci.outputs.artifact-digest }}
+        run: bash script/download-android-artifact.sh "$ARTIFACT_ID" "$ARTIFACT_DIGEST" downloaded
 
       - name: Package release assets
         run: |
