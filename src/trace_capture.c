@@ -46,6 +46,7 @@ struct capture_state {
 	bool ring_buffer;
 	bool stop_requested;
 	bool started;
+	bool startup_complete;
 	bool system_only;
 	bool child_reaped;
 	int child_status;
@@ -371,8 +372,13 @@ static int wait_perfetto_stop(int *status, bool *stalled)
 		if (stat(capture.system_trace, &file)) {
 			int err = errno;
 			/* A cancelled startup can precede Perfetto creating its file. */
-			if (err == ENOENT && last_size < 0 &&
-			    now_ms - start_ms < PERFETTO_STOP_TIMEOUT_MS) {
+			if (!capture.startup_complete && err == ENOENT && last_size < 0) {
+				if (now_ms - start_ms >= PERFETTO_STOP_TIMEOUT_MS) {
+					*stalled = true;
+					pr_err("Perfetto never created its trace after startup cancellation: '%s'\n",
+					       capture.system_trace);
+					return -ETIMEDOUT;
+				}
 				usleep(100000);
 				continue;
 			}
@@ -931,6 +937,7 @@ launch:
 		err = -errno;
 		goto fail;
 	}
+	capture.startup_complete = true;
 	if (ring_buffer)
 		pr_info("system Perfetto %s ring capture started (pid %d, trailing %u seconds; press Ctrl+C to save)\n",
 			profile_name, capture.perfetto_pid, duration_s);

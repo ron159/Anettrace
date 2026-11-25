@@ -41,6 +41,12 @@ if "PERFETTO_TEST_ROOT" in os.environ:
     assert args[2].startswith(root + "/configs/")
     assert args[4].startswith(root + "/traces/")
     assert not os.path.exists(args[4]), "shell must not pre-create the trace"
+if os.environ.get("FAKE_MODE") == "hang-before-output":
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    with open(os.environ["PID_LOG"], "w") as log:
+        log.write(str(os.getpid()))
+    while True:
+        time.sleep(1)
 trace = sys.stdout.buffer if args[4] == "-" else open(args[4], "wb")
 with open(os.environ["CONFIG_LOG"], "w") as log:
     log.write(config)
@@ -166,9 +172,11 @@ pid_t capture_test_fork(void) {
         while (access(gate, F_OK)) usleep(1000);
     return child;
 }
+static int advance_stop_clock;
 int capture_test_kill(pid_t pid, int sig) {
     int result = kill(pid, sig);
     const char *gate = getenv("PREEXEC_GATE");
+    if (sig == SIGTERM && getenv("FAST_STOP_CLOCK")) advance_stop_clock = 1;
     if (gate && sig == SIGTERM) {
         int fd = open(gate, O_WRONLY | O_CREAT, 0600);
         if (fd < 0) return -1;
@@ -180,6 +188,10 @@ static int startup_clock_offset;
 int capture_test_clock_gettime(clockid_t which, struct timespec *result) {
     int err = clock_gettime(which, result);
     if (!err && which == CLOCK_BOOTTIME) result->tv_sec += startup_clock_offset;
+    if (!err && which == CLOCK_MONOTONIC && advance_stop_clock) {
+        result->tv_sec += advance_stop_clock;
+        advance_stop_clock += 15;
+    }
     return err;
 }
 static int prepare_network(void) {
@@ -504,6 +516,16 @@ class SystemOnlyCaptureTest(CaptureTestCase):
         self.assertFalse(self.pid_log.exists())
         self.assertFalse(self.output.exists())
         self.assert_failed_cleanup(result.stderr)
+
+    def test_startup_child_ignoring_stop_before_output_is_reaped(self):
+        self.env.update(COMBINED="1", FAKE_MODE="hang-before-output", FAST_STOP_CLOCK="1",
+                        FAIL_NETWORK_PREPARE="1", NETWORK_PREPARED=str(self.base / "prepared"))
+        result = self.run_capture(ring=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(b"never created its trace", result.stderr)
+        self.assertIn(b"sending SIGKILL", result.stderr)
+        self.assertFalse(self.output.exists())
+        self.assert_clean()
 
     def test_slow_network_preparation_restarts_only_system_capture(self):
         prepared = self.base / "prepared"
