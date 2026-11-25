@@ -37,6 +37,9 @@ on:
       artifact-id:
         description: Verified Android build artifact ID
         value: ${{ jobs.build-android-arm64.outputs.artifact-id }}
+      artifact-digest:
+        description: SHA-256 of the uploaded Android build
+        value: ${{ jobs.build-android-arm64.outputs.artifact-digest }}
 
 permissions:
   actions: read
@@ -53,6 +56,7 @@ jobs:
     outputs:
       version: ${{ steps.product.outputs.version }}
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
 
     steps:
       - name: Checkout source
@@ -314,12 +318,11 @@ jobs:
             output/anettrace-xfrm-workload
 
       - name: Download uploaded artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          artifact-ids: ${{ steps.upload.outputs.artifact-id }}
-          github-token: ${{ github.token }}
-          merge-multiple: true
-          path: downloaded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: bash script/download-android-artifact.sh "$ARTIFACT_ID" "$ARTIFACT_DIGEST" downloaded
 
       - name: Verify downloaded artifact
         run: |
