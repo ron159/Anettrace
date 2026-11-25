@@ -6,35 +6,41 @@ import subprocess
 import tempfile
 import unittest
 
-from tests.test_flow_identity import function
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class SymbolResolutionTests(unittest.TestCase):
-    def query(self, fixture, name, *, partial=False, size=256, output=True):
+    def query(self, fixture, name, *, partial=False, size=256, output=True, setup=""):
         source = (ROOT / 'utils/parse_sym.c').read_text()
         header = (ROOT / 'utils/parse_sym.h').read_text()
         constants = re.search(r'enum\s*\{[^}]+\};', header).group()
-        resolver = function(source, 'sym_search_unique')
+        resolver = source[source.index('struct symbol_record {'):]
         code = r'''
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+static bool fail_index_allocation;
+static void *index_calloc(size_t n, size_t size) {
+    return fail_index_allocation ? NULL : calloc(n, size);
+}
+#define calloc index_calloc
 static char *proc_syms;
 static int sym_init_data(void) { return 0; }
 ''' + constants + resolver + f'''
-int main(void) {{
+int main(int argc, char **argv) {{
+    fail_index_allocation = argc > 1;
     proc_syms = strdup({json.dumps(fixture)});
     char result[512];
+    {setup}
     memset(result, 'X', sizeof(result));
     int status = sym_search_unique({'NULL' if name is None else json.dumps(name)},
                                    {'result' if output else 'NULL'}, {size},
                                    {'true' if partial else 'false'});
     printf("%d\\n", status);
     fwrite(result, 1, sizeof(result), stdout);
+    sym_release_name_index();
     free(proc_syms);
     return 0;
 }}
@@ -48,12 +54,30 @@ int main(void) {{
             self.assertEqual(result.returncode, 0, result.stderr.decode())
             result = subprocess.run([str(binary)], capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr.decode())
+            fallback = subprocess.run([str(binary), 'no-index'], capture_output=True)
+            self.assertEqual(fallback.returncode, 0, fallback.stderr.decode())
+            self.assertEqual(fallback.stdout, result.stdout)
         status, buffer = result.stdout.split(b'\n', 1)
         self.assertEqual(len(buffer), 512)
         written_size = size if output else 0
         self.assertEqual(buffer[written_size:], b'X' * (512 - written_size),
                          'resolver wrote beyond the caller-provided buffer')
         return int(status), buffer[:written_size].split(b'\0', 1)[0].decode()
+
+    def test_reuse_and_rebuild_with_mixed_queries(self):
+        fixture = ('00000000 d duplicate\n00000000 T plain\n'
+                   '00000000 t variant.isra.42 [driver]\n00000000 t duplicate\n')
+        self.assertEqual(self.query(fixture, 'plain', setup=r'''
+    for (int cycle = 0; cycle < 2; cycle++) {
+        if (sym_search_unique("plain", result, sizeof(result), false) != SYM_KERNEL ||
+            strcmp(result, "plain")) return 1;
+        if (sym_search_unique("variant.", result, sizeof(result), true) != SYM_MODULE ||
+            strcmp(result, "variant.isra.42")) return 2;
+        if (sym_search_unique("duplicate", result, sizeof(result), false) != SYM_AMBIGUOUS ||
+            result[0]) return 3;
+        sym_release_name_index();
+    }
+'''), (2, 'plain'))
 
     def test_duplicate_zero_addresses_are_ambiguous(self):
         self.assertEqual(self.query(
