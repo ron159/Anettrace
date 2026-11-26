@@ -5,6 +5,7 @@
 #include <list.h>
 #include <errno.h>
 #include <time.h>
+#include <sys/utsname.h>
 
 #include <parse_sym.h>
 
@@ -17,10 +18,6 @@
 #include "capture_queue.h"
 #include "trace_capture.h"
 
-const char *cond_pre = "verlte() { [ \"$1\" = \"$2\" ] && echo 0 && return; "
-		       "[ \"$1\" = \"$(/bin/echo -e \"$1\\n$2\" | sort -V | head -n1)\" ] "
-		       "&& echo -1 && return; echo 1; }";
-
 trace_context_t trace_ctx = {
 	.mode = TRACE_MODE_TIMELINE,
 	.args.traffic_interval = 1,
@@ -29,6 +26,23 @@ trace_context_t trace_ctx = {
 extern trace_ops_t tracing_ops;
 extern trace_ops_t probe_ops;
 trace_ops_t *trace_ops_all[] = { &tracing_ops, &probe_ops };
+
+static struct timespec startup_start;
+static bool startup_wait_sample;
+
+static void trace_startup_mark(const char *stage)
+{
+	struct timespec now;
+	double elapsed_ms;
+
+	if (log_level < 2 || clock_gettime(CLOCK_MONOTONIC, &now))
+		return;
+	if (!startup_start.tv_sec && !startup_start.tv_nsec)
+		startup_start = now;
+	elapsed_ms = (now.tv_sec - startup_start.tv_sec) * 1000.0 +
+		     (now.tv_nsec - startup_start.tv_nsec) / 1000000.0;
+	pr_debug("trace startup: stage=%s elapsed_ms=%.3f\n", stage, elapsed_ms);
+}
 
 static bool trace_name_matches(const trace_t *trace, const char *name)
 {
@@ -980,11 +994,13 @@ err:
 
 static void trace_exec_cond()
 {
+	struct utsname kernel;
+	const char *release = uname(&kernel) ? "" : kernel.release;
 	trace_t *trace;
 
 	trace_for_each(trace) {
-		if (trace->cond && execf(NULL, "%s; %s", cond_pre,
-					 trace->cond))
+		if (trace->kernel_before &&
+		    !kernel_release_before(release, trace->kernel_before))
 			trace_set_invalid_reason(trace, "cond");
 	}
 }
@@ -1058,6 +1074,7 @@ static int trace_prepare_traces()
 		trace_group_enable("life", 1);
 
 	trace_exec_cond();
+	trace_startup_mark("symbols_begin");
 	pr_debug("begin to resolve kernel symbol...\n");
 	trace_for_each(trace) {
 		if (trace_is_enable(trace) && !trace_is_invalid(trace) && trace_is_func(trace))
@@ -1086,6 +1103,7 @@ static int trace_prepare_traces()
 			return err;
 	}
 
+	trace_startup_mark("symbols_end");
 	pr_debug("finished to resolve kernel symbol\n");
 	trace_prepare_status();
 
@@ -1192,6 +1210,7 @@ int trace_prepare()
 {
 	int err, i = 0;
 
+	trace_startup_mark("prepare_begin");
 #ifndef NO_BTF
 	if (!file_exist("/sys/kernel/btf/vmlinux") && !trace_ctx.args.btf_path) {
 		pr_err("BTF is not support by your kernel, please compile"
@@ -1199,7 +1218,7 @@ int trace_prepare()
 		err = -ENOTSUP;
 		goto err;
 	}
-	if (!kernel_has_config("DEBUG_INFO_BTF_MODULES")) {
+	if (!kernel_has_btf_modules()) {
 		pr_warn("DEBUG_INFO_BTF_MODULES not enabled, some information, "
 			"such as nf_tables, maybe incorrect\n");
 	}
@@ -1255,6 +1274,7 @@ int trace_prepare()
 		exit(0);
 	}
 	trace_print_enabled();
+	trace_startup_mark("prepare_end");
 
 	return 0;
 err:
@@ -1366,14 +1386,17 @@ static void trace_prepare_ops()
 
 int trace_bpf_load_and_attach()
 {
+	trace_startup_mark("load_begin");
 	if (trace_bpf_load())
 		goto err;
+	trace_startup_mark("load_end");
 
 	pr_debug("begin to attach eBPF program...\n");
 	if (trace_ctx.ops->trace_attach()) {
 		trace_ctx.ops->trace_close();
 		goto err;
 	}
+	trace_startup_mark("attach_end");
 	pr_debug("eBPF program attached successfully\n");
 
 	trace_prepare_ops();
@@ -1408,6 +1431,10 @@ static void trace_on_lost(void *ctx, int cpu, __u64 cnt)
 static inline void poll_handler_wrap(void *ctx, int cpu, void *data,
 				     u32 size)
 {
+	if (startup_wait_sample) {
+		startup_wait_sample = false;
+		trace_startup_mark("first_sample");
+	}
 	if (capture_async) {
 		capture_queue_event(data, cpu, size);
 		return;
@@ -1514,6 +1541,7 @@ int trace_poll()
 
 	if (trace_ctx.ops->raw_poll) {
 		trace_ctx.ops->trace_ready();
+		trace_startup_mark("ready");
 		pr_info("begin trace...\n");
 		return trace_ctx.ops->raw_poll();
 	}
@@ -1567,6 +1595,8 @@ int trace_poll()
 		poll_deadline_ns = (u64)now.tv_sec * 1000000000ULL + now.tv_nsec +
 			(u64)trace_ctx.args.duration * 1000000000ULL;
 	trace_ctx.ops->trace_ready();
+	trace_startup_mark("ready");
+	startup_wait_sample = log_level >= 2;
 	pr_info("begin trace...\n");
 	while ((err = perf_buffer__poll(pb, trace_ctx.args.traffic_ui ? 100 : 1000)) >= 0) {
 		if (capture_async)

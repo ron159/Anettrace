@@ -4,14 +4,6 @@
 #include "trace.h"
 #include "analysis.h"
 
-/* check whether trampoline is supported by current arch */
-static bool tracing_arch_supported()
-{
-	return simple_exec("cat /proc/kallsyms | "
-			   "grep arch_prepare_bpf_trampoline | "
-			   "grep T") == 0;
-}
-
 static bool tracing_trace_supported()
 {
 #ifdef NO_BTF
@@ -26,7 +18,7 @@ static bool tracing_trace_supported()
 	if (!libbpf_probe_bpf_prog_type(BPF_PROG_TYPE_TRACING, NULL))
 		goto failed;
 
-	if (!tracing_arch_supported()) {
+	if (!sym_kernel_text_exists("arch_prepare_bpf_trampoline")) {
 		pr_warn("trampoline is not supported, skip TRACING\n");
 		goto failed;
 	}
@@ -144,7 +136,7 @@ static void tracing_check_args()
 		}
 	}
 
-	support_btf_modules = kernel_has_config("DEBUG_INFO_BTF_MODULES");
+	support_btf_modules = kernel_has_btf_modules();
 	if (!support_btf_modules)
 		pr_warn("CONFIG_DEBUG_INFO_BTF_MODULES is not supported "
 			"by your kernel, following functions are "

@@ -615,6 +615,9 @@ static int traffic_attach_pair(struct bpf_program *entry,
 	struct bpf_link *entry_link, *exit_link;
 	long err;
 
+	if (*link_count > TRAFFIC_MAX_LINKS - 2)
+		return -ENOSPC;
+
 	exit_link = bpf_program__attach_kprobe(exit, true, target);
 	err = libbpf_get_error(exit_link);
 	if (err) {
@@ -638,20 +641,23 @@ static int traffic_attach_pair(struct bpf_program *entry,
 	return 0;
 }
 
-static int traffic_attach_endpoint(struct bpf_program *program,
-				   const char *target, struct bpf_link **links,
-				   int *link_count)
+static void traffic_attach_endpoint(struct bpf_program *program,
+				    const char *target, struct bpf_link **links,
+				    int *link_count)
 {
-	struct bpf_link *link = bpf_program__attach_kprobe(program, false, target);
-	long err = libbpf_get_error(link);
+	struct bpf_link *link = NULL;
+	long err = -ENOSPC;
 
+	if (*link_count < TRAFFIC_MAX_LINKS) {
+		link = bpf_program__attach_kprobe(program, false, target);
+		err = libbpf_get_error(link);
+	}
 	if (err) {
-		pr_err("traffic: cannot attach UDP endpoint probe %s: %s\n",
-		       target, strerror(-err));
-		return -1;
+		pr_warn("traffic: UDP endpoint probe %s unavailable: %s; "
+			"some UDP endpoints will be unknown\n", target, strerror(-err));
+		return;
 	}
 	links[(*link_count)++] = link;
-	return 0;
 }
 
 static int traffic_attach_probes(struct traffic *skel, u8 protocol,
@@ -691,15 +697,33 @@ static int traffic_attach_probes(struct traffic *skel, u8 protocol,
 			pr_err("traffic: UDP send/receive probes are incomplete\n");
 			return -1;
 		}
-		if (traffic_attach_endpoint(skel->progs.traffic_udp4_endpoints,
-				"udp_send_skb", links, link_count) ||
-		    (udp6_tx && traffic_attach_endpoint(skel->progs.traffic_udp6_endpoints,
-				"udp_v6_send_skb", links, link_count)) ||
-		    traffic_attach_endpoint(skel->progs.traffic_udp_receive_endpoints,
-				"skb_consume_udp", links, link_count))
-			return -1;
+		traffic_attach_endpoint(skel->progs.traffic_udp4_endpoints,
+			"udp_send_skb", links, link_count);
+		if (udp6_tx)
+			traffic_attach_endpoint(skel->progs.traffic_udp6_endpoints,
+				"udp_v6_send_skb", links, link_count);
+		traffic_attach_endpoint(skel->progs.traffic_udp_receive_endpoints,
+			"skb_consume_udp", links, link_count);
 	}
 
+	return 0;
+}
+
+static int traffic_select_programs(struct traffic *skel, u8 protocol)
+{
+	struct bpf_program *program;
+	const char *unused_prefix;
+
+	if (!protocol)
+		return 0;
+	unused_prefix = protocol == IPPROTO_TCP ? "traffic_udp" : "traffic_tcp_";
+	bpf_object__for_each_program(program, skel->obj) {
+		const char *name = bpf_program__name(program);
+
+		if (!strncmp(name, unused_prefix, strlen(unused_prefix)) &&
+		    bpf_program__set_autoload(program, false))
+			return -EINVAL;
+	}
 	return 0;
 }
 
@@ -841,7 +865,8 @@ int traffic_start(trace_args_t *args, bpf_args_t *bpf_args)
 		bpf_args->uid_enabled;
 	session->skel->rodata->traffic_config.protocol = bpf_args->pkt.l4_proto;
 
-	if (traffic__load(session->skel)) {
+	if (traffic_select_programs(session->skel, bpf_args->pkt.l4_proto) ||
+	    traffic__load(session->skel)) {
 		pr_err("traffic: failed to load BPF programs\n");
 		goto out;
 	}

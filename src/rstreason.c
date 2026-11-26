@@ -33,11 +33,7 @@ static const char *tcp_state_str[] = {
 /* check if rst reason is supported */
 bool reset_reason_support() 
 {
-	const char *tracing_path = get_tracing_path();
-
-	return tracing_path && execf(NULL,
-		"cat %s/events/tcp/tcp_send_reset/format 2>/dev/null | grep NOT_SPECIFIED",
-		tracing_path) == 0;
+	return tracepoint_format_has("tcp/tcp_send_reset", "NOT_SPECIFIED");
 }
 
 static int parse_reason_enum() 

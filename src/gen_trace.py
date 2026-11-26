@@ -36,9 +36,6 @@ def parse_names(trace, children):
         tmp = dict(trace)
         tmp.update(name)
         name.update(tmp)
-        if 'cond' in name:
-            name['cond'] = name['cond'].replace('"', '\\"')
-
         children.append(name)
 
 
@@ -258,7 +255,11 @@ def gen_trace(trace, group, p_name):
     if 'sk' in trace:
         trace['sk'] = int(trace.get('sk') or 0) + 1
 
-    fields_str += append_trace_field('cond', trace)
+    if 'kernel_before' in trace:
+        version = trace['kernel_before']
+        if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+', version):
+            raise ValueError(f"{name}: kernel_before must be a quoted major.minor version")
+        fields_str += append_trace_field('kernel_before', trace)
     fields_str += append_trace_field('regex', trace)
     fields_str += append_trace_field('msg', trace)
     fields_str += append_trace_field('is_backup', trace, 'bool')

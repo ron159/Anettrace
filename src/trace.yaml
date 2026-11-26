@@ -183,7 +183,7 @@ children:
       - &ipt_do_table
         name: ipt_do_table
       - name: ipt_do_table_legacy
-        cond: '[ $(verlte "$(uname -r)" "5.16") -eq -1 ]' # valid when kernel < 5.16
+        kernel_before: '5.16'
         backup: *ipt_do_table
       analyzer: iptable
       monitor: 1

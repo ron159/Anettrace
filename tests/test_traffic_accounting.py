@@ -5,6 +5,8 @@ import subprocess
 import tempfile
 import unittest
 
+from tests import test_flow_identity as helpers
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/progs/traffic.c"
 
@@ -174,6 +176,50 @@ class TrafficAccountingTests(unittest.TestCase):
             result = subprocess.run([str(binary)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             return result.stdout.split()
+
+    def test_protocol_selection_and_optional_endpoints(self):
+        traffic = (ROOT / 'src/traffic.c').read_text()
+        source = r'''
+#include <errno.h>
+#include <netinet/in.h>
+#define TRAFFIC_MAX_LINKS 15
+struct bpf_program { const char *name; bool autoload; };
+struct bpf_link { int status; };
+static struct bpf_program programs[] = {
+    {"traffic_tcp_send_entry", true}, {"traffic_udp6_recv_exit", true},
+    {"traffic_udp_receive_endpoints", true},
+};
+struct traffic { struct bpf_program *obj; };
+#define bpf_object__for_each_program(prog, obj) \
+    for (prog = obj; prog < obj + sizeof(programs)/sizeof(*programs); prog++)
+#define bpf_program__name(prog) ((prog)->name)
+static int bpf_program__set_autoload(struct bpf_program *program, bool autoload) {
+    program->autoload = autoload; return 0;
+}
+static struct bpf_link unavailable = {-ENOENT}, attached;
+static struct bpf_link *bpf_program__attach_kprobe(struct bpf_program *program,
+        bool ret, const char *target) {
+    return strcmp(target, "udp_send_skb") ? &attached : &unavailable;
+}
+#define libbpf_get_error(link) ((link)->status)
+static unsigned warnings;
+#define pr_warn(...) ((void)warnings++)
+''' + function(traffic, 'traffic_select_programs') + function(traffic, 'traffic_attach_endpoint')
+        result = helpers.FlowIdentityTests.run_source(self, source, r'''
+struct traffic skel = { programs };
+struct bpf_link *links[TRAFFIC_MAX_LINKS] = {};
+int count = 0;
+unsigned protocols[] = {0, IPPROTO_TCP, IPPROTO_UDP};
+for (unsigned i = 0; i < 3; i++) {
+    for (unsigned j = 0; j < 3; j++) programs[j].autoload = true;
+    printf("%d ", traffic_select_programs(&skel, protocols[i]));
+    printf("%d%d%d ", programs[0].autoload, programs[1].autoload, programs[2].autoload);
+}
+traffic_attach_endpoint(programs, "udp_send_skb", links, &count);
+traffic_attach_endpoint(programs, "skb_consume_udp", links, &count);
+printf("%d %u %d", count, warnings, links[0] == &attached);
+''')
+        self.assertEqual(result, ['0', '111', '0', '100', '0', '011', '1', '1', '1'])
 
     def test_flow_capacity_failure_retains_global_bytes(self):
         result = self.run_source(r'''

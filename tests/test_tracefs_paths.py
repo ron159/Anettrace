@@ -1,5 +1,7 @@
 """Exercise actual tracing path consumers against isolated filesystem fixtures."""
 from pathlib import Path
+import gzip
+import os
 import re
 import subprocess
 import tempfile
@@ -102,14 +104,17 @@ class TracefsPathTests(unittest.TestCase):
             for name, content in (files or {}).items():
                 path = fixture / name.lstrip('/')
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content)
+                if isinstance(content, bytes):
+                    path.write_bytes(content)
+                else:
+                    path.write_text(content)
             binary = fixture / 'regression'
             cfile = fixture / 'regression.c'
             cfile.write_text(PRELUDE + source + '\nint main(int argc, char **argv) {\n'
                              '(void)argc; fixture_root = argv[1];\n' + body + '\n}\n')
             result = subprocess.run(
                 ['cc', '-std=gnu11', '-Wall', '-Werror', '-Wno-unused-function',
-                 '-Wno-unused-variable', str(cfile), '-o', str(binary)],
+                 '-Wno-unused-variable', str(cfile), '-o', str(binary), '-lz'],
                 capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             result = subprocess.run([str(binary), str(fixture)], capture_output=True, text=True)
@@ -120,6 +125,49 @@ class TracefsPathTests(unittest.TestCase):
         source = (ROOT / 'utils/sys_utils.c').read_text()
         # The pre-fix availability check has no path discovery helper.
         return function(source, 'get_tracing_path') if 'get_tracing_path(' in source else ''
+
+    def test_legacy_hook_kernel_cutoff_ignores_patch_and_vendor_suffix(self):
+        source = function((ROOT / 'utils/sys_utils.c').read_text(), 'kernel_release_before')
+        result = self.run_source(source, r'''
+printf("%d %d %d %d", kernel_release_before("5.15.301-android", "5.16"),
+       kernel_release_before("5.16.0-custom", "5.16"),
+       kernel_release_before("6.6.118-android", "5.16"),
+       kernel_release_before("unknown", "5.16"));
+''', [])
+        self.assertEqual(result, ['1', '0', '0', '0'])
+
+    def test_kernel_config_reads_gzip_and_boot_fallback_once(self):
+        original = (ROOT / 'utils/sys_utils.c').read_text()
+        source = r'''
+#include <limits.h>
+#include <sys/utsname.h>
+#include <zlib.h>
+static unsigned opens;
+static gzFile fixture_gzopen(const char *path, const char *mode) {
+    char mapped[1024];
+    fixture_path(mapped, sizeof(mapped), path);
+    opens++;
+    return gzopen(mapped, mode);
+}
+#define gzopen fixture_gzopen
+static bool config_read, config_btf_modules;
+static int config_hz = -ENOTSUP;
+''' + ''.join(function(original, name) for name in (
+            'kernel_read_config', 'kernel_has_btf_modules', 'kernel_hz'))
+        contents = 'CONFIG_CMDLINE="CONFIG_HZ=999"\nCONFIG_DEBUG_INFO_BTF_MODULES=y\nCONFIG_HZ=300\n'
+        cases = (
+            ({'/proc/config.gz': gzip.compress(contents.encode())}, ['1', '300', '1']),
+            ({f'/boot/config-{os.uname().release}': contents}, ['1', '300', '2']),
+            ({}, ['0', '0', '2']),
+        )
+        for files, expected in cases:
+            with self.subTest(files=list(files)):
+                result = self.run_source(source, r'''
+bool btf_modules = kernel_has_btf_modules();
+int hz = kernel_hz();
+printf("%d %d %u", btf_modules, hz > 0 ? hz : 0, opens);
+''', [], files)
+                self.assertEqual(result, expected)
 
     def test_tracing_availability_accepts_standalone_tracefs(self):
         source = self.path_helper() + function(
@@ -141,13 +189,14 @@ printf("%s", path ? path : "unavailable");
 ''', roots), [expected])
 
     def test_drop_and_reset_reasons_use_the_selected_mount(self):
-        fsearch = function((ROOT / 'utils/sys_utils.c').read_text(), 'fsearch')
+        utils = (ROOT / 'utils/sys_utils.c').read_text()
+        helpers = function(utils, 'fsearch') + function(utils, 'tracepoint_format_has')
         for kind, file, event, prefix in (
                 ('drop', 'src/dropreason.c', 'skb/kfree_skb', ''),
                 ('reset', 'src/rstreason.c', 'tcp/tcp_send_reset',
                  '__print_symbolic state, { 1, "ESTABLISHED" } ')):
             original = (ROOT / file).read_text()
-            source = self.path_helper() + fsearch + f'''
+            source = self.path_helper() + helpers + f'''
 #define REASON_MAX_COUNT 256
 #define REASON_MAX_LEN 32
 static char {kind}_reasons[REASON_MAX_COUNT][REASON_MAX_LEN];
@@ -197,6 +246,7 @@ static void trace_set_invalid_reason(trace_t *trace, const char *reason) {
 }
 static void trace_group_enable(const char *group, int value) { (void)group; (void)value; }
 static void trace_exec_cond(void) {}
+static void trace_startup_mark(const char *stage) { (void)stage; }
 static void trace_prepare_status(void) {}
 #define TRACE_MAX 2
 static void sym_prepare_name_index(const char *const *names, size_t count) {}

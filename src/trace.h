@@ -61,7 +61,7 @@ typedef struct trace {
 	/* name of the eBPF program */
 	char	*prog;
 	enum trace_type type;
-	char	*cond;
+	const char *kernel_before;
 	char	*regex;
 	char	*tp;
 	/* index of skb in function args, start from 1, 0 means no skb */

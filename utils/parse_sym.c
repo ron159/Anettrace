@@ -261,6 +261,23 @@ static bool next_symbol_record(const char **next, struct symbol_record *record)
 	return false;
 }
 
+bool sym_kernel_text_exists(const char *name)
+{
+	struct symbol_record record;
+	size_t length = strlen(name);
+	const char *next;
+
+	if (sym_init_data())
+		return false;
+	next = proc_syms;
+	while (next_symbol_record(&next, &record)) {
+		if (record.type == 'T' && !record.module &&
+		    record.length == length && !memcmp(record.name, name, length))
+			return true;
+	}
+	return false;
+}
+
 static int compare_symbol_names(const void *left, const void *right)
 {
 	const struct symbol_record *a = left, *b = right;
