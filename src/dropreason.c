@@ -17,11 +17,7 @@ static bool drop_reason_inited = false;
 /* check if drop reason on kfree_skb is supported */
 bool drop_reason_support()
 {
-	const char *tracing_path = get_tracing_path();
-
-	return tracing_path && execf(NULL,
-		"cat %s/events/skb/kfree_skb/format 2>/dev/null | grep NOT_SPECIFIED",
-		tracing_path) == 0;
+	return tracepoint_format_has("skb/kfree_skb", "NOT_SPECIFIED");
 }
 
 static int parse_reason_enum()

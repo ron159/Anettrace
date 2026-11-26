@@ -45,6 +45,7 @@ static void trace_set_invalid_reason(trace_t *t, const char *reason) {
 static void trace_set_invalid(trace_t *t) { t->status |= TRACE_INVALID; }
 static void trace_group_enable(const char *name, int target) {}
 static void trace_exec_cond(void) {}
+static void trace_startup_mark(const char *stage) { (void)stage; }
 static void trace_prepare_status(void) {}
 /* The symbol service has its own fixture-backed parser tests. Here it
  * supplies controlled uniqueness results to the real trace selection. */

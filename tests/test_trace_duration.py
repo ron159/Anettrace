@@ -17,6 +17,11 @@ typedef struct { u16 meta; } event_t;
 typedef struct { u16 meta; u8 owner_pending; } detail_event_t;
 static unsigned exported, printed;
 static bool capture_async;
+static bool startup_wait_sample;
+static unsigned startup_samples;
+static void trace_startup_mark(const char *stage) {
+    if (!strcmp(stage, "first_sample")) startup_samples++;
+}
 static void capture_queue_event(void *data, int cpu, u32 size) {
     (void)data; (void)cpu; (void)size; exported++;
 }
@@ -33,6 +38,7 @@ static struct { typeof(ops) *ops; } trace_ctx = {&ops};
 ''' + helpers.function(source, "poll_handler_wrap")
         result = self.run_source(code, r'''
 detail_event_t pending={.meta=FUNC_TYPE_FUNC,.owner_pending=1};
+startup_wait_sample = true;
 poll_handler_wrap(NULL,0,&pending,sizeof(pending));
 printf("%u %u ",exported,printed);
 pending.meta=FUNC_TYPE_TRACING_RET;
@@ -44,9 +50,9 @@ printf("%u %u ",exported,printed);
 stopped = true;
 capture_async = true;
 poll_handler_wrap(NULL,0,&pending,sizeof(pending));
-printf("%u %u",exported,printed);
+printf("%u %u %u",exported,printed,startup_samples);
 ''')
-        self.assertEqual(result, ["1", "0", "2", "0", "3", "1", "4", "1"])
+        self.assertEqual(result, ["1", "0", "2", "0", "3", "1", "4", "1", "1"])
 
     def test_ready_is_emitted_only_after_buffer_creation_and_before_poll(self):
         source = (helpers.ROOT / "src/trace.c").read_text()
@@ -64,6 +70,9 @@ struct perf_buffer { int unused; } buffer;
 static int buffer_error, queue_error, map_result = 3, released, poll_result, consume_result;
 static size_t max_buffer_pages = 4096;
 static bool capture_async;
+static bool startup_wait_sample;
+static int log_level;
+static void trace_startup_mark(const char *stage) { (void)stage; }
 static size_t trace_capture_queue_bytes(void) { return CAPTURE_QUEUE_BYTES; }
 static int capture_queue_start(size_t size) { (void)size; printf("queue "); return queue_error; }
 static void capture_queue_tick(void) { printf("tick "); }

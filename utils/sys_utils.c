@@ -14,10 +14,11 @@
 #include <stdlib.h>
 #include <sys/resource.h>
 #include <sys/utsname.h>
+#include <limits.h>
+#include <zlib.h>
 
 #include "sys_utils.h"
 
-static int __hz = -1;
 int log_level = 0;
 
 int exec(char *cmd, char *output)
@@ -62,11 +63,21 @@ bool fsearch(FILE *f, char *target)
 {
 	char tmp[128];
 
-	while (fscanf(f, "%s", tmp) == 1) {
+	while (fscanf(f, "%127s", tmp) == 1) {
 		if (strstr(tmp, target))
 			return true;
 	}
 	return false;
+}
+
+bool kernel_release_before(const char *release, const char *limit)
+{
+	unsigned int major, minor, limit_major, limit_minor;
+
+	if (sscanf(release, "%u.%u", &major, &minor) != 2 ||
+	    sscanf(limit, "%u.%u", &limit_major, &limit_minor) != 2)
+		return false;
+	return major < limit_major || (major == limit_major && minor < limit_minor);
 }
 
 int kernel_version()
@@ -107,45 +118,76 @@ bool debugfs_mounted()
 	return get_tracing_path() != NULL;
 }
 
-int kernel_get_config(char *name, char *output)
+bool tracepoint_format_has(const char *event, const char *text)
 {
-	char tmp[128] = {};
-	int err;
+	const char *tracing_path = get_tracing_path();
+	char path[256], *line = NULL;
+	size_t capacity = 0;
+	bool found = false;
+	FILE *file;
 
-	if (file_exist("/proc/config.gz"))
-		err = execf(tmp, "zcat /proc/config.gz | grep 'CONFIG_%s=' 2>&1",
-			    name);
-	else
-		err = execf(tmp, "grep 'CONFIG_%s=' /boot/config-$(uname -r)"
-			    " 2>&1", name);
-
-	if (!output || err)
-		return err;
-
-	sscanf(tmp, "%*[^=]=%s", output);
-	return err;
+	if (!tracing_path)
+		return false;
+	snprintf(path, sizeof(path), "%s/events/%s/format", tracing_path, event);
+	file = fopen(path, "r");
+	if (!file)
+		return false;
+	while (!found && getline(&line, &capacity, file) >= 0)
+		found = strstr(line, text) != NULL;
+	free(line);
+	fclose(file);
+	return found;
 }
 
-bool kernel_has_config(char *name)
+static bool config_read;
+static bool config_btf_modules;
+static int config_hz = -ENOTSUP;
+
+static void kernel_read_config(void)
 {
-	char type[32] = {};
-	return kernel_get_config(name, type) == 0 && type[0] == 'y';
+	char path[256], line[4096];
+	struct utsname kernel;
+	bool continuation = false;
+	gzFile file;
+
+	if (config_read)
+		return;
+	config_read = true;
+	file = gzopen("/proc/config.gz", "rb");
+	if (!file && !uname(&kernel)) {
+		snprintf(path, sizeof(path), "/boot/config-%s", kernel.release);
+		file = gzopen(path, "rb");
+	}
+	if (!file)
+		return;
+	while (gzgets(file, line, sizeof(line))) {
+		if (!continuation) {
+			if (!strcmp(line, "CONFIG_DEBUG_INFO_BTF_MODULES=y\n") ||
+			    !strcmp(line, "CONFIG_DEBUG_INFO_BTF_MODULES=y"))
+				config_btf_modules = true;
+			if (!strncmp(line, "CONFIG_HZ=", sizeof("CONFIG_HZ=") - 1)) {
+				char *end;
+				long value = strtol(line + sizeof("CONFIG_HZ=") - 1, &end, 10);
+
+				if (value > 0 && value <= INT_MAX && (*end == '\n' || !*end))
+					config_hz = value;
+			}
+		}
+		continuation = !strchr(line, '\n');
+	}
+	gzclose(file);
+}
+
+bool kernel_has_btf_modules(void)
+{
+	kernel_read_config();
+	return config_btf_modules;
 }
 
 int kernel_hz()
 {
-	char hz[32] = {};
-	int err;
-
-	if (__hz > 0)
-		return __hz;
-
-	err = kernel_get_config("HZ", hz);
-	if (err)
-		return -ENOTSUP;
-
-	__hz = atoi(hz);
-	return __hz;
+	kernel_read_config();
+	return config_hz;
 }
 
 u32 file_inode(char *path)
